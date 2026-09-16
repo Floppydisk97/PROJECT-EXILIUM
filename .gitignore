@@ -1,0 +1,11 @@
+.env
+.venv/
+.tools/
+__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+*.pyc
+node_modules/
+.next/
+*.tsbuildinfo
+artifacts/
