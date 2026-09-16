@@ -6,6 +6,9 @@ x-backend: &backend
     target: runtime
   environment:
     DATABASE_URL: postgresql://${POSTGRES_USER:-exilium}:${POSTGRES_PASSWORD:?Copy .env.example to .env first}@db:5432/${POSTGRES_DB:-exilium}
+    APP_ENV: ${APP_ENV:-development}
+    SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+    TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-}
 
 services:
   db:

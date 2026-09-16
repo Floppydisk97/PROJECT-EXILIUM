@@ -10,13 +10,26 @@ from fastapi.testclient import TestClient
 from app import service
 from app.db import database_now, transaction
 from app.main import app
-from app.service import DomainError, balance, provision, read_city, run_tick, submit_order
+from app.service import (
+    DomainError, balance, create_session, entry, lock_world, read_city, require_current,
+    run_tick, submit_order,
+)
 from app.worker import catch_up
 
 
 def player(name="Exilium"):
     with transaction() as conn:
-        return provision(conn, name)
+        world = lock_world(conn)
+        now = database_now(conn)
+        require_current(world, now)
+        owner, city = uuid4(), uuid4()
+        conn.execute("INSERT INTO players(id, token_hash, created_at) VALUES (%s, NULL, %s)", (owner, now))
+        conn.execute(
+            "INSERT INTO cities(id, owner_id, name, created_at, settled_at) VALUES (%s, %s, %s, %s, %s)",
+            (city, owner, name, now, now),
+        )
+        entry(conn, city, 100000, "genesis", f"genesis:{city}", now)
+        return {"player_id": owner, "city_id": city}
 
 
 def age_world(days=1):
@@ -47,18 +60,21 @@ def test_tick_exact_boundary_policy_upgrade_and_retry(database):
     key = uuid4()
     order = enqueue(p, key=key)
     enqueue(p, "policy_vote", "industrial")
+    with transaction() as conn:
+        before = balance(conn, p["city_id"])
     due = age_world()
     with transaction() as conn:
         result = run_tick(conn)
         assert result["number"] == 1
-        assert balance(conn, p["city_id"]) == 100  # 10 seconds at old rate; upgrade cost.
+        expected = before + 100 - 100000
+        assert balance(conn, p["city_id"]) == expected  # 10 seconds at old rate; upgrade cost.
         assert conn.execute("SELECT settled_at FROM cities").fetchone()["settled_at"] == due
         assert conn.execute("SELECT level FROM cities").fetchone()["level"] == 1
     with transaction() as conn:
         assert run_tick(conn) is None
         city = conn.execute("SELECT * FROM cities").fetchone()
         service.settle(conn, city, due + timedelta(seconds=10), "industrial")
-        assert balance(conn, p["city_id"]) == 350  # New policy and new level only AFTER boundary.
+        assert balance(conn, p["city_id"]) == expected + 250  # New policy and level only AFTER boundary.
     assert enqueue(p, key=key)["id"] == order["id"]
     with transaction() as conn:
         assert conn.execute("SELECT count(*) AS n FROM ticks").fetchone()["n"] == 1
@@ -68,6 +84,8 @@ def test_tick_exact_boundary_policy_upgrade_and_retry(database):
 def test_tick_crash_rolls_back_all_effects(database, monkeypatch):
     p = player()
     enqueue(p)
+    with transaction() as conn:
+        before = balance(conn, p["city_id"])
     age_world()
     original = service.entry
 
@@ -80,7 +98,7 @@ def test_tick_crash_rolls_back_all_effects(database, monkeypatch):
     with pytest.raises(RuntimeError), transaction() as conn:
         run_tick(conn)
     with transaction() as conn:
-        assert balance(conn, p["city_id"]) == 100000
+        assert balance(conn, p["city_id"]) == before
         assert conn.execute("SELECT level FROM cities").fetchone()["level"] == 0
         assert conn.execute("SELECT status FROM orders").fetchone()["status"] == "pending"
         assert conn.execute("SELECT last_tick FROM world").fetchone()["last_tick"] == 0
@@ -92,12 +110,14 @@ def test_tick_crash_rolls_back_all_effects(database, monkeypatch):
 def test_competing_workers_commit_once(database):
     p = player()
     enqueue(p)
+    with transaction() as conn:
+        before = balance(conn, p["city_id"])
     age_world()
     with ThreadPoolExecutor(max_workers=4) as pool:
         counts = list(pool.map(lambda _: catch_up(), range(4)))
     assert sum(counts) == 1
     with transaction() as conn:
-        assert balance(conn, p["city_id"]) == 100
+        assert balance(conn, p["city_id"]) == before + 100 - 100000
 
 
 def test_concurrent_order_retries_and_conflicts(database):
@@ -166,27 +186,29 @@ def test_insufficient_upgrade_has_no_partial_effects(database):
     enqueue(p)
     with transaction() as conn:
         service.entry(conn, p["city_id"], -100000, "upgrade", "fixture-spend", database_now(conn))
+        before = balance(conn, p["city_id"])
     age_world()
     catch_up()
     with transaction() as conn:
-        assert balance(conn, p["city_id"]) == 100
+        assert balance(conn, p["city_id"]) == before + 100
         assert conn.execute("SELECT level FROM cities").fetchone()["level"] == 0
         assert conn.execute("SELECT outcome FROM orders").fetchone()["outcome"] == "insufficient_alloy"
 
 
 def test_api_authorization_validation_idempotency_and_ledger(database):
     p, other = player(), player("Other")
-    headers = {"Authorization": f"Bearer {p['token']}", "Idempotency-Key": str(uuid4())}
+    with transaction() as conn:
+        session = create_session(conn, p["player_id"])
+    headers = {"Idempotency-Key": str(uuid4())}
     path = f"/cities/{p['city_id']}"
     with TestClient(app) as client:
+        client.cookies.set("exilium_session", session)
         assert client.get("/health/ready").status_code == 200
-        assert client.get(path).status_code == 401
-        assert client.get(path, headers={"Authorization": "Bearer invalid"}).status_code == 401
         assert client.get(f"/cities/{other['city_id']}", headers=headers).status_code == 404
         assert client.post(f"/cities/{other['city_id']}/orders", headers=headers, json={"kind": "upgrade"}).status_code == 404
         assert client.post(path + "/orders", headers=headers, json={"kind": "upgrade", "amount": 9999}).status_code == 422
         assert client.post(path + "/orders", headers=headers, json={"kind": "policy_vote"}).status_code == 422
-        assert client.post(path + "/orders", headers={"Authorization": headers["Authorization"]}, json={"kind": "upgrade"}).status_code == 422
+        assert client.post(path + "/orders", json={"kind": "upgrade"}).status_code == 422
         first = client.post(path + "/orders", headers=headers, json={"kind": "upgrade"})
         second = client.post(path + "/orders", headers=headers, json={"kind": "upgrade"})
         assert first.status_code == 200 and second.json() == first.json()

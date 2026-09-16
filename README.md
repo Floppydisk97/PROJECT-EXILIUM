@@ -2,9 +2,10 @@
 
 Base per city builder sci-fi multiplayer in un mondo persistente unico.
 FastAPI è autoritativo; PostgreSQL conserva economia e audit; un worker separato
-risolve politica e ordini ogni 24 ore. Next.js/React mostra solo lo stato tecnico.
+risolve politica e ordini ogni 24 ore. Next.js/React offre il primo ciclo giocabile.
 
 Leggere prima [schema, invarianti e semantica temporale](docs/architecture.md).
+La procedura di ritorno dalla migrazione della slice è in [rollback 0002](docs/rollback.md).
 Le regole iniziali di produzione, upgrade e voto servono a verificare la fondazione:
 non costituiscono ancora il design del gioco completo.
 
@@ -19,39 +20,26 @@ docker compose ps
 docker compose logs worker
 ```
 
-Su Linux/macOS usare `cp .env.example .env`. Password di esempio solo per sviluppo;
+Su Linux/macOS usare `cp .env.example .env`. `APP_ENV=development` e il cookie non
+Secure sono espliciti perché Compose pubblica soltanto HTTP su loopback. In produzione
+usare `APP_ENV=production` e impostare `TRUSTED_ORIGINS` all'origine HTTPS pubblica:
+il backend forza comunque Secure e rifiuta mutazioni autenticate senza Origin valido.
+Password di esempio solo per sviluppo;
 se cambiata, usare caratteri compatibili con un URL oppure percent-encoding nel DSN.
 PostgreSQL non espone porte host. API e web sono pubblicate solo su loopback.
 Le migrazioni devono completarsi prima dell'avvio di API e worker.
 
-- Stato web: http://localhost:3000
+- Gioco web: http://localhost:3000
 - OpenAPI: http://localhost:8000/docs
 - Liveness: `/health/live`; readiness (DB + tick recuperati): `/health/ready`
 
-Provisionare un giocatore locale (il token viene mostrato una sola volta):
+Dal browser si può registrare un handle, entrare in `exilium-prime`, scegliere una
+cella, fondare la capitale e costruire estrattori. La sessione usa un cookie HttpOnly:
+il frontend non riceve né salva il token. In Compose `Secure` è disattivato solo perché
+il servizio locale usa HTTP; il valore predefinito dell'API è sicuro per HTTPS.
 
-```powershell
-docker compose exec api python -m app.cli "Prima colonia"
-```
-
-I token casuali sono memorizzati solo come hash nel database. Non esiste endpoint
-pubblico per creare giocatori, assegnare risorse o forzare tick. Per due giocatori,
-eseguire due volte il provisioning con nomi diversi.
-
-Esempio API PowerShell, con i valori restituiti dalla CLI:
-
-```powershell
-$cityId = '<city_id>'
-$headers = @{ Authorization = 'Bearer <token>'; 'Idempotency-Key' = [guid]::NewGuid().ToString() }
-Invoke-RestMethod "http://localhost:8000/cities/$cityId" -Headers $headers
-Invoke-RestMethod "http://localhost:8000/cities/$cityId/orders" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"kind":"upgrade"}'
-# Per ritentare lo stesso ordine, conservare la stessa Idempotency-Key e lo stesso body.
-$headers['Idempotency-Key'] = [guid]::NewGuid().ToString()
-Invoke-RestMethod "http://localhost:8000/cities/$cityId/orders" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"kind":"policy_vote","choice":"industrial"}'
-Invoke-RestMethod "http://localhost:8000/cities/$cityId/ledger" -Headers $headers
-```
-
-`GET /me/cities` elenca le proprie città. Ledger e ordini sono paginati con
+`GET /me/cities` elenca le proprie città. La prima slice consente una sola fondazione,
+ma lo schema ammette future colonie non-capitali. Ledger e ordini sono paginati con
 `after=<ultimo id>` e `limit=1..200`. Importi, id incrementali e numeri tick sono
 stringhe JSON per evitare perdita di precisione JavaScript. `alloy_milli / 1000`
 è il valore in unità di risorsa. Una lettura città materializza la produzione
@@ -88,8 +76,8 @@ $env:HOSTNAME = '127.0.0.1'
 npm start
 ```
 
-Il frontend chiama il backend dal server Next.js, attraverso `API_INTERNAL_URL`
-(default `http://127.0.0.1:8000`). Non contiene token e non effettua calcoli economici.
+Il frontend inoltra le chiamate same-origin al backend attraverso `API_INTERNAL_URL`
+(default `http://127.0.0.1:8000`). Non legge token e non effettua calcoli economici.
 I manifest Python diretti sono `requirements*.txt`; i file `requirements*.lock.txt`
 fissano anche dipendenze transitive. `package-lock.json` viene usato con `npm ci`.
 

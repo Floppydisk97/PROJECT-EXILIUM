@@ -20,9 +20,34 @@ def database(monkeypatch):
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
     monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.setenv("PGOPTIONS", f"-c search_path={schema}")
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("TRUSTED_ORIGINS", raising=False)
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     try:
         command.upgrade(config, "head")
+        yield config
+    finally:
+        with psycopg.connect(url, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+@pytest.fixture
+def database_at_0001(monkeypatch):
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("Set TEST_DATABASE_URL to run real PostgreSQL integration tests")
+    schema = "test_exilium_upgrade_" + uuid4().hex
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("PGOPTIONS", f"-c search_path={schema}")
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("TRUSTED_ORIGINS", raising=False)
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    try:
+        command.upgrade(config, "0001")
         yield config
     finally:
         with psycopg.connect(url, autocommit=True) as conn:

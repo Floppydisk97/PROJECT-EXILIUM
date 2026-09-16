@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.domain import elected_policy, production_amount
+from app.domain import elected_policy, production_amount, production_rate
 
 
 def test_production_is_additive_and_integer_over_long_downtime():
@@ -16,6 +16,11 @@ def test_policy_ties_preserve_incumbent():
     assert elected_policy("industrial", {}) == "industrial"
     assert elected_policy("balanced", {"balanced": 1, "industrial": 1}) == "balanced"
     assert elected_policy("balanced", {"industrial": 2}) == "industrial"
+
+
+def test_extractor_adds_to_existing_production_rules():
+    assert production_rate("balanced", 2, 0) == 20
+    assert production_rate("balanced", 2, 1) == 45
 
 
 def test_invalid_time_cannot_mint_resources():

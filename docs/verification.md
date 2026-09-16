@@ -1,23 +1,21 @@
 # Verifica della fondazione
 
-Repository iniziale: vuota, solo `.git`, nessun commit e nessun file applicativo.
-Branch di lavoro: `foundation/authoritative-world`. Nessun commit eseguito.
+Baseline: commit foundation `ef16d26feb9d170f41d654be809f988e5a8aa0c0`.
+Branch di lavoro: `feature/first-colony-loop`. Nessun commit eseguito per la slice.
 
 ## Verifiche eseguite localmente
 
 | Verifica | Esito |
 | --- | --- |
 | Python 3.12, dipendenze da lockfile, `pip check` | OK |
-| `pytest -q` su PostgreSQL 17.11 reale | **22 passed**, nessun test saltato |
-| Migrazione iniziale e seconda esecuzione senza modifiche | OK |
+| `pytest -q` su PostgreSQL 17.11 reale | **35 passed**, nessun test saltato |
+| Migrazione pulita, upgrade reale `0001 → 0002` e backfill idempotenza | OK |
 | `npm run typecheck` | OK |
 | `npm run build`, Next.js 16.3.5, React 19.3.0, Node 22.23.2 | OK |
 | `npm install` audit iniziale | 0 vulnerabilità segnalate |
 | `docker-compose --env-file .env.example config --quiet` | OK, Compose 5.5.1 |
-| HTTP API `/health/ready` e `/world` su database migrato | 200 |
-| HTTP frontend standalone collegato a FastAPI/PostgreSQL | 200, politica e stato corretti |
-| Cinque asset statici richiamati dalla pagina standalone | 200 |
-| Frontend con backend arrestato | Messaggio di indisponibilità corretto |
+| Smoke Next.js → proxy → FastAPI → PostgreSQL | Registrazione, ingresso, colonia, estrattore e nuovo login OK |
+| Cookie sessione | HttpOnly, SameSite=Lax, token hashato; Secure verificato in modalità produzione |
 | `git diff --check` | OK |
 
 I test includono: produzione additiva con downtime, pareggi elettorali, timestamp
@@ -28,7 +26,10 @@ di tre giorni senza salti, blocco delle nuove operazioni durante recupero, immut
 del ledger e dei tick (anche TRUNCATE), saldo non negativo, eventi duplicati,
 upgrade senza copertura, autenticazione e isolamento tra proprietari, payload
 manipolati, paginazione, quattro liquidazioni concorrenti, cutoff esatto e voto
-con tre giocatori nello stesso mondo.
+con tre giocatori nello stesso mondo. La slice aggiunge test per Argon2, sessioni,
+revoca/scadenza, ingresso idempotente, celle invalide e contese, rollback della
+fondazione, supporto futuro multi-colonia, fingerprint del payload, retry concorrenti
+dell'estrattore, saldo insufficiente e produzione offline dopo un nuovo login.
 
 Pytest riporta due avvisi di deprecazione di dipendenze Starlette/AnyIO riguardanti
 il TestClient; non sono errori o test saltati.
