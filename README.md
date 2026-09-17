@@ -45,12 +45,14 @@ generata da seed, poi immutabile):
 docker compose exec api python -m app.mapcli "Hesperia-01"
 ```
 
-`--frequency N` (2..48) regola la suddivisione geodetica: i tile sono `10*N^2 + 2`. Il
-default N=40 produce **16.002 tile**, di cui ~6.080 di terra (il 38% è terra per
+`--frequency N` (2..96) regola la suddivisione geodetica: i tile sono `10*N^2 + 2`. Il
+default N=80 produce **64.002 tile**, di cui ~24.300 di terra (il 38% è terra per
 costruzione, sea level al 62° percentile): una città per casella di terra, quindi il mondo
-ospita oltre **5.000 giocatori** con margine. La mappa è servita da `GET /world/map`
-(geografia pubblica, nessun saldo) compressa con gzip (~6,6 MB → ~1,25 MB); la
-rigenerazione è rifiutata: un nuovo mondo richiede un nuovo seed via migrazione dedicata.
+ospita ben oltre **5.000 giocatori**. Generazione ~1,6 s e ~130 MB di picco.
+`GET /world/map` serve il *render model* (le sole terre, che il client disegna: l'oceano è
+un guscio liscio) compresso con gzip (~8,4 MB → ~1,5 MB); la tabella conserva la geografia
+completa. La rigenerazione è rifiutata: ridimensionare il mondo richiede una migrazione
+dedicata (vedi `0004_bigger_world`).
 
 Esempio API PowerShell, con i valori restituiti dalla CLI:
 

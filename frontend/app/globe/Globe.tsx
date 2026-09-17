@@ -154,7 +154,7 @@ export default function Globe() {
       borderGeom.setAttribute("position", new THREE.Float32BufferAttribute(borders, 3));
       scene.add(new THREE.LineSegments(
         borderGeom,
-        new THREE.LineBasicMaterial({ color: 0x14301f, transparent: true, opacity: 0.20 }),
+        new THREE.LineBasicMaterial({ color: 0x14301f, transparent: true, opacity: 0.13 }),
       ));
 
       // Drifting procedural cloud deck.
@@ -162,15 +162,20 @@ export default function Globe() {
         uniforms: {
           uTime: { value: 0 },
           uSun: { value: new THREE.Vector3(0, 0, 1) },
-          uOpacity: { value: 0.42 },
+          uOpacity: { value: 0.85 },
         },
         vertexShader: VIEW_VERT,
         fragmentShader: `
           varying vec3 vP; varying vec3 vN; varying vec3 vLocal;
           uniform float uTime; uniform vec3 uSun; uniform float uOpacity;
-          float hash(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
-          float noise(vec3 p){
-            vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          // Cheap integer-ish hash (no sin): cleaner and faster than the classic sin-hash.
+          float hash(vec3 p){
+            p = fract(p * 0.3183099 + vec3(0.11, 0.17, 0.13));
+            p *= 17.0;
+            return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+          }
+          float noise(vec3 x){
+            vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);
             return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
                            mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
                        mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
@@ -178,17 +183,23 @@ export default function Globe() {
           }
           float fbm(vec3 p){
             float v = 0.0, a = 0.5;
-            for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; }
+            for (int i = 0; i < 5; i++) { v += a * noise(p); p = p * 2.07 + vec3(1.7, 9.2, 3.1); a *= 0.5; }
             return v;
           }
           void main(){
-            vec3 p = vLocal * 2.4 + vec3(uTime * 0.012, uTime * 0.006, 0.0);
-            float n = fbm(p);
-            float a = smoothstep(0.48, 0.70, n);
-            if (a < 0.004) discard;
+            vec3 p = vLocal * 3.0;
+            float drift = uTime * 0.01;
+            // One domain-warp step: bends the noise into the swirled bands of real weather
+            // instead of the round blobs plain fbm gives.
+            float w = fbm(p * 0.75 + vec3(drift, 0.0, -drift));
+            float n = fbm(p + vec3(w * 1.5) + vec3(drift * 1.7, 0.0, 0.0));
+            float cover = smoothstep(0.52, 0.71, n);
+            if (cover < 0.004) discard;
+            // Thicker cores, feathered edges.
+            float a = cover * cover * (0.45 + 0.55 * w);
             float lambert = clamp(dot(normalize(vN), normalize(uSun)), 0.0, 1.0);
-            float shade = 0.62 + 0.38 * lambert;
-            gl_FragColor = vec4(vec3(shade), a * uOpacity);
+            vec3 col = mix(vec3(0.72, 0.77, 0.88), vec3(1.0), lambert);
+            gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * uOpacity);
           }`,
         transparent: true,
         depthWrite: false,
@@ -339,7 +350,7 @@ export default function Globe() {
             <dt>Temperatura media</dt><dd>{selected.temperature.toFixed(1)} °C</dd>
             <dt>Precipitazioni</dt><dd>{selected.rainfall} mm</dd>
             <dt>Elevazione</dt><dd>{selected.elevation} m</dd>
-            <dt>Confini</dt><dd>{selected.neighbors.length} tile</dd>
+            <dt>Confini</dt><dd>{selected.neighbor_count} tile</dd>
           </dl>
         </aside>
       )}

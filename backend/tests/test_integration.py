@@ -321,7 +321,7 @@ def test_world_map_generates_persists_and_is_immutable(database):
         world = read_map(conn)
     assert world["tile_count"] == 362 and world["frequency"] == 6
     sample = world["tiles"][0]
-    assert set(sample) >= {"id", "lat", "lon", "center", "biome", "neighbors", "polygon"}
+    assert set(sample) >= {"id", "lat", "lon", "center", "biome", "neighbor_count", "polygon"}
     assert len(sample["polygon"]) in (5, 6)
     # One-shot: a second generation is refused, never a silent overwrite.
     with pytest.raises(DomainError) as error, transaction() as conn:
