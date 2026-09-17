@@ -38,6 +38,18 @@ I token casuali sono memorizzati solo come hash nel database. Non esiste endpoin
 pubblico per creare giocatori, assegnare risorse o forzare tick. Per due giocatori,
 eseguire due volte il provisioning con nomi diversi.
 
+Generare il pianeta autoritativo `Hesperia` (una sola volta; sfera geodetica di tile
+generata da seed, poi immutabile):
+
+```powershell
+docker compose exec api python -m app.mapcli "Hesperia-01"
+```
+
+`--frequency N` (2..48, default 12) regola la suddivisione geodetica: i tile sono
+`10*N^2 + 2` (N=12 → 1442). La mappa è servita da `GET /world/map` (geografia pubblica,
+nessun saldo) e la rigenerazione è rifiutata: un nuovo mondo richiede un nuovo seed via
+migrazione dedicata.
+
 Esempio API PowerShell, con i valori restituiti dalla CLI:
 
 ```powershell
