@@ -234,6 +234,35 @@ def test_exact_cutoff_rejects_order_and_runs_tick(database, monkeypatch):
     assert accepted["submitted_at"] == due
 
 
+def test_distinct_cities_settle_concurrently_without_global_lock(database):
+    first, second = player("A"), player("B")
+    with transaction() as conn:
+        now = database_now(conn)
+        conn.execute("UPDATE cities SET created_at=%s, settled_at=%s", (now - timedelta(seconds=60), now - timedelta(seconds=60)))
+    monkeypatch_now = now
+    from app import service as svc
+    original = svc.database_now
+    svc.database_now = lambda conn: monkeypatch_now
+    try:
+        def read(p):
+            with transaction() as conn:
+                return read_city(conn, p["city_id"], p["player_id"])
+        # Two distinct cities, read concurrently: only a per-city lock is taken now,
+        # so neither serializes on the other, yet each settles exactly once.
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            list(pool.map(read, [first, second, first, second, first, second]))
+    finally:
+        svc.database_now = original
+    with transaction() as conn:
+        for p in (first, second):
+            n = conn.execute(
+                "SELECT count(*) AS n FROM resource_ledger WHERE city_id=%s AND reason='production'",
+                (p["city_id"],),
+            ).fetchone()["n"]
+            assert n == 1  # 60s at rate 10 -> one production entry, no duplicates.
+            assert balance(conn, p["city_id"]) == 100000 + 600
+
+
 def test_materialized_balance_equals_ledger_sum(database):
     first, second = player("A"), player("B")
     enqueue(first)

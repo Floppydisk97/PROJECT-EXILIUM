@@ -33,7 +33,10 @@ CREATE DATABASE "$DB";
 SQL
 
 echo "Caricamento del dump..."
-docker compose exec -T db pg_restore -U "$USER" --disable-triggers --exit-on-error -d "$DB" </dev/stdin <"$DUMP"
+docker compose cp "$DUMP" db:/tmp/exilium-restore.dump
+docker compose exec -T db pg_restore -U "$USER" --disable-triggers --exit-on-error \
+    -d "$DB" /tmp/exilium-restore.dump
+docker compose exec -T db rm -f /tmp/exilium-restore.dump
 
 echo "Verifica invariante saldo == somma ledger..."
 BAD="$(docker compose exec -T db psql -U "$USER" -d "$DB" -tAc \

@@ -45,10 +45,15 @@ dei tick. Il trigger degli addebiti blocca la riga città, aggiorna il cursore d
 e impedisce un saldo negativo con costo O(1). Un amministratore DB resta fidato: può
 cambiare lo schema o disabilitare trigger.
 
-Invarianti applicative: ogni mutazione economica blocca prima `world FOR UPDATE`,
-poi opera su città/ordini nello stesso ordine deterministico. Non viene mai liquidata
-produzione oltre un tick non ancora risolto. Nessun tempo fornito dal client viene usato.
-L'accesso a una città richiede token del suo proprietario (404 per città altrui).
+Invarianti applicative e concorrenza: le operazioni economiche (lettura città, invio
+ordine, provisioning) prendono `world FOR SHARE` — un lock condiviso che le lascia
+procedere in parallelo tra loro ma esclude un tick in corso — e serializzano solo sulla
+riga della propria città (`cities FOR UPDATE`). Città diverse non si bloccano a vicenda;
+la stessa città serializza, così una produzione non viene mai liquidata due volte. Il tick
+prende `world FOR UPDATE` (esclusivo): attende le operazioni in volo e ne blocca di nuove,
+osservando un mondo quiescente. Non viene mai liquidata produzione oltre un tick non ancora
+risolto. Nessun tempo fornito dal client viene usato. L'accesso a una città richiede token
+del suo proprietario (404 per città altrui).
 
 ## Produzione continua e tick
 
@@ -80,9 +85,12 @@ non si accettano ordini per il tick in chiusura.
 
 ## Limiti deliberati
 
-Il lock globale privilegia correttezza e auditabilità; non è una soluzione per milioni
-di città. La somma del ledger e la liquidazione di tutte le città richiederanno snapshot
-riconciliabili e partizionamento prima di una scala elevata. Il cursore `balance_milli`
+Le operazioni economiche non prendono più un lock globale esclusivo: usano `world FOR
+SHARE` e serializzano per città, quindi giocatori diversi procedono in parallelo. Resta un
+limite deliberato la barriera globale del tick (`world FOR UPDATE`): privilegia correttezza
+e auditabilità e liquida tutte le città in un'unica transazione, quindi il tick e la
+liquidazione di massa richiederanno partizionamento e snapshot riconciliabili prima di una
+scala molto elevata. Il cursore `balance_milli`
 (migrazione 0002) rimuove il costo O(n) del saldo su lettura e scrittura ed è coperto da
 test di equivalenza col ledger; ogni ulteriore cache economica deve mantenere la stessa
 verifica. Nessun requisito di alta disponibilità è ancora implementato. Compose è per

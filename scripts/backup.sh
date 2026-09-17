@@ -18,9 +18,13 @@ echo "Dump di '$DB' in corso..."
 docker compose exec -T db pg_dump -U "$USER" -Fc "$DB" >"$OUT"
 
 # Verifica che il dump sia leggibile (TOC integro) prima di dichiararlo valido.
-if ! docker compose exec -T db pg_restore -l /dev/stdin <"$OUT" >/dev/null 2>&1; then
+# Copia in-container per un archivio seekable, poi rimuove il temporaneo.
+docker compose cp "$OUT" db:/tmp/exilium-verify.dump
+if ! docker compose exec -T db pg_restore -l /tmp/exilium-verify.dump >/dev/null 2>&1; then
+    docker compose exec -T db rm -f /tmp/exilium-verify.dump || true
     echo "ERRORE: dump non leggibile; backup non valido: $OUT" >&2
     exit 1
 fi
+docker compose exec -T db rm -f /tmp/exilium-verify.dump
 
 echo "Backup verificato: $OUT ($(wc -c <"$OUT") byte)"

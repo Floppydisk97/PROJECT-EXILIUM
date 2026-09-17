@@ -53,5 +53,11 @@ jobs:
         run: |
           curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:8000/health/ready
           curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:3000
+      - name: Backup and verified restore round-trip
+        run: |
+          docker compose exec -T api python -m app.cli "CI City" >/dev/null
+          bash scripts/backup.sh
+          RESTORE_CONFIRM=yes bash scripts/restore.sh "$(ls -t backups/*.dump | head -1)"
+          curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:8000/health/ready
       - if: always()
         run: docker compose logs && docker compose down

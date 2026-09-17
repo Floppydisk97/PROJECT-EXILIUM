@@ -1,0 +1,30 @@
+# Aggiornamenti automatici: proponi bump dei digest immutabili e delle action.
+# Le dipendenze Python NON sono incluse: sono fissate in file *.lock.txt generati,
+# che Dependabot non rigenera; aggiornarle a mano ricompilando i lockfile evita drift.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+
+  # compose.yaml alla radice: digest dell'immagine postgres.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
