@@ -100,6 +100,27 @@ manuale di recupero: `docker compose exec worker python -m app.worker --once`.
 Questo non anticipa la scadenza del tick. Ogni tick confermato viene scritto nei log;
 un'eccezione produce rollback e retry. Più worker sono ammessi e si serializzano.
 
+## Backup e restore
+
+Il mondo vive nel volume PostgreSQL; `down -v` lo cancella in modo permanente. Per
+conservarlo, produrre dump verificati (formato custom, compressi):
+
+```bash
+scripts/backup.sh                     # scrive backups/exilium-<UTC>.dump e ne verifica il TOC
+RESTORE_CONFIRM=yes scripts/restore.sh backups/exilium-<UTC>.dump
+```
+
+Il restore è DISTRUTTIVO: ferma api/worker, ricrea il database e ricarica il dump con
+`--disable-triggers`, poi verifica l'invariante `balance_milli == SUM(resource_ledger)`
+per ogni città e aborta se diverge. Su Windows eseguire gli stessi comandi `docker compose`
+mostrati negli script tramite Git Bash o WSL.
+
+Le immagini base Docker (`postgres`, `python`, `node`) sono fissate per digest immutabile
+in `compose.yaml`, nei `Dockerfile` e nella CI: build riproducibili. Per aggiornarle,
+ricalcolare il digest del tag desiderato e sostituirlo negli stessi punti.
+
+## Ciclo di vita e migrazioni
+
 `docker compose down` conserva il volume; `down -v` cancella permanentemente il mondo.
 Prima di cambiare regole economiche occorre una nuova versione del ruleset e una
 migrazione che preservi la semantica degli ordini pendenti. Le migrazioni distruttive

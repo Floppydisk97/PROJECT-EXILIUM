@@ -22,7 +22,16 @@ def token_hash(token: str) -> str:
 
 
 def lock_world(conn):
+    # Exclusive lock: the tick barrier. Blocks and is blocked by every economic
+    # operation, so a tick observes a quiescent world and no settlement is mid-flight.
     return conn.execute("SELECT * FROM world WHERE id = 1 FOR UPDATE").fetchone()
+
+
+def read_world(conn):
+    # Shared lock: economic operations only need the world to hold still (no tick
+    # running) while they act. Many run in parallel; they serialize per city on the
+    # city row, not globally. FOR SHARE still conflicts with the tick's FOR UPDATE.
+    return conn.execute("SELECT * FROM world WHERE id = 1 FOR SHARE").fetchone()
 
 
 def require_current(world, now):
@@ -30,9 +39,13 @@ def require_current(world, now):
         raise DomainError(503, "World tick pending; retry after recovery")
 
 
-def owned_city(conn, city_id, owner_id):
+def owned_city(conn, city_id, owner_id, lock=False):
+    # lock=True takes a row lock on this city only: concurrent settlements of the
+    # SAME city serialize (no duplicate production), while different cities proceed
+    # in parallel. Read-only authorization checks pass lock=False.
+    suffix = " FOR UPDATE" if lock else ""
     city = conn.execute(
-        "SELECT * FROM cities WHERE id = %s AND owner_id = %s", (city_id, owner_id)
+        "SELECT * FROM cities WHERE id = %s AND owner_id = %s" + suffix, (city_id, owner_id)
     ).fetchone()
     if city is None:
         raise DomainError(404, "City not found")
@@ -40,10 +53,11 @@ def owned_city(conn, city_id, owner_id):
 
 
 def balance(conn, city_id):
+    # O(1) read of the materialized cursor. The ledger trigger keeps it exactly
+    # equal to SUM(resource_ledger.amount); test_materialized_balance_* guards it.
     return int(conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) AS balance FROM resource_ledger WHERE city_id = %s",
-        (city_id,),
-    ).fetchone()["balance"])
+        "SELECT balance_milli FROM cities WHERE id = %s", (city_id,)
+    ).fetchone()["balance_milli"])
 
 
 def entry(conn, city_id, amount, reason, event_key, effective_at):
@@ -67,7 +81,7 @@ def settle(conn, city, until, policy):
 def provision(conn, name):
     if not 1 <= len(name.strip()) <= 80:
         raise DomainError(422, "City name must contain 1-80 characters")
-    world = lock_world(conn)
+    world = read_world(conn)
     now = database_now(conn)
     require_current(world, now)
     owner, city, token = uuid4(), uuid4(), secrets.token_urlsafe(32)
@@ -81,8 +95,8 @@ def provision(conn, name):
 
 
 def read_city(conn, city_id, owner_id):
-    world = lock_world(conn)
-    city = owned_city(conn, city_id, owner_id)
+    world = read_world(conn)
+    city = owned_city(conn, city_id, owner_id, lock=True)
     now = database_now(conn)
     require_current(world, now)
     settle(conn, city, now, world["policy"])
@@ -94,8 +108,8 @@ def read_city(conn, city_id, owner_id):
 
 
 def submit_order(conn, city_id, owner_id, key, kind, choice):
-    world = lock_world(conn)
-    city = owned_city(conn, city_id, owner_id)
+    world = read_world(conn)
+    city = owned_city(conn, city_id, owner_id, lock=True)
     previous = conn.execute(
         "SELECT * FROM orders WHERE city_id = %s AND idempotency_key = %s", (city_id, key)
     ).fetchone()

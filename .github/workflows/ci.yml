@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-bookworm
+        image: postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
         env:
           POSTGRES_PASSWORD: test-only
           POSTGRES_DB: exilium_test
@@ -53,5 +53,11 @@ jobs:
         run: |
           curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:8000/health/ready
           curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:3000
+      - name: Backup and verified restore round-trip
+        run: |
+          docker compose exec -T api python -m app.cli "CI City" >/dev/null
+          bash scripts/backup.sh
+          RESTORE_CONFIRM=yes bash scripts/restore.sh "$(ls -t backups/*.dump | head -1)"
+          curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:8000/health/ready
       - if: always()
         run: docker compose logs && docker compose down

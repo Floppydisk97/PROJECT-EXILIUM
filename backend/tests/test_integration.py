@@ -34,6 +34,16 @@ def enqueue(p, kind="upgrade", choice=None, key=None):
         return submit_order(conn, p["city_id"], p["player_id"], key or uuid4(), kind, choice)
 
 
+def freeze_clock(monkeypatch):
+    """Pin the service clock so setup (player/enqueue) never straddles a whole-second
+    boundary and mints stray sub-tick production. age_world drives time via SQL, so the
+    controlled tick window is unaffected; only the pre-tick baseline becomes deterministic."""
+    with transaction() as conn:
+        now = database_now(conn)
+    monkeypatch.setattr(service, "database_now", lambda conn: now)
+    return now
+
+
 def test_migration_rerun_and_world_singleton(database):
     command.upgrade(database, "head")
     with transaction() as conn:
@@ -42,7 +52,8 @@ def test_migration_rerun_and_world_singleton(database):
         conn.execute("INSERT INTO world SELECT 2, policy, last_tick, next_tick_at FROM world")
 
 
-def test_tick_exact_boundary_policy_upgrade_and_retry(database):
+def test_tick_exact_boundary_policy_upgrade_and_retry(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     key = uuid4()
     order = enqueue(p, key=key)
@@ -66,6 +77,7 @@ def test_tick_exact_boundary_policy_upgrade_and_retry(database):
 
 
 def test_tick_crash_rolls_back_all_effects(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     enqueue(p)
     age_world()
@@ -89,7 +101,8 @@ def test_tick_crash_rolls_back_all_effects(database, monkeypatch):
     assert catch_up() == 1
 
 
-def test_competing_workers_commit_once(database):
+def test_competing_workers_commit_once(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     enqueue(p)
     age_world()
@@ -113,7 +126,8 @@ def test_concurrent_order_retries_and_conflicts(database):
     assert error.value.status == 409
 
 
-def test_catchup_preserves_every_day_and_policy_period(database):
+def test_catchup_preserves_every_day_and_policy_period(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     enqueue(p, "policy_vote", "industrial")
     age_world(days=3)
@@ -161,7 +175,8 @@ def test_ledger_enforces_no_overdraft_and_duplicate_event(database):
         service.entry(conn, p["city_id"], 1, "genesis", f"genesis:{p['city_id']}", database_now(conn))
 
 
-def test_insufficient_upgrade_has_no_partial_effects(database):
+def test_insufficient_upgrade_has_no_partial_effects(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     enqueue(p)
     with transaction() as conn:
@@ -232,6 +247,69 @@ def test_exact_cutoff_rejects_order_and_runs_tick(database, monkeypatch):
     accepted = enqueue(p)
     assert accepted["target_tick"] == 2
     assert accepted["submitted_at"] == due
+
+
+def test_distinct_cities_settle_concurrently_without_global_lock(database):
+    first, second = player("A"), player("B")
+    with transaction() as conn:
+        now = database_now(conn)
+        conn.execute("UPDATE cities SET created_at=%s, settled_at=%s", (now - timedelta(seconds=60), now - timedelta(seconds=60)))
+    monkeypatch_now = now
+    from app import service as svc
+    original = svc.database_now
+    svc.database_now = lambda conn: monkeypatch_now
+    try:
+        def read(p):
+            with transaction() as conn:
+                return read_city(conn, p["city_id"], p["player_id"])
+        # Two distinct cities, read concurrently: only a per-city lock is taken now,
+        # so neither serializes on the other, yet each settles exactly once.
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            list(pool.map(read, [first, second, first, second, first, second]))
+    finally:
+        svc.database_now = original
+    with transaction() as conn:
+        for p in (first, second):
+            n = conn.execute(
+                "SELECT count(*) AS n FROM resource_ledger WHERE city_id=%s AND reason='production'",
+                (p["city_id"],),
+            ).fetchone()["n"]
+            assert n == 1  # 60s at rate 10 -> one production entry, no duplicates.
+            assert balance(conn, p["city_id"]) == 100000 + 600
+
+
+def test_materialized_balance_equals_ledger_sum(database):
+    first, second = player("A"), player("B")
+    enqueue(first)
+    enqueue(first, "policy_vote", "industrial")
+    enqueue(second)
+    age_world(days=2)
+    catch_up()
+    with transaction() as conn:
+        # Read materializes maturing production; equivalence must still hold after.
+        read_city(conn, first["city_id"], first["player_id"])
+        cities = conn.execute("SELECT id, balance_milli FROM cities ORDER BY id").fetchall()
+        for city in cities:
+            ledger_sum = int(conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS s FROM resource_ledger WHERE city_id = %s",
+                (city["id"],),
+            ).fetchone()["s"])
+            assert int(city["balance_milli"]) == ledger_sum
+            assert balance(conn, city["id"]) == ledger_sum
+            assert ledger_sum > 0
+
+
+def test_materialized_balance_rejects_overdraft_without_scanning_ledger(database):
+    p = player()
+    with transaction() as conn:
+        service.entry(conn, p["city_id"], -100000, "upgrade", "spend-all", database_now(conn))
+        assert balance(conn, p["city_id"]) == 0
+    with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
+        service.entry(conn, p["city_id"], -1, "upgrade", "overdraft", database_now(conn))
+    with transaction() as conn:
+        assert int(conn.execute(
+            "SELECT balance_milli FROM cities WHERE id = %s", (p["city_id"],)
+        ).fetchone()["balance_milli"]) == 0
 
 
 def test_multiple_players_share_one_election(database):
