@@ -4,10 +4,11 @@ Generation is one-shot: the map is written once and then immutable (DB triggers 
 The economic world (policy, ticks, ledger) is untouched here; this module only owns geography.
 
 `read_map` is a RENDER model, not a dump of the table. It returns what the client actually
-draws -- the land, the sea ice that forms the polar caps, and the river network already
-resolved into segments -- plus a neighbour count instead of the full adjacency array. Open
-ocean is a smooth shell on the client, so its polygons would be dead weight. The table keeps
-the complete geography either way.
+draws -- the land, the sea ice that forms the polar caps, the ring of shallow sea that gives
+every coast its continental shelf, and the river network already resolved into segments --
+plus a neighbour count instead of the full adjacency array. Open ocean beyond the shelf is a
+smooth shell on the client, so its polygons would be dead weight. The table keeps the
+complete geography either way.
 """
 from psycopg.types.json import Jsonb
 
@@ -106,14 +107,22 @@ def read_map(conn) -> dict:
     total = int(conn.execute(
         "SELECT count(*) AS n FROM world_tiles WHERE map_id = 1"
     ).fetchone()["n"])
-    # Land, plus the sea ice that makes the polar caps read as caps rather than open water.
+    # Land, the sea ice that makes the polar caps read as caps rather than open water, and
+    # one ring of sea around every coast: shaded by its real depth, that ring is the shelf
+    # that stops continents looking like plates dropped on flat blue.
     tiles = conn.execute(
-        """SELECT id, lat, lon, cx, cy, cz, elevation, temperature, rainfall, biome,
-                  nx, ny, nz, river_flow, landmass_size,
-                  COALESCE(array_length(neighbors, 1), 0) AS neighbor_count, polygon
-           FROM world_tiles
-           WHERE map_id = 1 AND (elevation >= 0 OR biome = 'sea_ice')
-           ORDER BY id"""
+        """WITH shelf AS (
+               SELECT DISTINCT unnest(neighbors) AS id
+               FROM world_tiles WHERE map_id = 1 AND elevation >= 0
+           )
+           SELECT t.id, t.lat, t.lon, t.cx, t.cy, t.cz, t.elevation, t.temperature,
+                  t.rainfall, t.biome, t.nx, t.ny, t.nz, t.river_flow, t.landmass_size,
+                  COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon
+           FROM world_tiles t
+           WHERE t.map_id = 1
+             AND (t.elevation >= 0 OR t.biome = 'sea_ice'
+                  OR t.id IN (SELECT id FROM shelf))
+           ORDER BY t.id"""
     ).fetchall()
     land_count = sum(1 for t in tiles if t["elevation"] >= 0 and t["biome"] != "lake")
     return {

@@ -324,8 +324,14 @@ def test_world_map_generates_persists_and_is_immutable(database):
     assert set(sample) >= {"id", "lat", "lon", "center", "normal", "biome", "river_flow",
                            "landmass_size", "neighbor_count", "polygon"}
     assert len(sample["polygon"]) in (5, 6)
-    # The render model carries land and the polar sea ice, never the open ocean.
-    assert all(t["elevation"] >= 0 or t["biome"] == "sea_ice" for t in world["tiles"])
+    # The render model carries land, the polar sea ice and the shelf ring around every
+    # coast -- never the open ocean beyond it.
+    by_id = {t["id"]: t for t in world["tiles"]}
+    assert any(t["elevation"] >= 0 for t in world["tiles"])
+    for t in world["tiles"]:
+        if t["elevation"] >= 0 or t["biome"] == "sea_ice":
+            continue
+        assert t["biome"] == "ocean"  # deep water only reaches the payload as shelf
     # Rivers arrive as ready-to-draw segments keyed to the same relief the client renders.
     assert world["relief_gain"] > 0 and world["elevation_max"] > 0
     assert all({"a", "b", "flow"} <= set(r) for r in world["rivers"])

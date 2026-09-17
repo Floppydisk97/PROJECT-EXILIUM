@@ -44,19 +44,54 @@ export const BIOMES: Record<string, { label: string; color: number }> = {
   sea_ice: { label: "Banchisa", color: 0xd3e3ef },
   ice_sheet: { label: "Calotta glaciale", color: 0xf3f8fc },
   snow_cap: { label: "Vetta innevata", color: 0xe9eef3 },
-  bare_rock: { label: "Roccia d'alta quota", color: 0xa3a19b },
-  tundra: { label: "Tundra", color: 0xa3a48c },
+  bare_rock: { label: "Roccia d'alta quota", color: 0x9a9287 },
+  tundra: { label: "Tundra", color: 0x9ea089 },
   boreal_forest: { label: "Foresta boreale", color: 0x548a62 },
   temperate_forest: { label: "Foresta temperata", color: 0x6d9a4e },
   temperate_swamp: { label: "Palude temperata", color: 0x59886d },
-  arid_shrubland: { label: "Steppa arida", color: 0xb6a86c },
-  desert: { label: "Deserto", color: 0xe2cb8e },
+  arid_shrubland: { label: "Steppa arida", color: 0xb3a263 },
+  desert: { label: "Deserto", color: 0xdcc084 },
   tropical_rainforest: { label: "Foresta pluviale", color: 0x549f45 },
   tropical_swamp: { label: "Palude tropicale", color: 0x568f6f },
 };
 
 // Water never hosts a colony, even where a lake sits above sea level.
 export const WATER_BIOMES = new Set(["ocean", "lake", "sea_ice"]);
+
+// The shelf ring is shaded by its real depth, from the surf line out to where the sea floor
+// drops away; past that the client draws open ocean as one smooth shell.
+export const SHELF_SHALLOW = 0x6ba3c4;
+// The deep end of the shelf is exactly the open-ocean colour, so the ring fades into the
+// sea instead of ending on a seam.
+export const OCEAN_DEEP = 0x35688f;
+export const SHELF_DEEP = OCEAN_DEEP;
+export const SHELF_MAX_DEPTH = 900;
+
+export const RIVER_MINOR = 0x4e9ed0;
+export const RIVER_MAJOR = 0x8ad6f5;
+
+// How much procedural grain a surface takes up close: canopy and broken rock are noisy,
+// snow and water are nearly smooth. Keeps a biome from reading as one flat plastic colour.
+const GRAIN: Record<string, number> = {
+  tropical_rainforest: 0.38,
+  temperate_forest: 0.36,
+  boreal_forest: 0.36,
+  tropical_swamp: 0.24,
+  temperate_swamp: 0.24,
+  bare_rock: 0.36,
+  arid_shrubland: 0.22,
+  tundra: 0.22,
+  desert: 0.15,
+  snow_cap: 0.10,
+  ice_sheet: 0.08,
+  sea_ice: 0.08,
+  lake: 0.05,
+  ocean: 0.05,
+};
+
+export function biomeGrain(id: string): number {
+  return GRAIN[id] ?? 0.2;
+}
 
 export function biomeLabel(id: string): string {
   return BIOMES[id]?.label ?? id;

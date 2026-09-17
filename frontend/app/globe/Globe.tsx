@@ -8,7 +8,8 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import {
-  biomeColor, biomeLabel, landmassLabel, WATER_BIOMES, type Tile, type WorldMap,
+  biomeColor, biomeGrain, biomeLabel, landmassLabel, OCEAN_DEEP, RIVER_MAJOR, RIVER_MINOR,
+  SHELF_DEEP, SHELF_MAX_DEPTH, SHELF_SHALLOW, WATER_BIOMES, type Tile, type WorldMap,
 } from "./biomes";
 
 type Status = "loading" | "waking" | "ready" | "ungenerated" | "error";
@@ -20,8 +21,13 @@ const FETCH_ATTEMPTS = 3;
 const FETCH_TIMEOUT_MS = 120_000;
 const WAKE_NOTICE_MS = 8_000;
 
-const SEA = 0.995;      // smooth ocean shell
-const ICE = 0.9975;     // sea ice floats just above the ocean shell
+// Water sits just under land at elevation zero. The gap used to be 0.005 of a radius --
+// thirty kilometres of cliff under every beach; now a coast only rises as far as its own
+// ground does, which is what makes a shoreline read as a shoreline.
+const SEA = 0.9982;     // smooth open-ocean shell, beyond the shelf
+const SHELF = 0.9988;   // shallow sea around every coast, above that shell
+const ICE = 0.9994;     // sea ice floats just above the water
+const CLIFF_SHADE = 0.55;  // how much darker a coastal wall is than the ground on top of it
 const CLOUDS = 1.082;   // cloud deck, just above the tallest peaks
 const RIM = 1.11;       // atmospheric rim drawn over the planet's own limb
 const HALO = 1.5;       // outer halo shell; its falloff ends well inside it
@@ -31,9 +37,54 @@ const NORMAL_BLEND = 0.62; // how far terrain normals lean off radial when shadi
 // being lit by the scene: a map should stay readable everywhere, so the darkest slope is
 // still bright and the limb never falls into shadow. Only the sea uses the scene lights.
 const TERRAIN_LIGHT = new THREE.Vector3(0.52, -0.55, 0.65).normalize();
-const SHADE_FLOOR = 0.80;   // brightness of a slope facing fully away from the light
-const SHADE_RANGE = 0.34;   // extra brightness a slope facing straight into it picks up
-const ALTITUDE_TINT = 0.24; // how much brighter the highest ground is than the lowest
+const SHADE_FLOOR = 0.76;   // brightness of a slope facing fully away from the light
+const SHADE_RANGE = 0.40;   // extra brightness a slope facing straight into it picks up
+const ALTITUDE_TINT = 0.16; // how much brighter the highest ground is than the lowest
+
+// Rivers are ribbons, not hairlines: a trunk carrying ten times its headwaters' water has
+// to look like it. Widths are in unit-sphere units; a tile is roughly 0.025 across.
+const RIVER_LIFT = 1.0022;
+const RIVER_MIN_HALF = 0.0013;
+const RIVER_MAX_HALF = 0.0042;
+const RIVER_MIN_FLOW = 20;   // matches worldgen.RIVER_MIN_FLOW, the smallest reach sent
+const RIVER_FULL_FLOW = 240; // flow at which a river is drawn at full width
+
+// The hex grid is a tool for picking a tile, not scenery: it fades out at a distance where
+// 24k outlines would only moire, and firms up as the camera closes in.
+const GRID_NEAR = 0.15;
+const GRID_FAR = 0.045;
+
+// Unlit terrain: the hillshade is already baked into the vertex colours, and the fragment
+// shader only adds a fine grain so a biome is not one flat plastic colour up close.
+const TERRAIN_VERT = `
+  attribute vec3 color;
+  attribute float grain;
+  varying vec3 vCol; varying vec3 vPos; varying float vGrain;
+  void main() {
+    vCol = color; vPos = position; vGrain = grain;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }`;
+
+const TERRAIN_FRAG = `
+  varying vec3 vCol; varying vec3 vPos; varying float vGrain;
+  float hash(vec3 p){
+    p = fract(p * 0.3183099 + vec3(0.71, 0.13, 0.37));
+    p *= 23.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+  float noise(vec3 x){
+    vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
+                   mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                   mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+  }
+  void main() {
+    // Three octaves is enough texture to read as ground and cheap enough for a phone.
+    vec3 p = vPos * 190.0;
+    float n = noise(p) * 0.55 + noise(p * 2.3) * 0.3 + noise(p * 5.1) * 0.15;
+    gl_FragColor = vec4(vCol * (1.0 + (n - 0.5) * vGrain), 1.0);
+  }`;
 
 // The planet's north pole is +Z, so the camera's up axis is +Z and the default view sits
 // over the equator: north ends up at the top of the screen, like a globe on a stand.
@@ -157,23 +208,39 @@ export default function Globe() {
         new THREE.MeshBasicMaterial({ color: 0x24486b }),
       ));
 
+      // Unlit like the terrain: the shelf tiles are drawn in flat colour, so a lit shell
+      // underneath them would put the two in different colour spaces and leave a seam
+      // around every coast.
       scene.add(new THREE.Mesh(
         new THREE.SphereGeometry(SEA, 128, 128),
-        new THREE.MeshStandardMaterial({ color: 0x35688f, roughness: 0.6, metalness: 0.03 }),
+        new THREE.MeshBasicMaterial({ color: OCEAN_DEEP }),
       ));
 
-      // Terrain: land hexes plus the sea ice that forms the polar caps.
+      // Terrain: land hexes, the sea ice of the polar caps, and the shelf ring of shallow
+      // sea the backend sends around every coast.
       const positions: number[] = [];
-      const normals: number[] = [];
       const colors: number[] = [];
+      const grains: number[] = [];
       const borders: number[] = [];
       const faceTile: number[] = [];
       const tilesById = new Map<number, Tile>();
       const tmp = new THREE.Color();
+      // three.js already takes a hex as sRGB and stores it in the renderer's working space,
+      // so these are converted once and only once; converting again would darken the whole
+      // palette and only show up where a flat material sits next to a vertex colour.
+      const shelfShallow = new THREE.Color(SHELF_SHALLOW);
+      const shelfDeep = new THREE.Color(SHELF_DEEP);
       const shadeNormal = new THREE.Vector3();
+
+      // A polygon edge owned by exactly one land tile is a shoreline. The server rounds
+      // every vertex before sending it, so neighbouring tiles quote identical numbers and
+      // these keys match exactly.
+      type Edge = { tile: Tile; a: number[]; b: number[]; shared: boolean };
+      const edges = new Map<string, Edge>();
 
       for (const tile of map.tiles) {
         tilesById.set(tile.id, tile);
+        const dry = tile.elevation >= 0;
         const r = tileRadius(tile);
         const c = tile.center;
         // Leaning the terrain normal part-way back towards the radial one keeps ranges
@@ -186,13 +253,26 @@ export default function Globe() {
           )
           .normalize();
         const water = WATER_BIOMES.has(tile.biome);
-        // Height brightens the ground on top of the hillshade, so a highland reads as a
-        // highland even where it happens to face away from the light.
-        const altitude = Math.min(Math.max(tile.elevation, 0), map.elevation_max) / map.elevation_max;
-        const shade = (SHADE_FLOOR + SHADE_RANGE * Math.max(0, n.dot(TERRAIN_LIGHT)))
-          * (1 + ALTITUDE_TINT * altitude)
-          * (1 + tileJitter(tile.id));
-        tmp.setHex(biomeColor(tile.biome)).convertSRGBToLinear().multiplyScalar(shade);
+        if (dry) {
+          // Height brightens the ground on top of the hillshade, so a highland reads as a
+          // highland even where it happens to face away from the light.
+          const altitude =
+            Math.min(Math.max(tile.elevation, 0), map.elevation_max) / map.elevation_max;
+          const shade = (SHADE_FLOOR + SHADE_RANGE * Math.max(0, n.dot(TERRAIN_LIGHT)))
+            * (1 + ALTITUDE_TINT * altitude)
+            * (1 + tileJitter(tile.id));
+          tmp.setHex(biomeColor(tile.biome)).multiplyScalar(shade);
+        } else if (tile.biome === "ocean") {
+          // Shelf: real depth, on a curve that lets the pale water fade back into the open
+          // sea quickly -- a shelf should read as shallow water, not as an outline stroke.
+          const depth = Math.min(1, -tile.elevation / SHELF_MAX_DEPTH);
+          tmp.copy(shelfShallow).lerp(shelfDeep, Math.pow(depth, 0.85));
+          tmp.multiplyScalar(1 + tileJitter(tile.id) * 0.12);
+        } else {
+          tmp.setHex(biomeColor(tile.biome))
+            .multiplyScalar(SHADE_FLOOR + SHADE_RANGE * Math.max(0, n.dot(TERRAIN_LIGHT)));
+        }
+        const grain = biomeGrain(tile.biome);
         const ring = tile.polygon;
         for (let i = 0; i < ring.length; i++) {
           const a = ring[i];
@@ -200,53 +280,123 @@ export default function Globe() {
           positions.push(c[0] * r, c[1] * r, c[2] * r);
           positions.push(a[0] * r, a[1] * r, a[2] * r);
           positions.push(b[0] * r, b[1] * r, b[2] * r);
-          // One terrain normal per tile: flat-shaded hexes whose facing follows the real
-          // slope, which is what makes ranges catch the light and valleys fall into shadow.
-          for (let k = 0; k < 3; k++) normals.push(n.x, n.y, n.z);
+          // The slope only ever reaches the GPU as colour: the hillshade above already
+          // used it, so shipping a normal attribute too would be megabytes of dead weight.
           for (let k = 0; k < 3; k++) colors.push(tmp.r, tmp.g, tmp.b);
+          for (let k = 0; k < 3; k++) grains.push(grain);
           faceTile.push(tile.id);
-          // Water has no parcels to outline; a grid over the ice caps just reads as an artefact.
-          if (!water) borders.push(a[0] * r, a[1] * r, a[2] * r, b[0] * r, b[1] * r, b[2] * r);
+          // Water has no parcels to outline; a grid over the sea just reads as an artefact.
+          if (dry && !water) borders.push(a[0] * r, a[1] * r, a[2] * r, b[0] * r, b[1] * r, b[2] * r);
+          if (dry) {
+            const ka = `${a[0]},${a[1]},${a[2]}`;
+            const kb = `${b[0]},${b[1]},${b[2]}`;
+            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+            const seen = edges.get(key);
+            if (seen) seen.shared = true;
+            else edges.set(key, { tile, a, b, shared: false });
+          }
         }
       }
 
       const geom = new THREE.BufferGeometry();
       geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      geom.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
       geom.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-      // Unlit: the shading is already in the vertex colours, which is what keeps the map
-      // evenly readable instead of half-lost on the night side of a physical light.
-      const land = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ vertexColors: true }));
-      scene.add(land);
+      geom.setAttribute("grain", new THREE.Float32BufferAttribute(grains, 1));
+      const terrain = new THREE.Mesh(geom, new THREE.ShaderMaterial({
+        vertexShader: TERRAIN_VERT,
+        fragmentShader: TERRAIN_FRAG,
+      }));
+      scene.add(terrain);
+
+      // Cliffs: every shoreline edge drops a wall to the water, so continents stand on the
+      // sea instead of lying flat on it. Drawn double-sided: the ring winding varies.
+      const cliffPositions: number[] = [];
+      const cliffColors: number[] = [];
+      const coastLines: number[] = [];
+      const cliffColor = new THREE.Color();
+      for (const edge of edges.values()) {
+        if (edge.shared) continue;
+        const top = tileRadius(edge.tile);
+        const { a, b } = edge;
+        const at = [a[0] * top, a[1] * top, a[2] * top];
+        const bt = [b[0] * top, b[1] * top, b[2] * top];
+        // The foot goes to the open-ocean shell, below both the shelf and the sea ice, so
+        // no gap can open between the wall and whatever water meets it.
+        const af = [a[0] * SEA, a[1] * SEA, a[2] * SEA];
+        const bf = [b[0] * SEA, b[1] * SEA, b[2] * SEA];
+        cliffPositions.push(...at, ...bt, ...bf, ...at, ...bf, ...af);
+        cliffColor.setHex(biomeColor(edge.tile.biome))
+          .multiplyScalar(CLIFF_SHADE);
+        for (let k = 0; k < 6; k++) cliffColors.push(cliffColor.r, cliffColor.g, cliffColor.b);
+        coastLines.push(...at, ...bt);
+      }
+      const cliffGeom = new THREE.BufferGeometry();
+      cliffGeom.setAttribute("position", new THREE.Float32BufferAttribute(cliffPositions, 3));
+      cliffGeom.setAttribute("color", new THREE.Float32BufferAttribute(cliffColors, 3));
+      scene.add(new THREE.Mesh(cliffGeom, new THREE.MeshBasicMaterial({
+        vertexColors: true, side: THREE.DoubleSide,
+      })));
+
+      const coastGeom = new THREE.BufferGeometry();
+      coastGeom.setAttribute("position", new THREE.Float32BufferAttribute(coastLines, 3));
+      scene.add(new THREE.LineSegments(coastGeom, new THREE.LineBasicMaterial({
+        color: 0x14303f, transparent: true, opacity: 0.35,
+      })));
 
       const borderGeom = new THREE.BufferGeometry();
       borderGeom.setAttribute("position", new THREE.Float32BufferAttribute(borders, 3));
-      scene.add(new THREE.LineSegments(
-        borderGeom,
-        new THREE.LineBasicMaterial({ color: 0x14301f, transparent: true, opacity: 0.11 }),
-      ));
+      const borderMat = new THREE.LineBasicMaterial({
+        color: 0x14301f, transparent: true, opacity: GRID_FAR,
+      });
+      scene.add(new THREE.LineSegments(borderGeom, borderMat));
 
       // Rivers: the backend already paired each reach with the tile it drains into, so this
-      // is a plain segment list. Major rivers are drawn brighter than their headwaters.
-      const riverGeoms: THREE.BufferGeometry[] = [];
-      const reaches: Record<"minor" | "major", number[]> = { minor: [], major: [] };
+      // is a plain list of segments, widened into ribbons in proportion to what they carry.
+      const riverPositions: number[] = [];
+      const riverColors: number[] = [];
+      const head = new THREE.Vector3();
+      const foot = new THREE.Vector3();
+      const along = new THREE.Vector3();
+      const across = new THREE.Vector3();
+      const radial = new THREE.Vector3();
+      const riverColor = new THREE.Color();
+      const riverThin = new THREE.Color(RIVER_MINOR);
+      const riverWide = new THREE.Color(RIVER_MAJOR);
       for (const r of map.rivers) {
-        const ra = relief(r.ae) * 1.0015;
-        const rb = relief(r.be) * 1.0015;
-        const into = r.flow >= 70 ? reaches.major : reaches.minor;
-        into.push(r.a[0] * ra, r.a[1] * ra, r.a[2] * ra, r.b[0] * rb, r.b[1] * rb, r.b[2] * rb);
+        const ra = relief(r.ae) * RIVER_LIFT;
+        const rb = relief(r.be) * RIVER_LIFT;
+        head.set(r.a[0] * ra, r.a[1] * ra, r.a[2] * ra);
+        foot.set(r.b[0] * rb, r.b[1] * rb, r.b[2] * rb);
+        along.subVectors(foot, head);
+        if (along.lengthSq() < 1e-12) continue;
+        along.normalize();
+        radial.copy(head).normalize();
+        across.crossVectors(along, radial);
+        if (across.lengthSq() < 1e-12) continue;
+        const grade = Math.min(1, Math.max(0, (r.flow - RIVER_MIN_FLOW) / RIVER_FULL_FLOW));
+        const half = RIVER_MIN_HALF + (RIVER_MAX_HALF - RIVER_MIN_HALF) * grade;
+        across.normalize().multiplyScalar(half);
+        // Overshoot both ends by a half-width so consecutive reaches meet without a notch.
+        head.addScaledVector(along, -half);
+        foot.addScaledVector(along, half);
+        const p1 = head.clone().sub(across);
+        const p2 = head.clone().add(across);
+        const p3 = foot.clone().add(across);
+        const p4 = foot.clone().sub(across);
+        riverPositions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, p3.x, p3.y, p3.z);
+        riverPositions.push(p1.x, p1.y, p1.z, p3.x, p3.y, p3.z, p4.x, p4.y, p4.z);
+        riverColor.copy(riverThin).lerp(riverWide, grade);
+        for (let k = 0; k < 6; k++) riverColors.push(riverColor.r, riverColor.g, riverColor.b);
       }
-      for (const [kind, points] of Object.entries(reaches)) {
-        if (!points.length) continue;
-        const g = new THREE.BufferGeometry();
-        g.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
-        riverGeoms.push(g);
-        scene.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-          color: kind === "major" ? 0x59b4e8 : 0x4e9ed0,
-          transparent: true,
-          opacity: kind === "major" ? 0.9 : 0.6,
-        })));
-      }
+      const riverGeom = new THREE.BufferGeometry();
+      riverGeom.setAttribute("position", new THREE.Float32BufferAttribute(riverPositions, 3));
+      riverGeom.setAttribute("color", new THREE.Float32BufferAttribute(riverColors, 3));
+      scene.add(new THREE.Mesh(riverGeom, new THREE.MeshBasicMaterial({
+        vertexColors: true, side: THREE.DoubleSide,
+        // Ribbons lie on ground that steps tile by tile; the offset keeps them from being
+        // nibbled by the terrain they run over.
+        polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+      })));
 
       // Drifting procedural cloud deck.
       const cloudMat = new THREE.ShaderMaterial({
@@ -300,7 +450,7 @@ export default function Globe() {
 
       // Atmospheric rim over the planet's own limb (kills the hard inner edge).
       const rimMat = new THREE.ShaderMaterial({
-        uniforms: { uColor: { value: new THREE.Color(0x9fd2ff) }, uPower: { value: 3.4 }, uStrength: { value: 0.16 } },
+        uniforms: { uColor: { value: new THREE.Color(0x9fd2ff) }, uPower: { value: 3.4 }, uStrength: { value: 0.11 } },
         vertexShader: VIEW_VERT,
         fragmentShader: `
           varying vec3 vP; varying vec3 vN; varying vec3 vLocal;
@@ -321,7 +471,7 @@ export default function Globe() {
           uInner: { value: 1.04 },
           uOuter: { value: HALO_EDGE },
           uColor: { value: new THREE.Color(0x6fb4ff) },
-          uStrength: { value: 0.16 },
+          uStrength: { value: 0.11 },
         },
         vertexShader: VIEW_VERT,
         fragmentShader: `
@@ -378,7 +528,7 @@ export default function Globe() {
         pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(pointer, camera);
-        const hit = raycaster.intersectObject(land)[0];
+        const hit = raycaster.intersectObject(terrain)[0];
         if (hit && hit.faceIndex != null) {
           const tile = tilesById.get(faceTile[hit.faceIndex]) ?? null;
           setSelected(tile);
@@ -417,7 +567,14 @@ export default function Globe() {
         sunView.copy(sun.position).normalize().transformDirection(camera.matrixWorldInverse);
         cloudMat.uniforms.uSun.value.copy(sunView);
         haloMat.uniforms.uCenter.value.set(0, 0, 0).applyMatrix4(camera.matrixWorldInverse);
-        halo.visible = camera.position.length() > HALO_EDGE + 0.15; // hide once "inside" the air
+        const distance = camera.position.length();
+        halo.visible = distance > HALO_EDGE + 0.15; // hide once "inside" the air
+        // The grid earns its keep when you are close enough to pick a tile, and only
+        // moires when you are not.
+        borderMat.opacity = THREE.MathUtils.clamp(
+          GRID_NEAR + (GRID_FAR - GRID_NEAR) * ((distance - controls.minDistance) / 1.9),
+          GRID_FAR, GRID_NEAR,
+        );
         composer.render();
       };
       animate();
@@ -431,9 +588,7 @@ export default function Globe() {
         controls.dispose();
         composer.dispose();
         renderer.dispose();
-        geom.dispose();
-        borderGeom.dispose();
-        riverGeoms.forEach((g) => g.dispose());
+        [geom, cliffGeom, coastGeom, borderGeom, riverGeom].forEach((g) => g.dispose());
         if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       } });
     })();
