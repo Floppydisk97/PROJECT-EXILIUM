@@ -9,7 +9,7 @@ export type Tile = {
   temperature: number;
   rainfall: number;
   biome: string;
-  neighbors: number[];
+  neighbor_count: number;
   polygon: [number, number, number][];
 };
 
@@ -19,6 +19,7 @@ export type WorldMap = {
   frequency: number;
   sea_level: number;
   tile_count: number;
+  land_count: number;
   tiles: Tile[];
 };
 
