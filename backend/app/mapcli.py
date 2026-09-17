@@ -5,6 +5,7 @@
 import argparse
 import json
 
+from app import worldgen
 from app.db import transaction
 from app.mapservice import generate_and_store
 
@@ -12,7 +13,8 @@ from app.mapservice import generate_and_store
 def main():
     parser = argparse.ArgumentParser(description="Generate the singleton world map (one-shot)")
     parser.add_argument("seed", help="Deterministic generation seed for the planet")
-    parser.add_argument("--frequency", type=int, default=12, help="Geodesic subdivision (2-48)")
+    parser.add_argument("--frequency", type=int, default=worldgen.PRODUCTION_FREQUENCY,
+                        help="Geodesic subdivision (2-48); default sizes the world for 5000+ players")
     args = parser.parse_args()
     with transaction() as conn:
         summary = generate_and_store(conn, args.seed, args.frequency)

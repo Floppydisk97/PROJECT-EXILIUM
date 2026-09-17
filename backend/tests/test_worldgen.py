@@ -45,6 +45,15 @@ def test_climate_is_physically_ordered():
     assert 0.5 < ocean < 0.75  # a water world, not fully flooded
 
 
+def test_production_frequency_supports_the_player_capacity():
+    world = worldgen.generate("Hesperia-01", frequency=worldgen.PRODUCTION_FREQUENCY)
+    assert len(world.tiles) == 10 * worldgen.PRODUCTION_FREQUENCY ** 2 + 2
+    land = sum(1 for t in world.tiles if t.elevation >= 0)
+    # One player settles one land tile; the world must seat at least the target capacity.
+    assert land >= worldgen.MIN_PLAYER_CAPACITY
+    assert sum(1 for t in world.tiles if len(t.polygon) == 5) == 12
+
+
 def test_invalid_parameters_are_rejected():
     with pytest.raises(ValueError):
         worldgen.generate("Church", frequency=1)

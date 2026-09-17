@@ -3,6 +3,7 @@ from uuid import UUID
 
 import psycopg
 from fastapi import Depends, FastAPI, Header, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -12,6 +13,8 @@ from app.mapservice import read_map
 from app.service import DomainError, owned_city, read_city, submit_order, token_hash
 
 app = FastAPI(title="Project Exilium", version="0.1.0")
+# The world map is several MB of JSON; compress it (and any other large payload).
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 bearer = HTTPBearer(auto_error=False)
 
 

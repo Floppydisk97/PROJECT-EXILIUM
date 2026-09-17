@@ -1,28 +1,44 @@
+import { gzipSync } from "node:zlib";
+
 // Proxies the authoritative planet map from the internal API to the browser.
-// The map is immutable once generated, so it is safe to cache for a long time.
+// The map is immutable once generated, so a successful response is cached in this
+// process and served pre-gzipped: the raw payload is several MB, gzip cuts it to ~1 MB.
+export const runtime = "nodejs";
+
 const API = process.env.API_INTERNAL_URL ?? "http://127.0.0.1:8000";
 
-export async function GET() {
-  try {
-    const upstream = await fetch(`${API}/world/map`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(15000),
-    });
-    if (upstream.status === 404) {
-      return Response.json({ detail: "World map not generated" }, { status: 404 });
-    }
-    if (!upstream.ok) {
+let cache: { gz: ArrayBuffer; raw: string } | null = null;
+
+export async function GET(request: Request) {
+  if (!cache) {
+    try {
+      const upstream = await fetch(`${API}/world/map`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(20000),
+      });
+      if (upstream.status === 404) {
+        return Response.json({ detail: "World map not generated" }, { status: 404 });
+      }
+      if (!upstream.ok) {
+        return Response.json({ detail: "Map temporarily unavailable" }, { status: 503 });
+      }
+      const raw = await upstream.text();
+      const buf = gzipSync(raw);
+      // A standalone ArrayBuffer is an unambiguous BodyInit across TS lib versions.
+      const gz = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+      cache = { raw, gz };
+    } catch {
       return Response.json({ detail: "Map temporarily unavailable" }, { status: 503 });
     }
-    const body = await upstream.text();
-    return new Response(body, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
-      },
-    });
-  } catch {
-    return Response.json({ detail: "Map temporarily unavailable" }, { status: 503 });
   }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
+    Vary: "Accept-Encoding",
+  };
+  if ((request.headers.get("accept-encoding") ?? "").includes("gzip")) {
+    return new Response(cache.gz, { status: 200, headers: { ...headers, "Content-Encoding": "gzip" } });
+  }
+  return new Response(cache.raw, { status: 200, headers });
 }

@@ -19,6 +19,13 @@ from dataclasses import dataclass
 WORLD_NAME = "Hesperia"
 GENERATOR_VERSION = 1
 
+# Production size. Sea level sits at the 62nd elevation percentile, so ~38% of tiles are
+# land; one player settles one land tile. f=40 -> 16002 tiles, ~6080 land, which supports
+# well over the 5000-player target with headroom. Raising frequency, not lowering ocean,
+# keeps the water-world look while adding capacity.
+PRODUCTION_FREQUENCY = 40
+MIN_PLAYER_CAPACITY = 5000
+
 # Biome ids are stable identifiers; the frontend maps them to colours and labels.
 BIOMES = (
     "ocean", "sea_ice", "ice_sheet", "tundra", "boreal_forest",
