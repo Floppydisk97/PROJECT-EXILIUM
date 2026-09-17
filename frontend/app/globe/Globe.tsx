@@ -11,7 +11,14 @@ import {
   biomeColor, biomeLabel, landmassLabel, WATER_BIOMES, type Tile, type WorldMap,
 } from "./biomes";
 
-type Status = "loading" | "ready" | "ungenerated" | "error";
+type Status = "loading" | "waking" | "ready" | "ungenerated" | "error";
+
+// The API sleeps on the free plan and needs the better part of a minute to come back. The
+// proxy already waits out one cold start; a phone waking a cold stack can still need more
+// than one round, so the client keeps asking rather than calling it an outage.
+const FETCH_ATTEMPTS = 3;
+const FETCH_TIMEOUT_MS = 120_000;
+const WAKE_NOTICE_MS = 8_000;
 
 const SEA = 0.995;      // smooth ocean shell
 const ICE = 0.9975;     // sea ice floats just above the ocean shell
@@ -57,23 +64,33 @@ export default function Globe() {
   const [selected, setSelected] = useState<Tile | null>(null);
   const highlightRef = useRef<((tile: Tile | null) => void) | null>(null);
   const resetViewRef = useRef<(() => void) | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let disposed = false;
     const controllers: { dispose: () => void }[] = [];
 
     (async () => {
-      let map: WorldMap;
-      try {
-        const res = await fetch("/api/map", { signal: AbortSignal.timeout(30000) });
-        if (res.status === 404) { if (!disposed) setStatus("ungenerated"); return; }
-        if (!res.ok) { if (!disposed) setStatus("error"); return; }
-        map = (await res.json()) as WorldMap;
-      } catch {
-        if (!disposed) setStatus("error");
-        return;
+      // Tell the visitor we are waiting on a sleeping server rather than leaving them on a
+      // bare "loading" that looks stuck.
+      const wakeNotice = setTimeout(() => { if (!disposed) setStatus("waking"); }, WAKE_NOTICE_MS);
+      let map: WorldMap | null = null;
+      let missing = false;
+      for (let attempt = 0; attempt < FETCH_ATTEMPTS && !disposed; attempt++) {
+        try {
+          const res = await fetch("/api/map", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+          if (res.status === 404) { missing = true; break; }
+          if (res.ok) { map = (await res.json()) as WorldMap; break; }
+        } catch {
+          // Timed out or the network blinked: fall through and try again.
+        }
+        if (attempt < FETCH_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000));
       }
-      if (disposed || !mountRef.current) return;
+      clearTimeout(wakeNotice);
+      if (disposed) return;
+      if (missing) { setStatus("ungenerated"); return; }
+      if (!map) { setStatus("error"); return; }
+      if (!mountRef.current) return;
 
       const mount = mountRef.current;
       let width = mount.clientWidth;
@@ -427,7 +444,7 @@ export default function Globe() {
       highlightRef.current = null;
       resetViewRef.current = null;
     };
-  }, []);
+  }, [reloadKey]);
 
   const water = selected ? WATER_BIOMES.has(selected.biome) : false;
 
@@ -465,8 +482,22 @@ export default function Globe() {
       {status !== "ready" && (
         <div className="globe-overlay" role="status">
           {status === "loading" && <p>Caricamento del pianeta…</p>}
+          {status === "waking" && (
+            <p>Risveglio del server…<br />
+              <small>Sul piano gratuito la prima apertura può richiedere fino a un minuto.</small>
+            </p>
+          )}
           {status === "ungenerated" && <p>Il mondo non è ancora stato generato.</p>}
-          {status === "error" && <p>Server temporaneamente non disponibile.</p>}
+          {status === "error" && (
+            <p>
+              Server non raggiungibile.<br />
+              <small>Si era addormentato e non si è ancora ripreso.</small><br />
+              <button type="button" className="globe-retry"
+                      onClick={() => { setStatus("loading"); setReloadKey((k) => k + 1); }}>
+                Riprova
+              </button>
+            </p>
+          )}
         </div>
       )}
 
