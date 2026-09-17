@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Hesperia — mondo persistente di Project Exilium. Seleziona il sito di atterraggio.">
+<title>Hesperia</title>
+<style>
+  :root {
+    --void: #05070d;
+    --panel: rgba(13, 19, 29, 0.88);
+    --edge: rgba(150, 170, 200, 0.22);
+    --text: #e2e8f2;
+    --muted: #93a1b5;
+    --gold: #ffd34d;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--void);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; touch-action: none; }
+
+  .title {
+    position: fixed; top: calc(16px + env(safe-area-inset-top, 0px)); left: 50%;
+    transform: translateX(-50%); margin: 0; text-align: center;
+    font-family: "Chakra Petch", system-ui, sans-serif;
+    font-weight: 600; font-size: clamp(16px, 2.4vw, 24px); letter-spacing: 0.04em;
+    text-shadow: 0 1px 10px rgba(0, 0, 0, 0.85); pointer-events: none; white-space: nowrap;
+  }
+  .title small { display: block; font-weight: 400; font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+
+  .panel {
+    position: fixed; top: calc(78px + env(safe-area-inset-top, 0px)); left: 16px;
+    width: min(300px, calc(100vw - 32px));
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+    padding: 14px 16px; backdrop-filter: blur(8px); box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+  }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .panel-head b { font-family: "Chakra Petch", system-ui, sans-serif; font-size: 18px; letter-spacing: 0.02em; }
+  .panel-head button { background: none; border: none; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; }
+  .panel-head button:hover { color: var(--text); }
+  .panel dl { display: grid; grid-template-columns: 1fr auto; gap: 7px 14px; margin: 12px 0 0; }
+  .panel dt { color: var(--muted); font-size: 13px; }
+  .panel dd { margin: 0; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  .legend {
+    position: fixed; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); left: 16px;
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+    padding: 10px 12px; display: grid; grid-template-columns: auto auto; gap: 4px 14px;
+    font-size: 12px; color: var(--muted); max-width: calc(100vw - 32px);
+  }
+  .legend span { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+  .legend i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+
+  .hint {
+    position: fixed; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); left: 50%;
+    transform: translateX(-50%); margin: 0; color: var(--muted); font-size: 12px;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85); pointer-events: none; text-align: center;
+  }
+  .overlay {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 14px; pointer-events: none;
+  }
+  @media (max-width: 560px) { .legend { display: none; } }
+</style>
+</head>
+<body>
+
+
+<div id="stage"></div>
+<h1 class="title">Hesperia<small>Seleziona il sito di atterraggio</small></h1>
+<div id="overlay" class="overlay">Caricamento del pianeta…</div>
+<aside id="panel" class="panel" hidden>
+  <div class="panel-head"><b id="p-biome"></b><button id="p-close" aria-label="Chiudi">×</button></div>
+  <dl>
+    <dt>Coordinate</dt><dd id="p-coord"></dd>
+    <dt>Temperatura media</dt><dd id="p-temp"></dd>
+    <dt>Precipitazioni</dt><dd id="p-rain"></dd>
+    <dt>Elevazione</dt><dd id="p-elev"></dd>
+    <dt>Caselle confinanti</dt><dd id="p-nb"></dd>
+  </dl>
+</aside>
+<div id="legend" class="legend" hidden></div>
+<p id="hint" class="hint" hidden>Trascina per ruotare · rotellina per zoomare · clicca una casella</p>
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<script src="hesperia-data.js"></script>
+<script>
+(function () {
+  var BIOME = {
+    ocean: { label: "Oceano", color: 0x1b3a5c },
+    sea_ice: { label: "Banchisa", color: 0x9fb8c8 },
+    ice_sheet: { label: "Calotta glaciale", color: 0xe8f1f6 },
+    tundra: { label: "Tundra", color: 0x7c7e6d },
+    boreal_forest: { label: "Foresta boreale", color: 0x2f5d43 },
+    temperate_forest: { label: "Foresta temperata", color: 0x4a7a3a },
+    temperate_swamp: { label: "Palude temperata", color: 0x3f6b57 },
+    arid_shrubland: { label: "Macchia arida", color: 0x9a8f5c },
+    desert: { label: "Deserto", color: 0xc9b079 },
+    tropical_rainforest: { label: "Foresta pluviale", color: 0x2f6b2f },
+    tropical_swamp: { label: "Palude tropicale", color: 0x37614a }
+  };
+
+  function decode() {
+    var bin = atob(window.HESPERIA_B64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return JSON.parse(pako.ungzip(bytes, { to: "string" }));
+  }
+
+  function tileRadius(elev) {
+    if (elev >= 0) return 1 + Math.min(elev, 4500) / 4500 * 0.05;
+    return 1 - Math.min(-elev, 6000) / 6000 * 0.02;
+  }
+
+  var world, biomeIds;
+  try { world = decode(); } catch (e) {
+    document.getElementById("overlay").textContent = "Impossibile caricare la mappa.";
+    return;
+  }
+  biomeIds = world.biomes;
+
+  var stage = document.getElementById("stage");
+  var W = stage.clientWidth, H = stage.clientHeight;
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x05070d);
+  var camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
+  camera.position.set(0, 0.25, 3.15);
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(W, H);
+  stage.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+  var sun = new THREE.DirectionalLight(0xfff4e0, 1.1);
+  sun.position.set(5, 3, 5); scene.add(sun);
+
+  // Starfield (fixed, outside the rotating planet).
+  var sg = new THREE.BufferGeometry(), sp = new Float32Array(1600 * 3);
+  for (var s = 0; s < 1600; s++) {
+    var d = new THREE.Vector3().randomDirection().multiplyScalar(40 + Math.random() * 25);
+    sp[s * 3] = d.x; sp[s * 3 + 1] = d.y; sp[s * 3 + 2] = d.z;
+  }
+  sg.setAttribute("position", new THREE.BufferAttribute(sp, 3));
+  scene.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0x8899bb, size: 0.14 })));
+
+  var planetGroup = new THREE.Group();
+  scene.add(planetGroup);
+  planetGroup.add(new THREE.Mesh(new THREE.SphereGeometry(0.965, 48, 48),
+    new THREE.MeshBasicMaterial({ color: 0x0a1420 })));
+
+  // Build merged tile mesh + borders; faceTile maps a picked face to its tile.
+  var pos = [], col = [], border = [], faceTile = [], c = new THREE.Color();
+  var tiles = world.tiles;
+  for (var i = 0; i < tiles.length; i++) {
+    var t = tiles[i];               // [lat,lon,cx,cy,cz,elev,temp,rain,bIdx,nCount,poly]
+    var r = tileRadius(t[5]);
+    var cx = t[2] * r, cy = t[3] * r, cz = t[4] * r;
+    var bio = biomeIds[t[8]];
+    c.setHex((BIOME[bio] || { color: 0x888888 }).color);
+    var ring = t[10];
+    for (var k = 0; k < ring.length; k++) {
+      var a = ring[k], b = ring[(k + 1) % ring.length];
+      var ax = a[0] * r, ay = a[1] * r, az = a[2] * r;
+      var bx = b[0] * r, by = b[1] * r, bz = b[2] * r;
+      pos.push(cx, cy, cz, ax, ay, az, bx, by, bz);
+      for (var m = 0; m < 3; m++) col.push(c.r, c.g, c.b);
+      faceTile.push(i);
+      border.push(ax, ay, az, bx, by, bz);
+    }
+  }
+  var geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geom.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  geom.computeVertexNormals();
+  var planet = new THREE.Mesh(geom, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  planetGroup.add(planet);
+
+  var bg = new THREE.BufferGeometry();
+  bg.setAttribute("position", new THREE.Float32BufferAttribute(border, 3));
+  planetGroup.add(new THREE.LineSegments(bg,
+    new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 })));
+
+  var highlight = null;
+  function setHighlight(t) {
+    if (highlight) { planetGroup.remove(highlight); highlight.geometry.dispose(); highlight = null; }
+    if (!t) return;
+    var r = tileRadius(t[5]) * 1.003, pts = [];
+    for (var k = 0; k < t[10].length; k++) pts.push(new THREE.Vector3(t[10][k][0] * r, t[10][k][1] * r, t[10][k][2] * r));
+    var hg = new THREE.BufferGeometry().setFromPoints(pts);
+    highlight = new THREE.LineLoop(hg, new THREE.LineBasicMaterial({ color: 0xffd34d }));
+    planetGroup.add(highlight);
+  }
+
+  // Custom controls: drag to rotate the planet, wheel to zoom, idle auto-spin.
+  var auto = true, dragging = false, downX = 0, downY = 0, lastX = 0, lastY = 0, moved = 0;
+  renderer.domElement.addEventListener("pointerdown", function (e) {
+    dragging = true; auto = false; moved = 0;
+    downX = lastX = e.clientX; downY = lastY = e.clientY;
+    renderer.domElement.setPointerCapture(e.pointerId);
+  });
+  renderer.domElement.addEventListener("pointermove", function (e) {
+    if (!dragging) return;
+    var dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY; moved += Math.abs(dx) + Math.abs(dy);
+    planetGroup.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), dx * 0.005);
+    planetGroup.rotateOnWorldAxis(new THREE.Vector3(1, 0, 0), dy * 0.005);
+  });
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) < 6) pick(e);
+  }
+  renderer.domElement.addEventListener("pointerup", endDrag);
+  renderer.domElement.addEventListener("pointercancel", function () { dragging = false; });
+  renderer.domElement.addEventListener("wheel", function (e) {
+    e.preventDefault(); auto = false;
+    camera.position.z = Math.max(1.4, Math.min(6, camera.position.z + (e.deltaY > 0 ? 0.28 : -0.28)));
+  }, { passive: false });
+
+  var raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  var $ = function (id) { return document.getElementById(id); };
+  function pick(e) {
+    var rect = renderer.domElement.getBoundingClientRect();
+    ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(ndc, camera);
+    var hit = raycaster.intersectObject(planet)[0];
+    if (!hit || hit.faceIndex == null) return;
+    var t = tiles[faceTile[hit.faceIndex]];
+    setHighlight(t);
+    var bio = biomeIds[t[8]];
+    $("p-biome").textContent = (BIOME[bio] || { label: bio }).label;
+    $("p-coord").textContent = t[0].toFixed(2) + "°, " + t[1].toFixed(2) + "°";
+    $("p-temp").textContent = t[6].toFixed(1) + " °C";
+    $("p-rain").textContent = t[7] + " mm";
+    $("p-elev").textContent = t[5] + " m";
+    $("p-nb").textContent = t[9];
+    $("panel").hidden = false;
+  }
+  $("p-close").addEventListener("click", function () { $("panel").hidden = true; setHighlight(null); });
+
+  function resize() {
+    W = stage.clientWidth; H = stage.clientHeight;
+    camera.aspect = W / H; camera.updateProjectionMatrix(); renderer.setSize(W, H);
+  }
+  window.addEventListener("resize", resize);
+
+  // Biome legend (land biomes present, by area).
+  var counts = {};
+  for (var q = 0; q < tiles.length; q++) { var bb = biomeIds[tiles[q][8]]; counts[bb] = (counts[bb] || 0) + 1; }
+  var order = Object.keys(counts).sort(function (x, y) { return counts[y] - counts[x]; });
+  var legend = $("legend"), html = "";
+  for (var L = 0; L < order.length; L++) {
+    var hex = "#" + ((BIOME[order[L]] || { color: 0x888888 }).color).toString(16).padStart(6, "0");
+    html += '<span><i style="background:' + hex + '"></i>' + ((BIOME[order[L]] || { label: order[L] }).label) + "</span>";
+  }
+  legend.innerHTML = html;
+
+  $("overlay").hidden = true;
+  legend.hidden = false;
+  $("hint").hidden = false;
+
+  (function animate() {
+    requestAnimationFrame(animate);
+    if (auto) planetGroup.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), 0.0011);
+    renderer.render(scene, camera);
+  })();
+})();
+</script>
+
+</body>
+</html>
