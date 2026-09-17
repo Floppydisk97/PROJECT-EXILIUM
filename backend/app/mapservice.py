@@ -3,9 +3,11 @@
 Generation is one-shot: the map is written once and then immutable (DB triggers enforce it).
 The economic world (policy, ticks, ledger) is untouched here; this module only owns geography.
 
-`read_map` is a RENDER model, not a dump of the table: it returns the land tiles the client
-draws (the ocean is a smooth shell, so ocean polygons would be dead weight) and a neighbour
-count instead of the full adjacency array. The table keeps the complete geography.
+`read_map` is a RENDER model, not a dump of the table. It returns what the client actually
+draws -- the land, the sea ice that forms the polar caps, and the river network already
+resolved into segments -- plus a neighbour count instead of the full adjacency array. Open
+ocean is a smooth shell on the client, so its polygons would be dead weight. The table keeps
+the complete geography either way.
 """
 from psycopg.types.json import Jsonb
 
@@ -15,10 +17,10 @@ from app.service import DomainError
 INSERT_CHUNK = 4000  # bound peak memory while writing tens of thousands of tiles
 
 
-def _round(v):
-    # Five decimals on a unit sphere is well under a pixel at any sane zoom, and keeps
-    # the JSON payload small enough for a phone.
-    return [round(c, 5) for c in v]
+def _round(v, digits=4):
+    # Four decimals on a unit sphere is ~1/250th of a tile at production frequency: far
+    # under a pixel at any sane zoom, and it keeps the payload small enough for a phone.
+    return [round(c, digits) for c in v]
 
 
 def _tile_rows(world):
@@ -26,6 +28,7 @@ def _tile_rows(world):
         yield (
             t.id, t.lat, t.lon, *_round(t.center), t.elevation, t.temperature, t.rainfall,
             t.biome, list(t.neighbors), Jsonb([_round(p) for p in t.polygon]),
+            *_round(t.normal, 4), t.river_flow, t.downstream, t.landmass_size,
         )
 
 
@@ -44,8 +47,9 @@ def generate_and_store(conn, seed: str, frequency: int = worldgen.PRODUCTION_FRE
          worldgen.GENERATOR_VERSION),
     )
     statement = """INSERT INTO world_tiles
-        (id, lat, lon, cx, cy, cz, elevation, temperature, rainfall, biome, neighbors, polygon)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+        (id, lat, lon, cx, cy, cz, elevation, temperature, rainfall, biome, neighbors,
+         polygon, nx, ny, nz, river_flow, downstream, landmass_size)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
     chunk = []
     with conn.cursor() as cur:
         for row in _tile_rows(world):
@@ -58,13 +62,39 @@ def generate_and_store(conn, seed: str, frequency: int = worldgen.PRODUCTION_FRE
 
     biomes: dict[str, int] = {}
     land = 0
+    rivers = 0
     for t in world.tiles:
         biomes[t.biome] = biomes.get(t.biome, 0) + 1
-        land += t.elevation >= 0
+        land += t.elevation >= 0 and t.biome not in worldgen.WATER_BIOMES
+        rivers += t.river_flow >= worldgen.RIVER_MIN_FLOW and t.elevation >= 0
     return {
         "name": worldgen.WORLD_NAME, "seed": world.seed, "frequency": world.frequency,
-        "tiles": len(world.tiles), "land": land, "biomes": biomes,
+        "tiles": len(world.tiles), "land": land, "rivers": rivers, "biomes": biomes,
     }
+
+
+def _river_segments(conn) -> list[dict]:
+    """Rivers as ready-to-draw segments: every tile carrying enough water, paired with the
+    tile it drains into. Resolving the pairing here means the client needs no adjacency and
+    can render the network as plain line segments, coast included."""
+    rows = conn.execute(
+        """SELECT up.cx AS ax, up.cy AS ay, up.cz AS az,
+                  down.cx AS bx, down.cy AS by, down.cz AS bz,
+                  up.river_flow AS flow, up.elevation AS up_elev, down.elevation AS down_elev
+           FROM world_tiles up
+           JOIN world_tiles down
+             ON down.map_id = up.map_id AND down.id = up.downstream
+           WHERE up.map_id = 1 AND up.elevation >= 0 AND up.river_flow >= %s
+           ORDER BY up.id""",
+        (worldgen.RIVER_MIN_FLOW,),
+    ).fetchall()
+    return [
+        {
+            "a": [r["ax"], r["ay"], r["az"]], "b": [r["bx"], r["by"], r["bz"]],
+            "flow": r["flow"], "ae": r["up_elev"], "be": max(0, r["down_elev"]),
+        }
+        for r in rows
+    ]
 
 
 def read_map(conn) -> dict:
@@ -76,20 +106,30 @@ def read_map(conn) -> dict:
     total = int(conn.execute(
         "SELECT count(*) AS n FROM world_tiles WHERE map_id = 1"
     ).fetchone()["n"])
+    # Land, plus the sea ice that makes the polar caps read as caps rather than open water.
     tiles = conn.execute(
         """SELECT id, lat, lon, cx, cy, cz, elevation, temperature, rainfall, biome,
+                  nx, ny, nz, river_flow, landmass_size,
                   COALESCE(array_length(neighbors, 1), 0) AS neighbor_count, polygon
-           FROM world_tiles WHERE map_id = 1 AND elevation >= 0 ORDER BY id"""
+           FROM world_tiles
+           WHERE map_id = 1 AND (elevation >= 0 OR biome = 'sea_ice')
+           ORDER BY id"""
     ).fetchall()
+    land_count = sum(1 for t in tiles if t["elevation"] >= 0 and t["biome"] != "lake")
     return {
         "name": meta["name"], "seed": meta["seed"], "frequency": meta["frequency"],
-        "sea_level": meta["sea_level"], "tile_count": total, "land_count": len(tiles),
+        "sea_level": meta["sea_level"], "tile_count": total, "land_count": land_count,
+        # Shared with worldgen so the client's relief matches the normals computed there.
+        "elevation_max": worldgen.ELEVATION_MAX, "relief_gain": worldgen.RELIEF_GAIN,
+        "rivers": _river_segments(conn),
         "tiles": [
             {
                 "id": t["id"], "lat": t["lat"], "lon": t["lon"],
                 "center": [t["cx"], t["cy"], t["cz"]],
+                "normal": [t["nx"], t["ny"], t["nz"]],
                 "elevation": t["elevation"], "temperature": t["temperature"],
                 "rainfall": t["rainfall"], "biome": t["biome"],
+                "river_flow": t["river_flow"], "landmass_size": t["landmass_size"],
                 "neighbor_count": t["neighbor_count"], "polygon": t["polygon"],
             }
             for t in tiles

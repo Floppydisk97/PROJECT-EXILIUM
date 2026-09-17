@@ -46,13 +46,29 @@ docker compose exec api python -m app.mapcli "Hesperia-01"
 ```
 
 `--frequency N` (2..96) regola la suddivisione geodetica: i tile sono `10*N^2 + 2`. Il
-default N=80 produce **64.002 tile**, di cui ~24.300 di terra (il 38% è terra per
-costruzione, sea level al 62° percentile): una città per casella di terra, quindi il mondo
-ospita ben oltre **5.000 giocatori**. Generazione ~1,6 s e ~130 MB di picco.
-`GET /world/map` serve il *render model* (le sole terre, che il client disegna: l'oceano è
-un guscio liscio) compresso con gzip (~8,4 MB → ~1,5 MB); la tabella conserva la geografia
-completa. La rigenerazione è rifiutata: ridimensionare il mondo richiede una migrazione
-dedicata (vedi `0004_bigger_world`).
+default N=80 produce **64.002 tile**, di cui ~17.900 di terra (sea level al 72° percentile,
+scelto perché sotto quella soglia le terre percolano in un unico supercontinente): una città
+per casella di terra, quindi il mondo ospita ben oltre **5.000 giocatori**. Generazione ~2,4 s
+e ~130 MB di picco.
+
+Il generatore v2 produce forme del terreno riconoscibili, non macchie di rumore:
+
+- **montagne** — rumore *ridged* raccolto in cinture, quindi catene in fila con roccia
+  d'alta quota e vette innevate (quote fino a ~7.000 m);
+- **fiumi e laghi** — accumulo di deflusso a valle sul grafo dei tile: ogni tile di terra
+  conosce il proprio tile di valle, e i bacini chiusi con abbastanza acqua diventano laghi;
+- **deserti** — profilo zonale delle precipitazioni con vere fasce aride subtropicali,
+  più continentalità (distanza dal mare) e ombra pluviometrica sottovento alle catene;
+- **isole** — un'ottava ad alta frequenza semina arcipelaghi in mare aperto; le componenti
+  connesse danno a ogni tile la dimensione della sua massa continentale;
+- **poli** — poli più freddi, quindi calotte glaciali e banchisa formano vere calotte.
+
+`GET /world/map` serve il *render model*: le terre più la banchisa polare (l'oceano aperto è
+un guscio liscio lato client), la rete idrografica già risolta in segmenti, e la normale del
+terreno di ogni tile per l'ombreggiatura del rilievo. Compresso con gzip: ~10,2 MB → ~1,5 MB.
+La tabella conserva comunque la geografia completa. La rigenerazione è rifiutata:
+ridimensionare o rigenerare il mondo richiede una migrazione dedicata (vedi
+`0004_bigger_world` e `0005_landforms`).
 
 Esempio API PowerShell, con i valori restituiti dalla CLI:
 

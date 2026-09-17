@@ -7,19 +7,31 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { biomeColor, biomeLabel, type Tile, type WorldMap } from "./biomes";
+import {
+  biomeColor, biomeLabel, landmassLabel, WATER_BIOMES, type Tile, type WorldMap,
+} from "./biomes";
 
 type Status = "loading" | "ready" | "ungenerated" | "error";
 
 const SEA = 0.995;      // smooth ocean shell
-const CLOUDS = 1.062;   // cloud deck, just above the tallest land
-const RIM = 1.085;      // atmospheric rim drawn over the planet's own limb
-const HALO = 1.5;      // outer halo shell; its falloff ends well inside it
-const HALO_EDGE = 1.26; // distance from planet centre where the halo fades to zero
+const ICE = 0.9975;     // sea ice floats just above the ocean shell
+const CLOUDS = 1.082;   // cloud deck, just above the tallest peaks
+const RIM = 1.11;       // atmospheric rim drawn over the planet's own limb
+const HALO = 1.5;       // outer halo shell; its falloff ends well inside it
+const HALO_EDGE = 1.3;  // distance from planet centre where the halo fades to zero
+const NORMAL_BLEND = 0.62; // how far terrain normals lean off radial when shading relief
+// Terrain is hillshaded by hand against this fixed direction in planet space instead of
+// being lit by the scene: a map should stay readable everywhere, so the darkest slope is
+// still bright and the limb never falls into shadow. Only the sea uses the scene lights.
+const TERRAIN_LIGHT = new THREE.Vector3(0.52, -0.55, 0.65).normalize();
+const SHADE_FLOOR = 0.80;   // brightness of a slope facing fully away from the light
+const SHADE_RANGE = 0.34;   // extra brightness a slope facing straight into it picks up
+const ALTITUDE_TINT = 0.24; // how much brighter the highest ground is than the lowest
 
-function landRadius(elevation: number): number {
-  return 1 + Math.min(Math.max(elevation, 0), 4500) / 4500 * 0.05;
-}
+// The planet's north pole is +Z, so the camera's up axis is +Z and the default view sits
+// over the equator: north ends up at the top of the screen, like a globe on a stand.
+const HOME_POSITION = new THREE.Vector3(1.9, -2.2, 0.95);
+const UP = new THREE.Vector3(0, 0, 1);
 
 // Shared GLSL: view-space position (and normal) for the atmosphere/cloud shells.
 const VIEW_VERT = `
@@ -32,11 +44,19 @@ const VIEW_VERT = `
     gl_Position = projectionMatrix * mv;
   }`;
 
+// Deterministic per-tile jitter: breaks the flatness of a thousand identical hexes without
+// inventing geography. Same id always gets the same shade.
+function tileJitter(id: number): number {
+  const x = Math.sin(id * 127.1) * 43758.5453;
+  return (x - Math.floor(x) - 0.5) * 0.09;
+}
+
 export default function Globe() {
   const mountRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>("loading");
   const [selected, setSelected] = useState<Tile | null>(null);
   const highlightRef = useRef<((tile: Tile | null) => void) | null>(null);
+  const resetViewRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -59,11 +79,19 @@ export default function Globe() {
       let width = mount.clientWidth;
       let height = mount.clientHeight;
 
+      // Relief exaggeration comes from the server together with the terrain normals it
+      // computed against it, so geometry and shading can never drift apart.
+      const relief = (elevation: number) =>
+        1 + Math.min(Math.max(elevation, 0), map.elevation_max) / map.elevation_max * map.relief_gain;
+      const tileRadius = (t: { elevation: number }) =>
+        t.elevation >= 0 ? relief(t.elevation) : ICE;
+
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x05070e);
 
       const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 100);
-      camera.position.set(0, 0.3, 3.2);
+      camera.up.copy(UP);
+      camera.position.copy(HOME_POSITION);
 
       const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
@@ -82,12 +110,16 @@ export default function Globe() {
       controls.autoRotateSpeed = 0.32;
       controls.addEventListener("start", () => { controls.autoRotate = false; });
 
-      // Bright, even illumination (like the reference globes) with just enough
-      // directional shading to keep the sphere reading as a sphere.
-      scene.add(new THREE.AmbientLight(0xffffff, 1.05));
-      scene.add(new THREE.HemisphereLight(0xdcecff, 0x4a5a78, 0.45));
-      const sun = new THREE.DirectionalLight(0xfff4e2, 0.55);
-      sun.position.set(2.2, 1.5, 4);
+      // Bright overall, but with a real key light: without it the mountain normals the
+      // server ships would have nothing to catch and the relief would stay invisible.
+      // The key sits just off the home camera's shoulder so the hemisphere the viewer
+      // actually looks at is the lit one, and a soft fill keeps the limb from going black.
+      // These light the ocean shell (and give the clouds their sun direction); the terrain
+      // carries its own baked shading.
+      scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+      scene.add(new THREE.HemisphereLight(0xdcecff, 0x66748f, 0.42));
+      const sun = new THREE.DirectionalLight(0xfff4e2, 0.6);
+      sun.position.copy(TERRAIN_LIGHT).multiplyScalar(5);
       scene.add(sun);
 
       const stars = (count: number, color: number, size: number, near: number) => {
@@ -113,20 +145,37 @@ export default function Globe() {
         new THREE.MeshStandardMaterial({ color: 0x35688f, roughness: 0.6, metalness: 0.03 }),
       ));
 
-      // Land hexes.
+      // Terrain: land hexes plus the sea ice that forms the polar caps.
       const positions: number[] = [];
+      const normals: number[] = [];
       const colors: number[] = [];
       const borders: number[] = [];
       const faceTile: number[] = [];
       const tilesById = new Map<number, Tile>();
       const tmp = new THREE.Color();
+      const shadeNormal = new THREE.Vector3();
 
       for (const tile of map.tiles) {
-        if (tile.elevation < 0) continue;
         tilesById.set(tile.id, tile);
-        const r = landRadius(tile.elevation);
+        const r = tileRadius(tile);
         const c = tile.center;
-        tmp.setHex(biomeColor(tile.biome)).convertSRGBToLinear();
+        // Leaning the terrain normal part-way back towards the radial one keeps ranges
+        // catching the light without throwing every slope behind them into pitch black.
+        const n = shadeNormal
+          .set(
+            c[0] + (tile.normal[0] - c[0]) * NORMAL_BLEND,
+            c[1] + (tile.normal[1] - c[1]) * NORMAL_BLEND,
+            c[2] + (tile.normal[2] - c[2]) * NORMAL_BLEND,
+          )
+          .normalize();
+        const water = WATER_BIOMES.has(tile.biome);
+        // Height brightens the ground on top of the hillshade, so a highland reads as a
+        // highland even where it happens to face away from the light.
+        const altitude = Math.min(Math.max(tile.elevation, 0), map.elevation_max) / map.elevation_max;
+        const shade = (SHADE_FLOOR + SHADE_RANGE * Math.max(0, n.dot(TERRAIN_LIGHT)))
+          * (1 + ALTITUDE_TINT * altitude)
+          * (1 + tileJitter(tile.id));
+        tmp.setHex(biomeColor(tile.biome)).convertSRGBToLinear().multiplyScalar(shade);
         const ring = tile.polygon;
         for (let i = 0; i < ring.length; i++) {
           const a = ring[i];
@@ -134,35 +183,60 @@ export default function Globe() {
           positions.push(c[0] * r, c[1] * r, c[2] * r);
           positions.push(a[0] * r, a[1] * r, a[2] * r);
           positions.push(b[0] * r, b[1] * r, b[2] * r);
+          // One terrain normal per tile: flat-shaded hexes whose facing follows the real
+          // slope, which is what makes ranges catch the light and valleys fall into shadow.
+          for (let k = 0; k < 3; k++) normals.push(n.x, n.y, n.z);
           for (let k = 0; k < 3; k++) colors.push(tmp.r, tmp.g, tmp.b);
           faceTile.push(tile.id);
-          borders.push(a[0] * r, a[1] * r, a[2] * r, b[0] * r, b[1] * r, b[2] * r);
+          // Water has no parcels to outline; a grid over the ice caps just reads as an artefact.
+          if (!water) borders.push(a[0] * r, a[1] * r, a[2] * r, b[0] * r, b[1] * r, b[2] * r);
         }
       }
 
       const geom = new THREE.BufferGeometry();
       geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      geom.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
       geom.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-      geom.computeVertexNormals();
-      const land = new THREE.Mesh(
-        geom,
-        new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.0 }),
-      );
+      // Unlit: the shading is already in the vertex colours, which is what keeps the map
+      // evenly readable instead of half-lost on the night side of a physical light.
+      const land = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ vertexColors: true }));
       scene.add(land);
 
       const borderGeom = new THREE.BufferGeometry();
       borderGeom.setAttribute("position", new THREE.Float32BufferAttribute(borders, 3));
       scene.add(new THREE.LineSegments(
         borderGeom,
-        new THREE.LineBasicMaterial({ color: 0x14301f, transparent: true, opacity: 0.13 }),
+        new THREE.LineBasicMaterial({ color: 0x14301f, transparent: true, opacity: 0.11 }),
       ));
+
+      // Rivers: the backend already paired each reach with the tile it drains into, so this
+      // is a plain segment list. Major rivers are drawn brighter than their headwaters.
+      const riverGeoms: THREE.BufferGeometry[] = [];
+      const reaches: Record<"minor" | "major", number[]> = { minor: [], major: [] };
+      for (const r of map.rivers) {
+        const ra = relief(r.ae) * 1.0015;
+        const rb = relief(r.be) * 1.0015;
+        const into = r.flow >= 70 ? reaches.major : reaches.minor;
+        into.push(r.a[0] * ra, r.a[1] * ra, r.a[2] * ra, r.b[0] * rb, r.b[1] * rb, r.b[2] * rb);
+      }
+      for (const [kind, points] of Object.entries(reaches)) {
+        if (!points.length) continue;
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+        riverGeoms.push(g);
+        scene.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+          color: kind === "major" ? 0x59b4e8 : 0x4e9ed0,
+          transparent: true,
+          opacity: kind === "major" ? 0.9 : 0.6,
+        })));
+      }
 
       // Drifting procedural cloud deck.
       const cloudMat = new THREE.ShaderMaterial({
         uniforms: {
           uTime: { value: 0 },
           uSun: { value: new THREE.Vector3(0, 0, 1) },
-          uOpacity: { value: 0.85 },
+          uOpacity: { value: 0.62 },
         },
         vertexShader: VIEW_VERT,
         fragmentShader: `
@@ -193,7 +267,7 @@ export default function Globe() {
             // instead of the round blobs plain fbm gives.
             float w = fbm(p * 0.75 + vec3(drift, 0.0, -drift));
             float n = fbm(p + vec3(w * 1.5) + vec3(drift * 1.7, 0.0, 0.0));
-            float cover = smoothstep(0.52, 0.71, n);
+            float cover = smoothstep(0.57, 0.77, n);
             if (cover < 0.004) discard;
             // Thicker cores, feathered edges.
             float a = cover * cover * (0.45 + 0.55 * w);
@@ -227,7 +301,7 @@ export default function Globe() {
       const haloMat = new THREE.ShaderMaterial({
         uniforms: {
           uCenter: { value: new THREE.Vector3() },
-          uInner: { value: 1.02 },
+          uInner: { value: 1.04 },
           uOuter: { value: HALO_EDGE },
           uColor: { value: new THREE.Color(0x6fb4ff) },
           uStrength: { value: 0.16 },
@@ -260,14 +334,21 @@ export default function Globe() {
       let highlight: THREE.LineLoop | null = null;
       highlightRef.current = (tile: Tile | null) => {
         if (highlight) { scene.remove(highlight); highlight.geometry.dispose(); highlight = null; }
-        if (!tile || tile.elevation < 0) return;
-        const r = landRadius(tile.elevation) * 1.004;
+        if (!tile) return;
+        const r = tileRadius(tile) * 1.004;
         const pts = tile.polygon.map((p) => new THREE.Vector3(p[0] * r, p[1] * r, p[2] * r));
         highlight = new THREE.LineLoop(
           new THREE.BufferGeometry().setFromPoints(pts),
           new THREE.LineBasicMaterial({ color: 0xffd34d }),
         );
         scene.add(highlight);
+      };
+
+      // Flying the camera home rather than snapping there keeps the viewer oriented.
+      let flight: { from: THREE.Vector3; started: number } | null = null;
+      resetViewRef.current = () => {
+        flight = { from: camera.position.clone(), started: performance.now() };
+        controls.autoRotate = true;
       };
 
       const raycaster = new THREE.Raycaster();
@@ -305,8 +386,16 @@ export default function Globe() {
       const animate = () => {
         raf = requestAnimationFrame(animate);
         const t = clock.getElapsedTime();
+        if (flight) {
+          const k = Math.min(1, (performance.now() - flight.started) / 650);
+          const ease = k * k * (3 - 2 * k);
+          camera.position.lerpVectors(flight.from, HOME_POSITION, ease);
+          camera.up.copy(UP);
+          controls.target.set(0, 0, 0);
+          if (k >= 1) flight = null;
+        }
         controls.update();
-        clouds.rotation.y += 0.00022;
+        clouds.rotation.z += 0.00022;
         cloudMat.uniforms.uTime.value = t;
         sunView.copy(sun.position).normalize().transformDirection(camera.matrixWorldInverse);
         cloudMat.uniforms.uSun.value.copy(sunView);
@@ -327,12 +416,20 @@ export default function Globe() {
         renderer.dispose();
         geom.dispose();
         borderGeom.dispose();
+        riverGeoms.forEach((g) => g.dispose());
         if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       } });
     })();
 
-    return () => { disposed = true; controllers.forEach((c) => c.dispose()); highlightRef.current = null; };
+    return () => {
+      disposed = true;
+      controllers.forEach((c) => c.dispose());
+      highlightRef.current = null;
+      resetViewRef.current = null;
+    };
   }, []);
+
+  const water = selected ? WATER_BIOMES.has(selected.biome) : false;
 
   return (
     <div className="globe-root">
@@ -349,10 +446,20 @@ export default function Globe() {
             <dt>Coordinate</dt><dd>{selected.lat.toFixed(2)}°, {selected.lon.toFixed(2)}°</dd>
             <dt>Temperatura media</dt><dd>{selected.temperature.toFixed(1)} °C</dd>
             <dt>Precipitazioni</dt><dd>{selected.rainfall} mm</dd>
-            <dt>Elevazione</dt><dd>{selected.elevation} m</dd>
+            <dt>Quota</dt>
+            <dd>{selected.elevation >= 0 ? `${selected.elevation} m` : `${-selected.elevation} m sotto il mare`}</dd>
+            {selected.river_flow > 0 && (<><dt>Corso d&apos;acqua</dt><dd>portata {selected.river_flow}</dd></>)}
+            <dt>Terra emersa</dt><dd>{water && selected.elevation < 0 ? "—" : landmassLabel(selected.landmass_size)}</dd>
             <dt>Confini</dt><dd>{selected.neighbor_count} tile</dd>
           </dl>
+          {water && <p className="globe-panel-note">Acqua: nessuna colonia può insediarsi qui.</p>}
         </aside>
+      )}
+
+      {status === "ready" && (
+        <button type="button" className="globe-reset" onClick={() => resetViewRef.current?.()}>
+          ⟳ Ricentra · nord in alto
+        </button>
       )}
 
       {status !== "ready" && (
