@@ -34,6 +34,16 @@ def enqueue(p, kind="upgrade", choice=None, key=None):
         return submit_order(conn, p["city_id"], p["player_id"], key or uuid4(), kind, choice)
 
 
+def freeze_clock(monkeypatch):
+    """Pin the service clock so setup (player/enqueue) never straddles a whole-second
+    boundary and mints stray sub-tick production. age_world drives time via SQL, so the
+    controlled tick window is unaffected; only the pre-tick baseline becomes deterministic."""
+    with transaction() as conn:
+        now = database_now(conn)
+    monkeypatch.setattr(service, "database_now", lambda conn: now)
+    return now
+
+
 def test_migration_rerun_and_world_singleton(database):
     command.upgrade(database, "head")
     with transaction() as conn:
@@ -42,7 +52,8 @@ def test_migration_rerun_and_world_singleton(database):
         conn.execute("INSERT INTO world SELECT 2, policy, last_tick, next_tick_at FROM world")
 
 
-def test_tick_exact_boundary_policy_upgrade_and_retry(database):
+def test_tick_exact_boundary_policy_upgrade_and_retry(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     key = uuid4()
     order = enqueue(p, key=key)
@@ -66,6 +77,7 @@ def test_tick_exact_boundary_policy_upgrade_and_retry(database):
 
 
 def test_tick_crash_rolls_back_all_effects(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     enqueue(p)
     age_world()
@@ -89,7 +101,8 @@ def test_tick_crash_rolls_back_all_effects(database, monkeypatch):
     assert catch_up() == 1
 
 
-def test_competing_workers_commit_once(database):
+def test_competing_workers_commit_once(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     enqueue(p)
     age_world()
@@ -113,7 +126,8 @@ def test_concurrent_order_retries_and_conflicts(database):
     assert error.value.status == 409
 
 
-def test_catchup_preserves_every_day_and_policy_period(database):
+def test_catchup_preserves_every_day_and_policy_period(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     enqueue(p, "policy_vote", "industrial")
     age_world(days=3)
@@ -161,7 +175,8 @@ def test_ledger_enforces_no_overdraft_and_duplicate_event(database):
         service.entry(conn, p["city_id"], 1, "genesis", f"genesis:{p['city_id']}", database_now(conn))
 
 
-def test_insufficient_upgrade_has_no_partial_effects(database):
+def test_insufficient_upgrade_has_no_partial_effects(database, monkeypatch):
+    freeze_clock(monkeypatch)
     p = player()
     enqueue(p)
     with transaction() as conn:

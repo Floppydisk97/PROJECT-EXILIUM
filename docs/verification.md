@@ -54,6 +54,10 @@ recupero multi-giorno e materializzazione su lettura),
 Il round-trip backup→restore su Docker reale è ora esercitato dalla CI (job `containers`);
 Dependabot propone i bump dei digest immutabili, delle GitHub Actions e delle dipendenze npm.
 
+I test che liquidano prima di `age_world` congelano l'orologio (`freeze_clock`) per evitare
+produzione spuria sub-secondo nel setup: asserti sui saldi deterministici, finestra del tick
+invariata. Suite ripetuta 40× (test interessati) e 10× (completa) senza flakiness.
+
 ## Limiti della verifica
 
 Docker Engine non è installato nell'ambiente: build e avvio dei container non sono
