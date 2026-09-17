@@ -3,14 +3,18 @@ from uuid import UUID
 
 import psycopg
 from fastapi import Depends, FastAPI, Header, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.db import transaction
+from app.mapservice import read_map
 from app.service import DomainError, owned_city, read_city, submit_order, token_hash
 
 app = FastAPI(title="Project Exilium", version="0.1.0")
+# The world map is several MB of JSON; compress it (and any other large payload).
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -83,6 +87,13 @@ def world_state():
     with transaction() as conn:
         world = conn.execute("SELECT policy, last_tick, next_tick_at, clock_timestamp() AS server_time FROM world WHERE id = 1").fetchone()
     return {**world, "last_tick": str(world["last_tick"])}
+
+
+@app.get("/world/map")
+def world_map():
+    # Public, immutable geography: the geodesic tiles the client renders as the planet.
+    with transaction() as conn:
+        return read_map(conn)
 
 
 @app.get("/me/cities")

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app import service
 from app.db import database_now, transaction
 from app.main import app
+from app.mapservice import generate_and_store, read_map
 from app.service import DomainError, balance, provision, read_city, run_tick, submit_order
 from app.worker import catch_up
 
@@ -310,6 +311,37 @@ def test_materialized_balance_rejects_overdraft_without_scanning_ledger(database
         assert int(conn.execute(
             "SELECT balance_milli FROM cities WHERE id = %s", (p["city_id"],)
         ).fetchone()["balance_milli"]) == 0
+
+
+def test_world_map_generates_persists_and_is_immutable(database):
+    with transaction() as conn:
+        summary = generate_and_store(conn, "Church", frequency=6)
+    assert summary["tiles"] == 362 and summary["name"] == "Hesperia"
+    with transaction() as conn:
+        world = read_map(conn)
+    assert world["tile_count"] == 362 and world["frequency"] == 6
+    sample = world["tiles"][0]
+    assert set(sample) >= {"id", "lat", "lon", "center", "biome", "neighbors", "polygon"}
+    assert len(sample["polygon"]) in (5, 6)
+    # One-shot: a second generation is refused, never a silent overwrite.
+    with pytest.raises(DomainError) as error, transaction() as conn:
+        generate_and_store(conn, "Church", frequency=6)
+    assert error.value.status == 409
+    # Tiles and map are immutable audit geography.
+    with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
+        conn.execute("UPDATE world_tiles SET biome = 'desert'")
+    with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
+        conn.execute("DELETE FROM world_map")
+
+
+def test_world_map_endpoint_serves_geography_or_404(database):
+    with TestClient(app) as client:
+        # Before generation: 404, not an empty map.
+        assert client.get("/world/map").status_code == 404
+        with transaction() as conn:
+            generate_and_store(conn, "Church", frequency=6)
+        body = client.get("/world/map").json()
+        assert body["tile_count"] == 362 and body["name"] == "Hesperia"
 
 
 def test_multiple_players_share_one_election(database):

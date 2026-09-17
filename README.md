@@ -38,6 +38,20 @@ I token casuali sono memorizzati solo come hash nel database. Non esiste endpoin
 pubblico per creare giocatori, assegnare risorse o forzare tick. Per due giocatori,
 eseguire due volte il provisioning con nomi diversi.
 
+Generare il pianeta autoritativo `Hesperia` (una sola volta; sfera geodetica di tile
+generata da seed, poi immutabile):
+
+```powershell
+docker compose exec api python -m app.mapcli "Hesperia-01"
+```
+
+`--frequency N` (2..48) regola la suddivisione geodetica: i tile sono `10*N^2 + 2`. Il
+default N=40 produce **16.002 tile**, di cui ~6.080 di terra (il 38% è terra per
+costruzione, sea level al 62° percentile): una città per casella di terra, quindi il mondo
+ospita oltre **5.000 giocatori** con margine. La mappa è servita da `GET /world/map`
+(geografia pubblica, nessun saldo) compressa con gzip (~6,6 MB → ~1,25 MB); la
+rigenerazione è rifiutata: un nuovo mondo richiede un nuovo seed via migrazione dedicata.
+
 Esempio API PowerShell, con i valori restituiti dalla CLI:
 
 ```powershell
@@ -56,6 +70,20 @@ Invoke-RestMethod "http://localhost:8000/cities/$cityId/ledger" -Headers $header
 stringhe JSON per evitare perdita di precisione JavaScript. `alloy_milli / 1000`
 è il valore in unità di risorsa. Una lettura città materializza la produzione
 maturata; il ledger mostra solo eventi già materializzati.
+
+## Deploy pubblico su Render
+
+Il file `render.yaml` è un blueprint che provisiona l'intero stack (dove worker e
+PostgreSQL possono girare, a differenza di Vercel). Su Render: **New → Blueprint**,
+connetti questo repo, scegli il branch che contiene `render.yaml`, poi **Apply**.
+
+Vengono creati: `exilium-db` (PostgreSQL), `exilium-api` (FastAPI; applica le migrazioni
+e genera `Hesperia` alla prima partenza) e `exilium-web` (frontend del globo). Il worker
+del tick è incluso ma commentato: su Render richiede un piano a pagamento, e non serve per
+vedere il globo (la geografia è statica). L'URL pubblico è quello di `exilium-web`.
+
+Note piano free: i web service vanno in sleep quando inattivi (primo caricamento più lento)
+e il database free scade dopo 30 giorni.
 
 ## Verifica
 

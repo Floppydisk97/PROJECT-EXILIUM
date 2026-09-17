@@ -1,0 +1,74 @@
+# Render Blueprint — deploy dell'intero stack di Project Exilium.
+# Provisiona: PostgreSQL gestito, API FastAPI (autoritativa), worker del tick (always-on),
+# frontend Next.js (globo). L'API applica le migrazioni e genera il pianeta 'Hesperia'
+# alla prima partenza; la generazione è one-shot e la mappa è immutabile.
+#
+# Uso: su Render → New → Blueprint → connetti questo repo → scegli il branch che contiene
+# questo file → Apply. Il piano free è per demo (il DB free scade dopo 30 giorni e i web
+# service free vanno in sleep quando inattivi).
+
+databases:
+  - name: exilium-db
+    plan: free
+    databaseName: exilium
+    user: exilium
+
+services:
+  # API autoritativa. Migra e genera la mappa all'avvio, poi serve FastAPI.
+  - type: web
+    runtime: python
+    name: exilium-api
+    plan: free
+    rootDir: backend
+    healthCheckPath: /health/live
+    buildCommand: pip install -r requirements.lock.txt
+    startCommand: >-
+      alembic upgrade head &&
+      (python -m app.mapcli "Hesperia-01" || echo "map already generated; skipping") &&
+      exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.6"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: exilium-db
+          property: connectionString
+
+  # Worker del tick (always-on): risolve i tick scaduti alle 00:00 UTC.
+  # NB: su Render i worker richiedono un piano a pagamento (non free). Per attivarlo,
+  # togli il commento e imposta un piano a pagamento (es. starter). Senza worker il
+  # globo si vede lo stesso: la geografia è statica e l'economia semplicemente non avanza.
+  # - type: worker
+  #   runtime: python
+  #   name: exilium-worker
+  #   plan: starter
+  #   rootDir: backend
+  #   buildCommand: pip install -r requirements.lock.txt
+  #   startCommand: python -m app.worker
+  #   envVars:
+  #     - key: PYTHON_VERSION
+  #       value: "3.12.6"
+  #     - key: DATABASE_URL
+  #       fromDatabase:
+  #         name: exilium-db
+  #         property: connectionString
+
+  # Frontend Next.js: renderizza il globo. Chiama l'API server-side via API_INTERNAL_URL.
+  - type: web
+    runtime: node
+    name: exilium-web
+    plan: free
+    rootDir: frontend
+    healthCheckPath: /
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: HOSTNAME
+        value: "0.0.0.0"
+      - key: API_INTERNAL_URL
+        fromService:
+          type: web
+          name: exilium-api
+          property: host
