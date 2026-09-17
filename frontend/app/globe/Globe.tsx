@@ -11,19 +11,31 @@ import { biomeColor, biomeLabel, type Tile, type WorldMap } from "./biomes";
 
 type Status = "loading" | "ready" | "ungenerated" | "error";
 
-const SEA = 0.995; // smooth ocean shell radius; land rises above it.
+const SEA = 0.995;      // smooth ocean shell
+const CLOUDS = 1.062;   // cloud deck, just above the tallest land
+const RIM = 1.085;      // atmospheric rim drawn over the planet's own limb
+const HALO = 1.5;      // outer halo shell; its falloff ends well inside it
+const HALO_EDGE = 1.26; // distance from planet centre where the halo fades to zero
 
-// Land relief: hexes bulge outward with elevation so continents read as 3D from orbit.
 function landRadius(elevation: number): number {
   return 1 + Math.min(Math.max(elevation, 0), 4500) / 4500 * 0.05;
 }
+
+// Shared GLSL: view-space position (and normal) for the atmosphere/cloud shells.
+const VIEW_VERT = `
+  varying vec3 vP; varying vec3 vN; varying vec3 vLocal;
+  void main() {
+    vLocal = position;
+    vN = normalize(normalMatrix * normal);
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vP = mv.xyz;
+    gl_Position = projectionMatrix * mv;
+  }`;
 
 export default function Globe() {
   const mountRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>("loading");
   const [selected, setSelected] = useState<Tile | null>(null);
-
-  // Scene handles the picking highlight; React owns the info panel. They meet through refs.
   const highlightRef = useRef<((tile: Tile | null) => void) | null>(null);
 
   useEffect(() => {
@@ -48,16 +60,14 @@ export default function Globe() {
       let height = mount.clientHeight;
 
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x04060b);
+      scene.background = new THREE.Color(0x05070e);
 
       const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 100);
       camera.position.set(0, 0.3, 3.2);
 
       const renderer = new THREE.WebGLRenderer({ antialias: true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
       renderer.setSize(width, height);
-      renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.15;
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       mount.appendChild(renderer.domElement);
 
@@ -66,23 +76,20 @@ export default function Globe() {
       controls.enableDamping = true;
       controls.dampingFactor = 0.08;
       controls.rotateSpeed = 0.5;
-      controls.minDistance = 1.4;
+      controls.minDistance = 1.35;
       controls.maxDistance = 6;
       controls.autoRotate = true;
       controls.autoRotateSpeed = 0.32;
-      controls.addEventListener("start", () => { controls.autoRotate = false; }); // idle spin until touched
+      controls.addEventListener("start", () => { controls.autoRotate = false; });
 
-      // Lighting: one strong warm sun casts a real day/night terminator; a faint cool
-      // fill keeps the night side from going pure black (earthshine).
-      scene.add(new THREE.AmbientLight(0xffffff, 0.62));
-      const sun = new THREE.DirectionalLight(0xfff2dc, 1.35);
-      sun.position.set(1.5, 1.6, 5); // sun-ward face (toward camera) stays bright
+      // Bright, even illumination (like the reference globes) with just enough
+      // directional shading to keep the sphere reading as a sphere.
+      scene.add(new THREE.AmbientLight(0xffffff, 1.05));
+      scene.add(new THREE.HemisphereLight(0xdcecff, 0x4a5a78, 0.45));
+      const sun = new THREE.DirectionalLight(0xfff4e2, 0.55);
+      sun.position.set(2.2, 1.5, 4);
       scene.add(sun);
-      const fill = new THREE.DirectionalLight(0x2b4a78, 0.3);
-      fill.position.set(-4, -1, -3);
-      scene.add(fill);
 
-      // Starfield: many faint stars plus a sprinkle of bright ones.
       const stars = (count: number, color: number, size: number, near: number) => {
         const g = new THREE.BufferGeometry();
         const p = new Float32Array(count * 3);
@@ -93,22 +100,20 @@ export default function Globe() {
         g.setAttribute("position", new THREE.BufferAttribute(p, 3));
         return new THREE.Points(g, new THREE.PointsMaterial({ color, size, sizeAttenuation: true }));
       };
-      scene.add(stars(1300, 0x8ea2c6, 0.11, 42));
-      scene.add(stars(180, 0xffffff, 0.2, 46));
+      scene.add(stars(1300, 0x9db0d2, 0.11, 42));
+      scene.add(stars(200, 0xffffff, 0.2, 46));
 
-      // Deep base sphere behind everything: fills any hairline gap with dark water.
       scene.add(new THREE.Mesh(
         new THREE.SphereGeometry(0.95, 48, 48),
-        new THREE.MeshBasicMaterial({ color: 0x081120 }),
+        new THREE.MeshBasicMaterial({ color: 0x24486b }),
       ));
 
-      // Smooth glossy ocean shell — catches a sun glint like real water.
       scene.add(new THREE.Mesh(
         new THREE.SphereGeometry(SEA, 128, 128),
-        new THREE.MeshStandardMaterial({ color: 0x1d4b7e, roughness: 0.52, metalness: 0.05 }),
+        new THREE.MeshStandardMaterial({ color: 0x35688f, roughness: 0.6, metalness: 0.03 }),
       ));
 
-      // Land as raised biome-coloured hexes (matte). faceTile maps a picked face to its tile.
+      // Land hexes.
       const positions: number[] = [];
       const colors: number[] = [];
       const borders: number[] = [];
@@ -117,7 +122,7 @@ export default function Globe() {
       const tmp = new THREE.Color();
 
       for (const tile of map.tiles) {
-        if (tile.elevation < 0) continue; // oceans are the smooth shell, not hexes
+        if (tile.elevation < 0) continue;
         tilesById.set(tile.id, tile);
         const r = landRadius(tile.elevation);
         const c = tile.center;
@@ -141,7 +146,7 @@ export default function Globe() {
       geom.computeVertexNormals();
       const land = new THREE.Mesh(
         geom,
-        new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.02 }),
+        new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.0 }),
       );
       scene.add(land);
 
@@ -149,56 +154,117 @@ export default function Globe() {
       borderGeom.setAttribute("position", new THREE.Float32BufferAttribute(borders, 3));
       scene.add(new THREE.LineSegments(
         borderGeom,
-        new THREE.LineBasicMaterial({ color: 0x0a1a10, transparent: true, opacity: 0.15 }),
+        new THREE.LineBasicMaterial({ color: 0x14301f, transparent: true, opacity: 0.20 }),
       ));
 
-      // Atmosphere: a back-facing shell whose rim glows via a Fresnel term.
-      const atmosphere = new THREE.Mesh(
-        new THREE.SphereGeometry(1.075, 64, 64),
-        new THREE.ShaderMaterial({
-          uniforms: { glowColor: { value: new THREE.Color(0x2b62b4) }, power: { value: 3.0 } },
-          vertexShader: `
-            varying vec3 vN; varying vec3 vP;
-            void main(){ vN = normalize(normalMatrix * normal);
-              vP = (modelViewMatrix * vec4(position,1.0)).xyz;
-              gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-          fragmentShader: `
-            varying vec3 vN; varying vec3 vP; uniform vec3 glowColor; uniform float power;
-            void main(){ float f = pow(clamp(1.0 - dot(vN, normalize(-vP)), 0.0, 1.0), power);
-              gl_FragColor = vec4(glowColor, f * 0.4); }`,
-          side: THREE.BackSide, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false,
-        }),
-      );
-      scene.add(atmosphere);
+      // Drifting procedural cloud deck.
+      const cloudMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uSun: { value: new THREE.Vector3(0, 0, 1) },
+          uOpacity: { value: 0.42 },
+        },
+        vertexShader: VIEW_VERT,
+        fragmentShader: `
+          varying vec3 vP; varying vec3 vN; varying vec3 vLocal;
+          uniform float uTime; uniform vec3 uSun; uniform float uOpacity;
+          float hash(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+          float noise(vec3 p){
+            vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
+                           mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                       mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                           mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+          }
+          float fbm(vec3 p){
+            float v = 0.0, a = 0.5;
+            for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; }
+            return v;
+          }
+          void main(){
+            vec3 p = vLocal * 2.4 + vec3(uTime * 0.012, uTime * 0.006, 0.0);
+            float n = fbm(p);
+            float a = smoothstep(0.48, 0.70, n);
+            if (a < 0.004) discard;
+            float lambert = clamp(dot(normalize(vN), normalize(uSun)), 0.0, 1.0);
+            float shade = 0.62 + 0.38 * lambert;
+            gl_FragColor = vec4(vec3(shade), a * uOpacity);
+          }`,
+        transparent: true,
+        depthWrite: false,
+      });
+      const clouds = new THREE.Mesh(new THREE.SphereGeometry(CLOUDS, 72, 72), cloudMat);
+      scene.add(clouds);
 
-      // Post-processing: subtle bloom so the atmosphere, ocean glint and ice glow.
+      // Atmospheric rim over the planet's own limb (kills the hard inner edge).
+      const rimMat = new THREE.ShaderMaterial({
+        uniforms: { uColor: { value: new THREE.Color(0x9fd2ff) }, uPower: { value: 3.4 }, uStrength: { value: 0.16 } },
+        vertexShader: VIEW_VERT,
+        fragmentShader: `
+          varying vec3 vP; varying vec3 vN; varying vec3 vLocal;
+          uniform vec3 uColor; uniform float uPower; uniform float uStrength;
+          void main(){
+            float f = pow(clamp(1.0 - dot(vN, normalize(-vP)), 0.0, 1.0), uPower);
+            gl_FragColor = vec4(uColor, f * uStrength);
+          }`,
+        side: THREE.FrontSide, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false,
+      });
+      scene.add(new THREE.Mesh(new THREE.SphereGeometry(RIM, 64, 64), rimMat));
+
+      // Outer halo: alpha from the ray's distance to the planet centre, so it is a
+      // smooth gradient hugging the planet instead of a hard-edged ring.
+      const haloMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uCenter: { value: new THREE.Vector3() },
+          uInner: { value: 1.02 },
+          uOuter: { value: HALO_EDGE },
+          uColor: { value: new THREE.Color(0x6fb4ff) },
+          uStrength: { value: 0.16 },
+        },
+        vertexShader: VIEW_VERT,
+        fragmentShader: `
+          varying vec3 vP; varying vec3 vN; varying vec3 vLocal;
+          uniform vec3 uCenter; uniform float uInner; uniform float uOuter;
+          uniform vec3 uColor; uniform float uStrength;
+          void main(){
+            vec3 dir = normalize(vP);
+            float t = max(dot(uCenter, dir), 0.0);
+            float d = length(uCenter - t * dir);
+            float f = 1.0 - smoothstep(uInner, uOuter, d);
+            f = pow(f, 2.0);
+            gl_FragColor = vec4(uColor, f * uStrength);
+          }`,
+        side: THREE.BackSide, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false,
+      });
+      const halo = new THREE.Mesh(new THREE.SphereGeometry(HALO, 64, 64), haloMat);
+      scene.add(halo);
+
       const composer = new EffectComposer(renderer);
       composer.addPass(new RenderPass(scene, camera));
-      const bloom = new UnrealBloomPass(new THREE.Vector2(width, height), 0.16, 0.4, 0.92);
-      composer.addPass(bloom);
+      composer.addPass(new UnrealBloomPass(new THREE.Vector2(width, height), 0.18, 0.5, 0.88));
       composer.addPass(new OutputPass());
-      composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
       composer.setSize(width, height);
 
-      // Bright outline for the selected tile, rebuilt on each selection.
       let highlight: THREE.LineLoop | null = null;
       highlightRef.current = (tile: Tile | null) => {
         if (highlight) { scene.remove(highlight); highlight.geometry.dispose(); highlight = null; }
         if (!tile || tile.elevation < 0) return;
         const r = landRadius(tile.elevation) * 1.004;
         const pts = tile.polygon.map((p) => new THREE.Vector3(p[0] * r, p[1] * r, p[2] * r));
-        const hg = new THREE.BufferGeometry().setFromPoints(pts);
-        highlight = new THREE.LineLoop(hg, new THREE.LineBasicMaterial({ color: 0xffd34d }));
+        highlight = new THREE.LineLoop(
+          new THREE.BufferGeometry().setFromPoints(pts),
+          new THREE.LineBasicMaterial({ color: 0xffd34d }),
+        );
         scene.add(highlight);
       };
 
-      // Picking (land tiles only; the ocean is a smooth shell).
       const raycaster = new THREE.Raycaster();
       const pointer = new THREE.Vector2();
       const downAt = new THREE.Vector2();
       const onPointerDown = (e: PointerEvent) => { downAt.set(e.clientX, e.clientY); };
       const onPointerUp = (e: PointerEvent) => {
-        if (downAt.distanceTo(new THREE.Vector2(e.clientX, e.clientY)) > 6) return; // a drag
+        if (downAt.distanceTo(new THREE.Vector2(e.clientX, e.clientY)) > 6) return;
         const rect = renderer.domElement.getBoundingClientRect();
         pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -222,8 +288,21 @@ export default function Globe() {
       const resizeObserver = new ResizeObserver(onResize);
       resizeObserver.observe(mount);
 
+      const sunView = new THREE.Vector3();
+      const clock = new THREE.Clock();
       let raf = 0;
-      const animate = () => { raf = requestAnimationFrame(animate); controls.update(); composer.render(); };
+      const animate = () => {
+        raf = requestAnimationFrame(animate);
+        const t = clock.getElapsedTime();
+        controls.update();
+        clouds.rotation.y += 0.00022;
+        cloudMat.uniforms.uTime.value = t;
+        sunView.copy(sun.position).normalize().transformDirection(camera.matrixWorldInverse);
+        cloudMat.uniforms.uSun.value.copy(sunView);
+        haloMat.uniforms.uCenter.value.set(0, 0, 0).applyMatrix4(camera.matrixWorldInverse);
+        halo.visible = camera.position.length() > HALO_EDGE + 0.15; // hide once "inside" the air
+        composer.render();
+      };
       animate();
       if (!disposed) setStatus("ready");
 
