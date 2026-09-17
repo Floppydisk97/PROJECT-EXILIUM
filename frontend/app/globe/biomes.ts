@@ -23,17 +23,17 @@ export type WorldMap = {
 };
 
 export const BIOMES: Record<string, { label: string; color: number }> = {
-  ocean: { label: "Ocean", color: 0x1b3a5c },
-  sea_ice: { label: "Sea ice", color: 0x9fb8c8 },
-  ice_sheet: { label: "Ice sheet", color: 0xe8f1f6 },
-  tundra: { label: "Tundra", color: 0x7c7e6d },
-  boreal_forest: { label: "Boreal forest", color: 0x2f5d43 },
-  temperate_forest: { label: "Temperate forest", color: 0x4a7a3a },
-  temperate_swamp: { label: "Temperate swamp", color: 0x3f6b57 },
-  arid_shrubland: { label: "Arid shrubland", color: 0x9a8f5c },
-  desert: { label: "Desert", color: 0xc9b079 },
-  tropical_rainforest: { label: "Tropical rainforest", color: 0x2f6b2f },
-  tropical_swamp: { label: "Tropical swamp", color: 0x37614a },
+  ocean: { label: "Ocean", color: 0x2a5a86 },
+  sea_ice: { label: "Sea ice", color: 0xc5d8e4 },
+  ice_sheet: { label: "Ice sheet", color: 0xf2f7fb },
+  tundra: { label: "Tundra", color: 0x9a9a83 },
+  boreal_forest: { label: "Boreal forest", color: 0x4d7d5c },
+  temperate_forest: { label: "Temperate forest", color: 0x6f9950 },
+  temperate_swamp: { label: "Temperate swamp", color: 0x5b8a70 },
+  arid_shrubland: { label: "Arid shrubland", color: 0xb3a56a },
+  desert: { label: "Desert", color: 0xdcc58a },
+  tropical_rainforest: { label: "Tropical rainforest", color: 0x4f8f45 },
+  tropical_swamp: { label: "Tropical swamp", color: 0x4e8567 },
 };
 
 export function biomeLabel(id: string): string {
