@@ -321,8 +321,14 @@ def test_world_map_generates_persists_and_is_immutable(database):
         world = read_map(conn)
     assert world["tile_count"] == 362 and world["frequency"] == 6
     sample = world["tiles"][0]
-    assert set(sample) >= {"id", "lat", "lon", "center", "biome", "neighbor_count", "polygon"}
+    assert set(sample) >= {"id", "lat", "lon", "center", "normal", "biome", "river_flow",
+                           "landmass_size", "neighbor_count", "polygon"}
     assert len(sample["polygon"]) in (5, 6)
+    # The render model carries land and the polar sea ice, never the open ocean.
+    assert all(t["elevation"] >= 0 or t["biome"] == "sea_ice" for t in world["tiles"])
+    # Rivers arrive as ready-to-draw segments keyed to the same relief the client renders.
+    assert world["relief_gain"] > 0 and world["elevation_max"] > 0
+    assert all({"a", "b", "flow"} <= set(r) for r in world["rivers"])
     # One-shot: a second generation is refused, never a silent overwrite.
     with pytest.raises(DomainError) as error, transaction() as conn:
         generate_and_store(conn, "Church", frequency=6)
@@ -342,6 +348,7 @@ def test_world_map_endpoint_serves_geography_or_404(database):
             generate_and_store(conn, "Church", frequency=6)
         body = client.get("/world/map").json()
         assert body["tile_count"] == 362 and body["name"] == "Hesperia"
+        assert body["land_count"] <= body["tile_count"]
 
 
 def test_multiple_players_share_one_election(database):
