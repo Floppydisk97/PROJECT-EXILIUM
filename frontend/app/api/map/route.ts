@@ -13,7 +13,7 @@ export async function GET(request: Request) {
     try {
       const upstream = await fetch(`${apiBase()}/world/map`, {
         cache: "no-store",
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(30000), // tolerate a free-tier API cold start
       });
       if (upstream.status === 404) {
         return Response.json({ detail: "World map not generated" }, { status: 404 });

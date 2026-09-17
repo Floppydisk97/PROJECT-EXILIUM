@@ -34,21 +34,24 @@ services:
           name: exilium-db
           property: connectionString
 
-  # Worker del tick: prende il lock del mondo e risolve i tick scaduti (always-on).
-  - type: worker
-    runtime: python
-    name: exilium-worker
-    plan: free
-    rootDir: backend
-    buildCommand: pip install -r requirements.lock.txt
-    startCommand: python -m app.worker
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.6"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: exilium-db
-          property: connectionString
+  # Worker del tick (always-on): risolve i tick scaduti alle 00:00 UTC.
+  # NB: su Render i worker richiedono un piano a pagamento (non free). Per attivarlo,
+  # togli il commento e imposta un piano a pagamento (es. starter). Senza worker il
+  # globo si vede lo stesso: la geografia è statica e l'economia semplicemente non avanza.
+  # - type: worker
+  #   runtime: python
+  #   name: exilium-worker
+  #   plan: starter
+  #   rootDir: backend
+  #   buildCommand: pip install -r requirements.lock.txt
+  #   startCommand: python -m app.worker
+  #   envVars:
+  #     - key: PYTHON_VERSION
+  #       value: "3.12.6"
+  #     - key: DATABASE_URL
+  #       fromDatabase:
+  #         name: exilium-db
+  #         property: connectionString
 
   # Frontend Next.js: renderizza il globo. Chiama l'API server-side via API_INTERNAL_URL.
   - type: web

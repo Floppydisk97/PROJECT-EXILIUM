@@ -71,6 +71,20 @@ stringhe JSON per evitare perdita di precisione JavaScript. `alloy_milli / 1000`
 è il valore in unità di risorsa. Una lettura città materializza la produzione
 maturata; il ledger mostra solo eventi già materializzati.
 
+## Deploy pubblico su Render
+
+Il file `render.yaml` è un blueprint che provisiona l'intero stack (dove worker e
+PostgreSQL possono girare, a differenza di Vercel). Su Render: **New → Blueprint**,
+connetti questo repo, scegli il branch che contiene `render.yaml`, poi **Apply**.
+
+Vengono creati: `exilium-db` (PostgreSQL), `exilium-api` (FastAPI; applica le migrazioni
+e genera `Hesperia` alla prima partenza) e `exilium-web` (frontend del globo). Il worker
+del tick è incluso ma commentato: su Render richiede un piano a pagamento, e non serve per
+vedere il globo (la geografia è statica). L'URL pubblico è quello di `exilium-web`.
+
+Note piano free: i web service vanno in sleep quando inattivi (primo caricamento più lento)
+e il database free scade dopo 30 giorni.
+
 ## Verifica
 
 ```powershell
