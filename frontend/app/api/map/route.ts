@@ -1,18 +1,17 @@
 import { gzipSync } from "node:zlib";
+import { apiBase } from "../../lib/api";
 
 // Proxies the authoritative planet map from the internal API to the browser.
 // The map is immutable once generated, so a successful response is cached in this
 // process and served pre-gzipped: the raw payload is several MB, gzip cuts it to ~1 MB.
 export const runtime = "nodejs";
 
-const API = process.env.API_INTERNAL_URL ?? "http://127.0.0.1:8000";
-
 let cache: { gz: ArrayBuffer; raw: string } | null = null;
 
 export async function GET(request: Request) {
   if (!cache) {
     try {
-      const upstream = await fetch(`${API}/world/map`, {
+      const upstream = await fetch(`${apiBase()}/world/map`, {
         cache: "no-store",
         signal: AbortSignal.timeout(20000),
       });

@@ -1,4 +1,5 @@
 import Globe from "./globe/Globe";
+import { apiBase } from "./lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ type World = {
 
 async function loadWorld(): Promise<World | null> {
   try {
-    const response = await fetch(`${process.env.API_INTERNAL_URL ?? "http://127.0.0.1:8000"}/world`, {
+    const response = await fetch(`${apiBase()}/world`, {
       cache: "no-store",
       signal: AbortSignal.timeout(5000),
     });
