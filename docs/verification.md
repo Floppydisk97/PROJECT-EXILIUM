@@ -33,12 +33,31 @@ con tre giocatori nello stesso mondo.
 Pytest riporta due avvisi di deprecazione di dipendenze Starlette/AnyIO riguardanti
 il TestClient; non sono errori o test saltati.
 
+## Consolidamento e scalabilità (migrazione 0002)
+
+| Verifica | Esito |
+| --- | --- |
+| `pytest -q` su PostgreSQL 17 reale, dopo 0002 | **24 passed** (22 originali + 2 nuovi) |
+| Equivalenza `balance_milli == SUM(ledger)` post produzione/upgrade | OK |
+| Rifiuto scoperto O(1) senza scansione ledger (CheckViolation) | OK |
+| Rerun migrazioni 0001+0002 e mondo singleton | OK |
+| Immutabilità ledger/tick e concorrenza (4 worker, 4 invii) invariate | OK |
+| `pg_dump -Fc` + `pg_restore --disable-triggers` in DB nuovo | OK, nessun raddoppio del cursore |
+| Invariante saldo verificata sul DB ripristinato | 105000 = 105000 |
+| Digest immutabili risolti dal registry e fissati | postgres/python/node |
+
+I due test aggiunti sono `test_materialized_balance_equals_ledger_sum` (equivalenza dopo
+recupero multi-giorno e materializzazione su lettura) e
+`test_materialized_balance_rejects_overdraft_without_scanning_ledger`.
+
 ## Limiti della verifica
 
 Docker Engine non è installato nell'ambiente: build e avvio dei container non sono
 stati eseguiti localmente. Sono predisposti nella CI insieme ai test PostgreSQL e
-alla build frontend; la CI non è stata eseguita su un servizio remoto.
-Le immagini base Docker usano tag di versione principale, non digest immutabili.
+alla build frontend; la CI non è stata eseguita su un servizio remoto. Di `backup.sh`
+e `restore.sh` è stata validata localmente solo la meccanica SQL (`pg_dump`/`pg_restore`
+e la verifica dell'invariante); il wrapper `docker compose` non è stato eseguito.
+Le immagini base Docker sono ora fissate per digest immutabile.
 Non sono stati eseguiti test di carico, disaster recovery o deployment pubblico.
 
 Node, PostgreSQL e il validatore Compose sono stati scaricati come strumenti

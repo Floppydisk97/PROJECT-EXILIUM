@@ -40,10 +40,11 @@ def owned_city(conn, city_id, owner_id):
 
 
 def balance(conn, city_id):
+    # O(1) read of the materialized cursor. The ledger trigger keeps it exactly
+    # equal to SUM(resource_ledger.amount); test_materialized_balance_* guards it.
     return int(conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) AS balance FROM resource_ledger WHERE city_id = %s",
-        (city_id,),
-    ).fetchone()["balance"])
+        "SELECT balance_milli FROM cities WHERE id = %s", (city_id,)
+    ).fetchone()["balance_milli"])
 
 
 def entry(conn, city_id, amount, reason, event_key, effective_at):

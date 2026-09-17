@@ -29,7 +29,11 @@ Guerre, fazioni, diplomazia e bilanciamento politico restano da progettare.
 `players` contiene soltanto hash SHA-256 di token casuali ad alta entropia.
 `cities` contiene proprietario univoco, livello e istante di produzione liquidata.
 `resource_ledger` contiene accrediti/addebiti firmati, causale, evento univoco e data
-economica. Il saldo è SEMPRE la somma del ledger, senza un secondo saldo mutabile.
+economica. Il ledger resta l'unica fonte di verità ed è immutabile. `cities.balance_milli`
+è un cursore materializzato del saldo, non un secondo saldo autonomo: il trigger di
+inserimento del ledger lo aggiorna nella stessa transazione dell'entry ed è SEMPRE uguale
+a `SUM(resource_ledger.amount)` (invariante verificata dai test di equivalenza). Serve a
+evitare la scansione O(n) del ledger sia in lettura del saldo sia nel controllo di scoperto.
 `orders` conserva intenzione, chiave idempotente, tick bersaglio ed esito.
 `ticks` conserva confine, ruleset e riepilogo del risultato atomico.
 
@@ -37,8 +41,9 @@ Vincoli PostgreSQL: mondo unico, foreign key senza cascade distruttivi, un solo
 proprietario per città, importi non nulli e segni compatibili con causale, eventi
 ledger univoci, chiave ordine unica per città, massimo un ordine per tipo/città/tick,
 numero tick e confine univoci. Trigger vietano UPDATE/DELETE/TRUNCATE del ledger e
-dei tick. Il trigger degli addebiti blocca la città e impedisce un saldo negativo.
-Un amministratore DB resta fidato: può cambiare lo schema o disabilitare trigger.
+dei tick. Il trigger degli addebiti blocca la riga città, aggiorna il cursore del saldo
+e impedisce un saldo negativo con costo O(1). Un amministratore DB resta fidato: può
+cambiare lo schema o disabilitare trigger.
 
 Invarianti applicative: ogni mutazione economica blocca prima `world FOR UPDATE`,
 poi opera su città/ordini nello stesso ordine deterministico. Non viene mai liquidata
@@ -77,10 +82,14 @@ non si accettano ordini per il tick in chiusura.
 
 Il lock globale privilegia correttezza e auditabilità; non è una soluzione per milioni
 di città. La somma del ledger e la liquidazione di tutte le città richiederanno snapshot
-riconciliabili e partizionamento prima di una scala elevata. Non introdurre cache saldi
-senza test di equivalenza col ledger. Nessun requisito di alta disponibilità è ancora
-implementato. Compose è per sviluppo locale; non include TLS, backup o gestione account
-pubblica. I token si provisionano con CLI e non vengono salvati nel frontend.
+riconciliabili e partizionamento prima di una scala elevata. Il cursore `balance_milli`
+(migrazione 0002) rimuove il costo O(n) del saldo su lettura e scrittura ed è coperto da
+test di equivalenza col ledger; ogni ulteriore cache economica deve mantenere la stessa
+verifica. Nessun requisito di alta disponibilità è ancora implementato. Compose è per
+sviluppo locale; non include TLS né gestione account pubblica. `scripts/backup.sh` e
+`scripts/restore.sh` producono e ricaricano dump verificati (il restore rifiuta un mondo
+in cui il saldo materializzato diverge dal ledger). I token si provisionano con CLI e non
+vengono salvati nel frontend.
 
 ## Riferimenti tecnici
 

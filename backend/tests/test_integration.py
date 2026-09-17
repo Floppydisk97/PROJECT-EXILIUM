@@ -234,6 +234,40 @@ def test_exact_cutoff_rejects_order_and_runs_tick(database, monkeypatch):
     assert accepted["submitted_at"] == due
 
 
+def test_materialized_balance_equals_ledger_sum(database):
+    first, second = player("A"), player("B")
+    enqueue(first)
+    enqueue(first, "policy_vote", "industrial")
+    enqueue(second)
+    age_world(days=2)
+    catch_up()
+    with transaction() as conn:
+        # Read materializes maturing production; equivalence must still hold after.
+        read_city(conn, first["city_id"], first["player_id"])
+        cities = conn.execute("SELECT id, balance_milli FROM cities ORDER BY id").fetchall()
+        for city in cities:
+            ledger_sum = int(conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS s FROM resource_ledger WHERE city_id = %s",
+                (city["id"],),
+            ).fetchone()["s"])
+            assert int(city["balance_milli"]) == ledger_sum
+            assert balance(conn, city["id"]) == ledger_sum
+            assert ledger_sum > 0
+
+
+def test_materialized_balance_rejects_overdraft_without_scanning_ledger(database):
+    p = player()
+    with transaction() as conn:
+        service.entry(conn, p["city_id"], -100000, "upgrade", "spend-all", database_now(conn))
+        assert balance(conn, p["city_id"]) == 0
+    with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
+        service.entry(conn, p["city_id"], -1, "upgrade", "overdraft", database_now(conn))
+    with transaction() as conn:
+        assert int(conn.execute(
+            "SELECT balance_milli FROM cities WHERE id = %s", (p["city_id"],)
+        ).fetchone()["balance_milli"]) == 0
+
+
 def test_multiple_players_share_one_election(database):
     first, second, third = player("A"), player("B"), player("C")
     enqueue(first, "policy_vote", "industrial")
