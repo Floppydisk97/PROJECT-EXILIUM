@@ -45,11 +45,12 @@ generata da seed, poi immutabile):
 docker compose exec api python -m app.mapcli "Hesperia-01"
 ```
 
-`--frequency N` (2..96) regola la suddivisione geodetica: i tile sono `10*N^2 + 2`. Il
-default N=80 produce **64.002 tile**, di cui ~17.900 di terra (sea level al 72° percentile,
+`--frequency N` (2..160) regola la suddivisione geodetica: i tile sono `10*N^2 + 2`. Il
+default N=139 produce **193.212 tile**, di cui ~54.100 di terra (sea level al 72° percentile,
 scelto perché sotto quella soglia le terre percolano in un unico supercontinente): una città
-per casella di terra, quindi il mondo ospita ben oltre **5.000 giocatori**. Generazione ~2,4 s
-e ~130 MB di picco.
+per casella di terra, quindi il mondo ospita dieci volte il target di **5.000 giocatori**.
+Generazione ~6 s e ~330 MB di picco: è l'intera sfera costruita in memoria in una volta, ed è
+questo a fissare il tetto della frequenza su un'istanza piccola.
 
 Il generatore v2 produce forme del terreno riconoscibili, non macchie di rumore:
 
@@ -63,13 +64,17 @@ Il generatore v2 produce forme del terreno riconoscibili, non macchie di rumore:
   connesse danno a ogni tile la dimensione della sua massa continentale;
 - **poli** — poli più freddi, quindi calotte glaciali e banchisa formano vere calotte.
 
-`GET /world/map` serve il *render model*: le terre, la banchisa polare, l'anello di
-piattaforma continentale attorno a ogni costa (l'oceano oltre la piattaforma è un guscio
-liscio lato client), la rete idrografica già risolta in segmenti, e la normale del terreno di
-ogni tile per l'ombreggiatura del rilievo. Compresso con gzip: ~10,9 MB → ~1,7 MB.
-La tabella conserva comunque la geografia completa. La rigenerazione è rifiutata:
-ridimensionare o rigenerare il mondo richiede una migrazione dedicata (vedi
-`0004_bigger_world` e `0005_landforms`).
+`GET /world/map` serve il *render model* **in colonne**. A questa scala un oggetto JSON per
+tile spenderebbe più byte a ripetere i nomi dei campi che sulla geografia, quindi ogni campo
+è un array parallelo; e i vertici dei poligoni sono centroidi condivisi da tre tile ciascuno,
+quindi vivono in un unico pool e il tile ne cita solo gli indici. Insieme portano il payload a
+un terzo della codifica ingenua: **14,1 MB grezzi → 3,5 MB gzip** (contro 32 MB → 5,2 MB).
+Contiene le terre, la banchisa polare, l'anello di piattaforma continentale attorno a ogni
+costa (l'oceano oltre la piattaforma è un guscio liscio lato client), la rete idrografica già
+risolta in segmenti e la normale del terreno di ogni tile. Latitudine e longitudine non
+viaggiano: il client le ricava dal vettore centro. La tabella conserva la geografia completa.
+La rigenerazione è rifiutata: ridimensionare o rigenerare il mondo richiede una migrazione
+dedicata (vedi `0004_bigger_world`, `0005_landforms`, `0006_finer_world`).
 
 Esempio API PowerShell, con i valori restituiti dalla CLI:
 

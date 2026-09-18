@@ -1,28 +1,31 @@
 // Biome ids come from the authoritative backend (worldgen.BIOMES). Colours and labels
 // are presentation only; the client never derives geography.
-export type Tile = {
-  id: number;
-  lat: number;
-  lon: number;
-  center: [number, number, number];
-  normal: [number, number, number];
-  elevation: number;
-  temperature: number;
-  rainfall: number;
-  biome: string;
-  river_flow: number;
-  landmass_size: number;
-  neighbor_count: number;
-  polygon: [number, number, number][];
+//
+// The map arrives in columns rather than as a list of tile objects: at production size a
+// JSON object per tile would spend more bytes repeating field names than on the geography.
+// Polygon corners are face centroids shared by three tiles each, so they live in one pool
+// and a tile only quotes indices into it.
+export type TileColumns = {
+  id: number[];
+  center: number[];        // flat, 3 per tile
+  normal: number[];        // flat, 3 per tile
+  elevation: number[];
+  temperature: number[];
+  rainfall: number[];
+  biome: number[];         // index into WorldMap.biome_names
+  river_flow: number[];
+  landmass_size: number[];
+  neighbor_count: number[];
+  ring: number[];          // corner indices, flat
+  ring_offset: number[];   // one more entry than there are tiles
 };
 
-// A river reach, already paired with the tile it drains into by the backend.
-export type River = {
-  a: [number, number, number];
-  b: [number, number, number];
-  flow: number;
-  ae: number; // elevation at the upstream end, for the drawing radius
-  be: number; // elevation at the downstream end (clamped to 0 at the coast)
+export type RiverColumns = {
+  a: number[];   // flat, 3 per reach: the upstream end
+  b: number[];   // flat, 3 per reach: the tile it drains into
+  flow: number[];
+  ae: number[];  // elevation at each end, for the drawing radius
+  be: number[];
 };
 
 export type WorldMap = {
@@ -34,8 +37,25 @@ export type WorldMap = {
   land_count: number;
   elevation_max: number;
   relief_gain: number;
-  rivers: River[];
-  tiles: Tile[];
+  biome_names: string[];
+  corners: number[];       // flat, 3 per corner
+  tiles: TileColumns;
+  rivers: RiverColumns;
+};
+
+// One tile, materialised only when the panel needs to show it.
+export type Tile = {
+  index: number;
+  id: number;
+  lat: number;
+  lon: number;
+  elevation: number;
+  temperature: number;
+  rainfall: number;
+  biome: string;
+  river_flow: number;
+  landmass_size: number;
+  neighbor_count: number;
 };
 
 export const BIOMES: Record<string, { label: string; color: number }> = {
