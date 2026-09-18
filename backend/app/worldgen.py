@@ -38,7 +38,7 @@ from collections import deque
 from dataclasses import dataclass
 
 WORLD_NAME = "Hesperia"
-GENERATOR_VERSION = 4
+GENERATOR_VERSION = 5
 
 # Production size. Sea level sits at SEA_PERCENTILE, so ~24% of tiles are land; one player
 # settles one land tile. f=139 -> 193212 tiles, ~46000 land: nine times the 5000-player
@@ -73,16 +73,16 @@ LAKE_MIN_DEPTH = 8
 # mechanism instead of three.
 BASIN_COUNT = 90
 BASIN_RADIUS_MIN = 0.010
-BASIN_RADIUS_MAX = 0.075
+BASIN_RADIUS_MAX = 0.052
 BASIN_DEPTH_MIN = 350.0
 BASIN_DEPTH_MAX = 1400.0
 
 # Inland seas are a separate, deliberately small population rather than the tail of the
 # same draw. A single skewed distribution either makes every lake too big or never reaches
 # this size at all; two populations say plainly how many of each the planet gets.
-INLAND_SEA_COUNT = 4
-INLAND_SEA_RADIUS_MIN = 0.105
-INLAND_SEA_RADIUS_MAX = 0.165
+INLAND_SEA_COUNT = 3
+INLAND_SEA_RADIUS_MIN = 0.072
+INLAND_SEA_RADIUS_MAX = 0.100
 INLAND_SEA_DEPTH = 1900.0
 BASIN_PLACEMENT_TRIES = 200
 # A bowl of constant radius is a circle, and a planet of circular lakes reads as clip art.
@@ -135,7 +135,7 @@ CONTINENT_FREQUENCY = 2.2
 
 # Fraction of the planet under water. Fixes how much land exists, never how it is connected.
 # At f=139 this leaves ~46000 land tiles, nine times the 5000-player target.
-SEA_PERCENTILE = 0.76
+SEA_PERCENTILE = 0.73
 
 # Biome ids are stable identifiers; the frontend maps them to colours and labels.
 BIOMES = (

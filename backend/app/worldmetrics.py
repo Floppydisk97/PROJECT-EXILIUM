@@ -11,6 +11,12 @@ if TYPE_CHECKING:
     from app.worldgen import World
 
 CONTINENT_MIN_LAND_SHARE = 0.005
+COMPACTNESS_MIN_AREA = 200
+
+# Land a colony could actually use. Standing water is not land to settle, and neither is
+# permanent ice or a bare mountainside -- so "24% land" overstates what the player is
+# offered. This is the number a design decision about world size should be read against.
+UNUSABLE_BIOMES = frozenset({"lake", "ice_sheet", "bare_rock", "snow_cap"})
 DIRECTION_BINS = 18
 
 
@@ -123,11 +129,24 @@ def measure(world: World) -> dict:
             perimeter_per_sqrt_area=perimeter / math.sqrt(area),
         ))
     masses.sort(key=lambda mass: mass.area, reverse=True)
+    # Area-weighted perimeter/sqrt(area) over the masses large enough to read as land rather
+    # than as specks. A compact disc scores 2*sqrt(pi) = 3.54; the ribbons and S-shapes that
+    # started this work scored 18.4. Weighted by area because the masses you can see are the
+    # ones that matter, and unweighted it would be dominated by three-tile islets.
+    shaped = [mass for mass in masses if mass.area >= COMPACTNESS_MIN_AREA]
+    shaped_area = sum(mass.area for mass in shaped)
+    compactness = (
+        sum(mass.perimeter_per_sqrt_area * mass.area for mass in shaped) / shaped_area
+        if shaped_area else 0.0
+    )
     thin_land = sum(
         1 for tile in world.tiles if tile.elevation >= 0
         and sum(world.tiles[n].elevation >= 0 for n in tile.neighbors) <= 3
     )
     dry = sum(tile.biome in {"desert", "arid_shrubland"} for tile in world.tiles)
+    usable = sum(
+        tile.elevation >= 0 and tile.biome not in UNUSABLE_BIOMES for tile in world.tiles
+    )
     continent_min_area = max(1, math.ceil(land_count * CONTINENT_MIN_LAND_SHARE))
     return {
         "definitions": {
@@ -135,6 +154,8 @@ def measure(world: World) -> dict:
             "continent": f"mass with area >= {CONTINENT_MIN_LAND_SHARE:.3%} of all land",
             "continent_min_area": continent_min_area,
             "perimeter": "number of geodesic adjacency edges from land to water",
+            "compactness": ("area-weighted perimeter/sqrt(area) over masses of at least "
+                            f"{COMPACTNESS_MIN_AREA} tiles; a compact disc scores 3.54"),
         },
         "tiles": len(world.tiles),
         "land_tiles": land_count,
@@ -144,6 +165,10 @@ def measure(world: World) -> dict:
         "largest_mass_tiles": masses[0].area if masses else 0,
         "largest_mass_land_share": round(masses[0].area / land_count if masses else 0.0, 6),
         "islands_under_20": sum(mass.area < 20 for mass in masses),
+        "compactness": round(compactness, 4),
+        "usable_land_tiles": usable,
+        "usable_land_share": round(usable / len(world.tiles), 6),
+        "usable_of_land": round(usable / land_count if land_count else 0.0, 6),
         "dry_land_tiles": dry,
         "dry_land_share": round(dry / land_count if land_count else 0.0, 6),
         "thin_land_tiles": thin_land,

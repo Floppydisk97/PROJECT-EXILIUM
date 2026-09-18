@@ -108,9 +108,8 @@ seed, frequenza geodetica, livello del mare e versione del generatore; `world_ti
 una riga per casella. Come il ledger, entrambe sono un audit: trigger vietano
 UPDATE/DELETE/TRUNCATE. Rigenerare non è un'operazione applicativa — `generate_and_store`
 rifiuta con 409 se la mappa esiste già — ed è possibile solo tramite una migrazione dedicata
-che disabilita i trigger, azzera le tabelle e le riabilita. È il percorso usato da `0004`
-(mondo più grande), `0005` (forme del terreno), `0006` (tassellatura più fitta) e `0007`
-(generatore v3).
+che disabilita i trigger, azzera le tabelle e le riabilita. È il percorso usato da tutte le migrazioni
+che hanno cambiato la geografia, da `0004` a `0009`.
 
 La sfera è un icosaedro suddiviso: ogni vertice originale è una casella del duale di
 Goldberg, quindi esagoni con esattamente dodici pentagoni ai vertici dell'icosaedro
@@ -118,7 +117,7 @@ Goldberg, quindi esagoni con esattamente dodici pentagoni ai vertici dell'icosae
 riproducibilità cross-platform dei float non è richiesta, quella entro un interprete sì ed è
 verificata dai test. Nessun valore economico è in virgola mobile.
 
-Il generatore v4 produce forme riconoscibili anziché macchie di rumore: catene montuose da
+Il generatore v5 produce forme riconoscibili anziché macchie di rumore: catene montuose da
 rumore *ridged* raccolto in cinture; fiumi da accumulo di deflusso a valle sul grafo delle
 caselle, con i bacini chiusi abbastanza pieni promossi a laghi; deserti da un profilo zonale
 delle precipitazioni con fasce aride subtropicali, continentalità (BFS della distanza dal
@@ -162,6 +161,17 @@ bordo frastagliato dentro un lago solo — la riva bassa diventa terra mentre il
 e lascia un fiume che risale verso il proprio lago. E la quota di una casella d'acqua è la
 superficie, non il fondale, esattamente come per l'oceano: ogni casella di un bacino si riempie
 allo stesso livello di sfioro, quindi il lago è piatto anziché una collina blu bitorzoluta.
+
+Le dimensioni contano quanto l'esistenza: alla prima versione con i laghi il corpo maggiore
+copriva 625 caselle e dominava il continente che lo ospitava. Il raggio massimo delle conche
+e dei mari interni è stato ridotto fino a lasciare un solo corpo oltre le trecento caselle,
+qualche grande lago, e la coda di pozze sotto le cinque.
+
+Un lago non è attraversato da un fiume. La casella di lago sta alla propria superficie,
+quindi supera il test `elevation >= 0`, e raccoglie ogni goccia del suo bacino, quindi supera
+anche quello sulla portata: il render model disegnava un fiume dritto in mezzo allo specchio
+d'acqua. Il modello esclude ora le caselle di lago come *sorgente* di un tratto, e il fiume
+finisce sulla riva perché il tratto che vi entra viene mantenuto.
 
 Il rilievo da solo non offre comunque abbastanza conche, quindi il pianeta ne riceve di
 seminate: scodelle con un bordo proprio, in due popolazioni distinte — molte piccole, poche
@@ -243,7 +253,13 @@ sviluppo locale; non include TLS né gestione account pubblica. `scripts/backup.
 in cui il saldo materializzato diverge dal ledger). I token si provisionano con CLI e non
 vengono salvati nel frontend.
 
-Sulla geografia i limiti sono altrettanto espliciti. La generazione costruisce l'intera
+Sulla geografia i limiti sono altrettanto espliciti. La misura che conta per il giocatore non è quanta terra c'è ma quanta se ne può usare: acqua
+ferma, ghiaccio permanente e roccia nuda non sono terra su cui si fonda qualcosa. Al 73esimo
+percentile il 27% della sfera è emerso e il 21,6% è utilizzabile — cioè l'80% delle terre. È
+il numero contro cui va letta ogni decisione sulla dimensione del mondo, e per questo è una
+metrica e non un calcolo a mano.
+
+La generazione costruisce l'intera
 sfera in memoria in una volta: è il picco di memoria, non il tempo, a fissare il tetto della
 frequenza, e su un'istanza piccola quel tetto è vicino.
 
