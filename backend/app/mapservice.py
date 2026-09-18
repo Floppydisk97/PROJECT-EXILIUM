@@ -194,6 +194,7 @@ def read_map(conn) -> dict:
         "sea_level": meta["sea_level"], "tile_count": total, "land_count": land_count,
         # Shared with worldgen so the client's relief matches the normals computed there.
         "elevation_max": worldgen.ELEVATION_MAX, "relief_gain": worldgen.RELIEF_GAIN,
+        "river_min_flow": worldgen.RIVER_MIN_FLOW,
         "biome_names": list(worldgen.BIOMES),
         "corners": corners,
         "rivers": _river_columns(conn),

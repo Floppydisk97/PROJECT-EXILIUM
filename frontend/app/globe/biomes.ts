@@ -37,6 +37,7 @@ export type WorldMap = {
   land_count: number;
   elevation_max: number;
   relief_gain: number;
+  river_min_flow: number;   // the smallest reach the backend sends, for the width ramp
   biome_names: string[];
   corners: number[];       // flat, 3 per corner
   tiles: TileColumns;

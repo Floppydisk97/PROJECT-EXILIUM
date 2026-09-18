@@ -47,8 +47,7 @@ const ALTITUDE_TINT = 0.16; // how much brighter the highest ground is than the 
 const RIVER_LIFT = 1.0022;
 const RIVER_MIN_HALF = 0.025;   // of one tile's width
 const RIVER_MAX_HALF = 0.080;
-const RIVER_MIN_FLOW = 20;   // matches worldgen.RIVER_MIN_FLOW, the smallest reach sent
-const RIVER_FULL_FLOW = 240; // flow at which a river is drawn at full width
+const RIVER_FULL_FLOW = 240; // flow above the smallest reach at which a river is full width
 
 // The hex grid is a tool for picking a tile, not scenery: it fades out at a distance where
 // 24k outlines would only moire, and firms up as the camera closes in.
@@ -277,21 +276,23 @@ export default function Globe() {
         const cy = columns.center[t * 3 + 1];
         const cz = columns.center[t * 3 + 2];
 
+        // Leaning the terrain normal part-way back towards the radial one keeps ranges
+        // catching the light without throwing every slope behind them into pitch black.
+        // Every tile gets one: the sea ice of the caps is lit by the same hillshade as the
+        // land it touches, or the cap reads as a flat plate with a seam along its shore.
+        shadeNormal.set(
+          cx + (columns.normal[t * 3] - cx) * NORMAL_BLEND,
+          cy + (columns.normal[t * 3 + 1] - cy) * NORMAL_BLEND,
+          cz + (columns.normal[t * 3 + 2] - cz) * NORMAL_BLEND,
+        ).normalize();
+        const lambert = SHADE_FLOOR + SHADE_RANGE * Math.max(0, shadeNormal.dot(TERRAIN_LIGHT));
+
         if (dry) {
-          // Leaning the terrain normal part-way back towards the radial one keeps ranges
-          // catching the light without throwing every slope behind them into pitch black.
-          shadeNormal.set(
-            cx + (columns.normal[t * 3] - cx) * NORMAL_BLEND,
-            cy + (columns.normal[t * 3 + 1] - cy) * NORMAL_BLEND,
-            cz + (columns.normal[t * 3 + 2] - cz) * NORMAL_BLEND,
-          ).normalize();
           // Height brightens the ground on top of the hillshade, so a highland reads as a
           // highland even where it happens to face away from the light.
           const altitude = Math.min(elevation, map.elevation_max) / map.elevation_max;
-          const shade = (SHADE_FLOOR + SHADE_RANGE * Math.max(0, shadeNormal.dot(TERRAIN_LIGHT)))
-            * (1 + ALTITUDE_TINT * altitude)
-            * (1 + tileJitter(columns.id[t]));
-          tmp.copy(biomeColors[biomeIndex]).multiplyScalar(shade);
+          tmp.copy(biomeColors[biomeIndex])
+            .multiplyScalar(lambert * (1 + ALTITUDE_TINT * altitude) * (1 + tileJitter(columns.id[t])));
         } else if (biomeNames[biomeIndex] === "ocean") {
           // Shelf: real depth, on a curve that lets the pale water fade back into the open
           // sea quickly -- a shelf should read as shallow water, not as an outline stroke.
@@ -299,7 +300,7 @@ export default function Globe() {
           tmp.copy(shelfShallow).lerp(shelfDeep, Math.pow(depth, 0.85));
           tmp.multiplyScalar(1 + tileJitter(columns.id[t]) * 0.12);
         } else {
-          tmp.copy(biomeColors[biomeIndex]).multiplyScalar(SHADE_FLOOR + SHADE_RANGE * 0.5);
+          tmp.copy(biomeColors[biomeIndex]).multiplyScalar(lambert);
         }
         const grain = biomeGrains[biomeIndex];
 
@@ -433,7 +434,7 @@ export default function Globe() {
         radial.copy(head).normalize();
         across.crossVectors(along, radial);
         if (across.lengthSq() < 1e-12) continue;
-        const grade = Math.min(1, Math.max(0, (riverColumns.flow[i] - RIVER_MIN_FLOW) / RIVER_FULL_FLOW));
+        const grade = Math.min(1, Math.max(0, (riverColumns.flow[i] - map.river_min_flow) / RIVER_FULL_FLOW));
         const half = riverMinHalf + (riverMaxHalf - riverMinHalf) * grade;
         across.normalize().multiplyScalar(half);
         // Overshoot both ends by a half-width so consecutive reaches meet without a notch.
