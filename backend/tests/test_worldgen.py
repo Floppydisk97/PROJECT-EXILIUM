@@ -3,6 +3,7 @@ import math
 import pytest
 
 from app import worldgen
+from app.worldmetrics import measure
 
 
 def test_geodesic_tile_counts_and_twelve_pentagons():
@@ -45,13 +46,32 @@ def test_climate_is_physically_ordered():
     assert 0.5 < ocean < 0.85  # a water world, not fully flooded
 
 
-def test_production_frequency_supports_the_player_capacity():
-    world = worldgen.generate("Hesperia-01", frequency=worldgen.PRODUCTION_FREQUENCY)
+@pytest.mark.parametrize("seed", ["Hesperia-01", "Hesperia-02", "Hesperia-03", "Hesperia-04"])
+def test_production_frequency_supports_capacity_and_topology_for_supported_seeds(seed):
+    world = worldgen.generate(seed, frequency=worldgen.PRODUCTION_FREQUENCY)
     assert len(world.tiles) == 10 * worldgen.PRODUCTION_FREQUENCY ** 2 + 2
     land = sum(1 for t in world.tiles if t.elevation >= 0)
     # One player settles one land tile; the world must seat at least the target capacity.
     assert land >= worldgen.MIN_PLAYER_CAPACITY
     assert sum(1 for t in world.tiles if len(t.polygon) == 5) == 12
+    metrics = measure(world)
+    assert metrics["land_share"] == pytest.approx(0.24, abs=0.0002)
+    assert metrics["continent_count"] >= 3
+    assert metrics["largest_mass_land_share"] < 0.55
+    assert metrics["dry_land_share"] < 0.25
+    if seed == "Hesperia-01":
+        assert metrics["islands_under_20"] == 34
+        assert metrics["thin_land_share"] <= 0.031049
+        assert metrics["coast_direction_spectrum"]["peak_to_mean"] < 1.667
+
+
+@pytest.mark.parametrize("seed", ["Hesperia-01", "Hesperia-02", "Hesperia-03", "Hesperia-04"])
+def test_supported_seeds_remain_split_at_review_frequency(seed):
+    metrics = measure(worldgen.generate(seed, frequency=60))
+    assert metrics["land_share"] == pytest.approx(0.24, abs=0.0002)
+    assert metrics["continent_count"] >= 3
+    assert metrics["largest_mass_land_share"] < 0.55
+    assert metrics["dry_land_share"] < 0.25
 
 
 def test_invalid_parameters_are_rejected():
@@ -62,6 +82,14 @@ def test_invalid_parameters_are_rejected():
 
 
 def test_rivers_flow_downhill_into_the_sea_or_a_lake():
+    """Water never climbs, and the drainage graph has no cycles.
+
+    The invariant used to be the stronger `strictly downhill`, which held only because a
+    river stopped at the first hollow it met. Now that depressions are filled and routing
+    follows the water surface, a river crosses a lake at constant level -- so two consecutive
+    tiles can share an elevation, and acyclicity has to be asserted directly rather than
+    inferred from a strict descent.
+    """
     world = worldgen.generate("Church", frequency=24)
     by_id = {t.id: t for t in world.tiles}
     rivers = [t for t in world.tiles if t.elevation >= 0 and t.river_flow >= worldgen.RIVER_MIN_FLOW]
@@ -71,11 +99,70 @@ def test_rivers_flow_downhill_into_the_sea_or_a_lake():
             assert t.downstream == -1
             continue
         if t.downstream == -1:
-            continue  # closed basin
+            continue  # a basin with nowhere to spill
         downstream = by_id[t.downstream]
-        assert downstream.id in t.neighbors          # water only moves to a neighbour
-        assert downstream.elevation < t.elevation    # and only downhill: no cycles
+        assert downstream.id in t.neighbors            # water only moves to a neighbour
+        assert downstream.elevation <= t.elevation     # and never uphill
         assert downstream.river_flow >= t.river_flow or downstream.elevation < 0
+
+    # Every drop reaches the sea or a terminal basin: following downstream from anywhere
+    # terminates. A cycle would make flow accumulation meaningless and loop forever here.
+    state = {}   # 0 = on the current path, 1 = already known to terminate
+    for start in world.tiles:
+        if start.elevation < 0 or start.id in state:
+            continue
+        path = []
+        current = start.id
+        while current != -1 and current not in state:
+            assert state.get(current) != 0, "the drainage graph contains a cycle"
+            state[current] = 0
+            path.append(current)
+            current = by_id[current].downstream
+        assert current == -1 or state[current] == 1, "the drainage graph contains a cycle"
+        for tile_id in path:
+            state[tile_id] = 1
+
+
+def test_the_world_has_lakes_of_many_sizes_and_at_least_one_inland_sea():
+    """Standing water is a spectrum, not a rarity.
+
+    Before depressions were filled the rule could only find single-tile pits, and the
+    production world had thirty lake tiles in total. These bounds are what stop that
+    silently coming back.
+    """
+    world = worldgen.generate("Hesperia-01", frequency=60)
+    lake = [t for t in world.tiles if t.biome == "lake"]
+    assert lake, "a planet with rain and relief must hold standing water"
+
+    by_id = {t.id: t for t in world.tiles}
+    seen: set[int] = set()
+    bodies = []
+    for tile in lake:
+        if tile.id in seen:
+            continue
+        seen.add(tile.id)
+        body = [tile.id]
+        frontier = [tile.id]
+        while frontier:
+            current = frontier.pop()
+            for neighbor in by_id[current].neighbors:
+                if by_id[neighbor].biome == "lake" and neighbor not in seen:
+                    seen.add(neighbor)
+                    body.append(neighbor)
+                    frontier.append(neighbor)
+        bodies.append(len(body))
+
+    assert len(bodies) >= 15                       # many, not a handful
+    assert max(bodies) >= 60                       # and at least one big enough to matter
+    assert sum(1 for size in bodies if size <= 4) >= 3   # down to tarns
+
+    # A lake's surface is flat: every tile of one body shares an elevation. Stored at the
+    # bed instead, a lake would be drawn as a lumpy blue hillside.
+    for tile in lake:
+        for neighbor in tile.neighbors:
+            other = by_id[neighbor]
+            if other.biome == "lake":
+                assert abs(other.elevation - tile.elevation) <= 1
 
 
 def test_landmasses_are_consistent_across_their_tiles():
