@@ -3,6 +3,7 @@ import math
 import pytest
 
 from app import worldgen
+from app.worldmetrics import measure
 
 
 def test_geodesic_tile_counts_and_twelve_pentagons():
@@ -45,13 +46,32 @@ def test_climate_is_physically_ordered():
     assert 0.5 < ocean < 0.85  # a water world, not fully flooded
 
 
-def test_production_frequency_supports_the_player_capacity():
-    world = worldgen.generate("Hesperia-01", frequency=worldgen.PRODUCTION_FREQUENCY)
+@pytest.mark.parametrize("seed", ["Hesperia-01", "Hesperia-02", "Hesperia-03", "Hesperia-04"])
+def test_production_frequency_supports_capacity_and_topology_for_supported_seeds(seed):
+    world = worldgen.generate(seed, frequency=worldgen.PRODUCTION_FREQUENCY)
     assert len(world.tiles) == 10 * worldgen.PRODUCTION_FREQUENCY ** 2 + 2
     land = sum(1 for t in world.tiles if t.elevation >= 0)
     # One player settles one land tile; the world must seat at least the target capacity.
     assert land >= worldgen.MIN_PLAYER_CAPACITY
     assert sum(1 for t in world.tiles if len(t.polygon) == 5) == 12
+    metrics = measure(world)
+    assert metrics["land_share"] == pytest.approx(0.24, abs=0.0002)
+    assert metrics["continent_count"] >= 3
+    assert metrics["largest_mass_land_share"] < 0.55
+    assert metrics["dry_land_share"] < 0.25
+    if seed == "Hesperia-01":
+        assert metrics["islands_under_20"] == 34
+        assert metrics["thin_land_share"] <= 0.031049
+        assert metrics["coast_direction_spectrum"]["peak_to_mean"] < 1.667
+
+
+@pytest.mark.parametrize("seed", ["Hesperia-01", "Hesperia-02", "Hesperia-03", "Hesperia-04"])
+def test_supported_seeds_remain_split_at_review_frequency(seed):
+    metrics = measure(worldgen.generate(seed, frequency=60))
+    assert metrics["land_share"] == pytest.approx(0.24, abs=0.0002)
+    assert metrics["continent_count"] >= 3
+    assert metrics["largest_mass_land_share"] < 0.55
+    assert metrics["dry_land_share"] < 0.25
 
 
 def test_invalid_parameters_are_rejected():

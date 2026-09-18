@@ -37,7 +37,7 @@ from collections import deque
 from dataclasses import dataclass
 
 WORLD_NAME = "Hesperia"
-GENERATOR_VERSION = 3
+GENERATOR_VERSION = 4
 
 # Production size. Sea level sits at SEA_PERCENTILE, so ~24% of tiles are land; one player
 # settles one land tile. f=139 -> 193212 tiles, ~46000 land: nine times the 5000-player
@@ -72,11 +72,15 @@ WARP_STRENGTH = 0.28
 COAST_DETAIL = 0.15
 COAST_BAND = 0.10
 
-# Island arcs: ridged high-frequency noise, allowed only where a slow mask is high. Ridges
-# are lines, so the islands come out in chains the way volcanic arcs do; a plain octave of
-# noise gives isolated dots instead.
-ARC_STRENGTH = 0.66
-ARC_BIAS = 0.34
+# Island arcs are compact, seeded radial uplifts. Each chain follows a great-circle segment
+# and each centre owns its radius and falloff; unlike a ridged wave, the field has no
+# parallel, periodically repeated zero contours.
+ISLAND_ARC_COUNT = 10
+ISLANDS_PER_ARC = 6
+ISLAND_RADIUS_MIN = 0.012
+ISLAND_RADIUS_MAX = 0.025
+ISLAND_STRENGTH_MIN = 0.585
+ISLAND_STRENGTH_MAX = 0.835
 SPECKLE_STRENGTH = 0.18
 
 # Ocean basins. Ridged noise -- high along lines, near zero away from them -- subtracted
@@ -88,7 +92,7 @@ SPECKLE_STRENGTH = 0.18
 # percolates more readily, not less. Measured at f=48, seed Hesperia-01, this takes the
 # largest landmass from 75% of all land down to 40%, leaving three continents.
 RIFT_STRENGTH = 0.85
-RIFT_FREQUENCY = 3.8
+RIFT_FREQUENCY = 4.0
 RIFT_SHARPNESS = 2
 
 # The base frequency of the continental field. Swept from 2.2 to 4.6: higher values gave a
@@ -226,6 +230,9 @@ def _dual_cells(verts, faces):
         adjacency[a].update((b, c))
         adjacency[b].update((a, c))
         adjacency[c].update((a, b))
+        # The primal triangles are dead after this pass. Releasing tuples progressively
+        # avoids overlapping their full storage with the completed adjacency sets.
+        faces[fi] = None
 
     polygons: list[tuple[tuple[float, float, float], ...]] = []
     ordered_neighbors: list[tuple[int, ...]] = []
@@ -265,6 +272,67 @@ def _rotate_z(v, angle):
     return (v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2])
 
 
+def _slerp(a, b, fraction: float):
+    angle = math.acos(max(-1.0, min(1.0, _dot(a, b))))
+    if angle < 1e-9:
+        return a
+    scale = math.sin(angle)
+    return _normalize(tuple(
+        math.sin((1.0 - fraction) * angle) / scale * a[i]
+        + math.sin(fraction * angle) / scale * b[i] for i in range(3)
+    ))
+
+
+def _island_centers(rng: random.Random):
+    """Deterministic compact island centres arranged on jittered great-circle segments."""
+    centers = []
+    for _ in range(ISLAND_ARC_COUNT):
+        start = _normalize((rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1)))
+        tangent = _normalize(_cross(start, _normalize(
+            (rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1)))))
+        length = rng.uniform(0.20, 0.36)
+        end = _normalize(tuple(math.cos(length) * start[i] + math.sin(length) * tangent[i]
+                               for i in range(3)))
+        for index in range(ISLANDS_PER_ARC):
+            fraction = index / (ISLANDS_PER_ARC - 1)
+            point = _slerp(start, end, fraction)
+            along = _normalize(_cross(_cross(point, tangent), point))
+            jitter_axis = _normalize(_cross(point, along))
+            jitter = rng.uniform(-0.010, 0.010)
+            point = _normalize(tuple(math.cos(jitter) * point[i]
+                                     + math.sin(jitter) * jitter_axis[i] for i in range(3)))
+            radius = rng.uniform(ISLAND_RADIUS_MIN, ISLAND_RADIUS_MAX)
+            centers.append((point, radius, math.cos(radius),
+                            rng.uniform(ISLAND_STRENGTH_MIN, ISLAND_STRENGTH_MAX)))
+    return tuple(centers)
+
+
+class _SeededIslandField:
+    """Compact radial uplifts indexed in 3-D bins, so unused ocean costs stay negligible."""
+    CELL = 0.05  # wider than every island radius (chord length is smaller than arc length)
+
+    def __init__(self, centers):
+        self.bins = {}
+        for item in centers:
+            center = item[0]
+            key = tuple(math.floor(value / self.CELL) for value in center)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        self.bins.setdefault((key[0] + dx, key[1] + dy, key[2] + dz), []).append(item)
+
+    def at(self, point) -> float:
+        uplift = 0.0
+        key = tuple(math.floor(value / self.CELL) for value in point)
+        for center, radius, radius_cosine, strength in self.bins.get(key, ()):
+            cosine = _dot(point, center)
+            if cosine > radius_cosine:
+                distance = math.acos(max(-1.0, min(1.0, cosine)))
+                t = 1.0 - distance / radius
+                uplift = max(uplift, strength * t * t * (3.0 - 2.0 * t))
+        return uplift
+
+
 class _BandNoise:
     """Smooth band-limited noise on the unit sphere: a sum of directional sinusoids with
     seeded random directions, frequencies and phases. Cheap, continuous and deterministic."""
@@ -285,9 +353,47 @@ class _BandNoise:
 
     def at(self, p: tuple[float, float, float]) -> float:
         value = 0.0
+        x, y, z = p
         for direction, freq, phase, amp in self.terms:
-            value += amp * math.sin(freq * _dot(direction, p) + phase)
+            value += amp * math.sin(
+                freq * (direction[0] * x + direction[1] * y + direction[2] * z) + phase
+            )
         return value / self.total  # roughly [-1, 1]
+
+
+class _IsotropicBandNoise:
+    """Band noise whose every octave averages a seeded set of independent directions."""
+
+    def __init__(self, rng: random.Random, octaves: int, base_freq: float):
+        self.octaves = []
+        amplitude = 1.0
+        frequency = base_freq
+        total = 0.0
+        for _ in range(octaves):
+            count = rng.randint(8, 12)
+            terms = tuple((
+                _normalize((rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1))),
+                rng.uniform(0, 2 * math.pi),
+            ) for _ in range(count))
+            self.octaves.append((terms, frequency, amplitude, math.sqrt(count)))
+            total += amplitude
+            amplitude *= 0.55
+            frequency *= 1.9
+        self.total = total
+
+    def at(self, point) -> float:
+        value = 0.0
+        x, y, z = point
+        for terms, frequency, amplitude, normalization in self.octaves:
+            octave = 0.0
+            for direction, phase in terms:
+                octave += math.sin(
+                    frequency * (direction[0] * x + direction[1] * y + direction[2] * z)
+                    + phase
+                )
+            octave /= normalization
+            value += amplitude * octave
+        return max(-1.0, min(1.0, value / self.total))
 
 
 def _domain_warp(fields, p, amount: float):
@@ -490,21 +596,18 @@ def generate(seed: str, frequency: int = 12) -> World:
     # Three independent fields drawn from one generator: the displacement vector.
     coast_warp = tuple(_BandNoise(shape_rng, octaves=3, base_freq=3.4) for _ in range(3))
     coast_noise = _BandNoise(shape_rng, octaves=3, base_freq=8.0)
-    arc_noise = _BandNoise(arc_rng, octaves=3, base_freq=17.0)
-    arc_mask = _BandNoise(arc_rng, octaves=2, base_freq=2.5)
-    rift_noise = _BandNoise(shape_rng, octaves=3, base_freq=RIFT_FREQUENCY)
+    island_field = _SeededIslandField(_island_centers(arc_rng))
+    rift_noise = _IsotropicBandNoise(shape_rng, octaves=3, base_freq=RIFT_FREQUENCY)
 
     # Pass one: the continents, read through the domain warp so their outline is irregular,
     # plus arcs of islands out in open water and a light speckle that breaks up the coasts.
     base_elev = []
     for v in verts:
-        arc = _smoothstep(0.50, 0.90, arc_mask.at(v) * 0.5 + 0.5)
-        chain = (1.0 - abs(arc_noise.at(v))) ** 3
         rift = (1.0 - abs(rift_noise.at(v))) ** RIFT_SHARPNESS
         base_elev.append(
             continents.at(_domain_warp(coast_warp, v, WARP_STRENGTH))
             + SPECKLE_STRENGTH * island_noise.at(v)
-            + ARC_STRENGTH * arc * (chain - ARC_BIAS)
+            + island_field.at(v)
             - RIFT_STRENGTH * rift
         )
 
@@ -556,7 +659,7 @@ def generate(seed: str, frequency: int = 12) -> World:
         # subtropical continent -- and leaves an equatorial or mid-latitude interior wet.
         dryness = _smoothstep(1500.0, 550.0, rain)
         inland = 1.0 - math.exp(-ocean_distance[i] / 13.0)
-        rain *= 1.0 - (0.22 + 0.70 * dryness) * inland
+        rain *= 1.0 - (0.22 + 0.50 * dryness) * inland
         # Orographic effect: compare the range upwind with the ground here. Downwind of a
         # high chain the air is already dry (rain shadow); climbing into it, it dumps rain.
         upwind = _mountain_field(ridge_noise, belt_noise, _rotate_z(v, _upwind_angle(lat)))
@@ -572,6 +675,9 @@ def generate(seed: str, frequency: int = 12) -> World:
             rain = max(rain, 900)
         rainfalls.append(max(0, int(round(rain))))
 
+    # These generation-only arrays otherwise overlap with the river, normal and immutable
+    # Tile objects at the peak. Releasing them is material on the 512 MB production plan.
+    del base_elev, raw_elev, mountains, ocean_distance
     river_flow, downstream = _river_network(elevations, neighbors, rainfalls)
     normals = _terrain_normals(verts, elevations, neighbors)
 

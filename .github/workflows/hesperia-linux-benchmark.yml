@@ -1,0 +1,110 @@
+name: Hesperia Linux benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [benchmark/hesperia-linux]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASELINE_SHA: d17ad3ad0e2340a8431b8837cefe885f68ace59e
+      OUTPUT: benchmark-output
+      IMAGE: hesperia-benchmark:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare identical benchmark image context
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show "$BASELINE_SHA:backend/app/worldgen.py" > benchmark/hesperia/baseline_worldgen.py
+          cp backend/app/worldgen.py benchmark/hesperia/candidate_worldgen.py
+          cp backend/app/worldmetrics.py benchmark/hesperia/worldmetrics.py
+          docker build --pull --tag "$IMAGE" benchmark/hesperia
+          mkdir -p "$OUTPUT"
+          chmod 777 "$OUTPUT"
+
+      - name: Record runner and image provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "runner_name=${RUNNER_NAME}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
+            echo "kernel=$(uname -a)"
+            echo "cpu=$(lscpu | tr '\n' ';')"
+            echo "ram=$(free -h | tr '\n' ';')"
+            echo "image_id=$(docker image inspect "$IMAGE" --format '{{.Id}}')"
+            echo "base_digest=$(docker image inspect python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea --format '{{join .RepoDigests ","}}')"
+            echo "baseline_sha=$BASELINE_SHA"
+            echo "candidate_sha=$GITHUB_SHA"
+          } | tee "$OUTPUT/provenance.txt"
+
+      - name: Run three clean baseline and candidate processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for run in 1 2 3; do
+            for variant in baseline candidate; do
+              docker run --rm --user 10001:10001 \
+                -v "$PWD/$OUTPUT:/out" "$IMAGE" \
+                /usr/bin/time -v -o "/out/${variant}-run-${run}.time" \
+                python /bench/run.py --module "/bench/${variant}_worldgen.py" \
+                --seed Hesperia-01 --frequency 139 \
+                --output "/out/${variant}-run-${run}.json" \
+                2>&1 | tee "$OUTPUT/${variant}-run-${run}.log"
+            done
+          done
+
+      - name: Measure per-seed directional baselines
+        shell: bash
+        run: |
+          set -euo pipefail
+          for frequency in 60 139; do
+            for seed in Hesperia-01 Hesperia-02 Hesperia-03 Hesperia-04; do
+              for variant in baseline candidate; do
+                docker run --rm --user 10001:10001 \
+                  -v "$PWD/$OUTPUT:/out" "$IMAGE" \
+                  python /bench/run.py --module "/bench/${variant}_worldgen.py" \
+                  --seed "$seed" --frequency "$frequency" \
+                  --output "/out/spectrum-${variant}-${seed}-f${frequency}.json" \
+                  2>&1 | tee "$OUTPUT/spectrum-${variant}-${seed}-f${frequency}.log"
+              done
+            done
+          done
+
+      - name: Summarize and enforce RSS limit
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: benchmark-output
+          RUNNER_NAME_TEXT: ${{ runner.name }}
+          RUNNER_OS_TEXT: ${{ runner.os }}
+          RUNNER_ARCH_TEXT: ${{ runner.arch }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          export KERNEL_TEXT="$(uname -a)"
+          export CPU_TEXT="$(lscpu | tr '\n' ';')"
+          export RAM_TEXT="$(free -h | tr '\n' ';')"
+          export IMAGE_ID_TEXT="$(docker image inspect "$IMAGE" --format '{{.Id}}')"
+          export BASE_DIGEST_TEXT="$(docker image inspect python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea --format '{{join .RepoDigests ","}}')"
+          python benchmark/hesperia/summarize.py | tee "$OUTPUT/summary.log"
+          cat "$OUTPUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload raw logs and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hesperia-linux-benchmark-${{ github.sha }}
+          path: benchmark-output/
+          if-no-files-found: error
+          retention-days: 14
