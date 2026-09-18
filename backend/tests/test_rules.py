@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.domain import elected_policy, production_amount
+from app.sim.rules import elected_policy, production_amount
 
 
 def test_production_is_additive_and_integer_over_long_downtime():

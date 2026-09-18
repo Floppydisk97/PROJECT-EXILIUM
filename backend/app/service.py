@@ -1,14 +1,25 @@
+"""The adapter between the simulation and the database.
+
+Every rule of the game lives in `app/sim/`, which cannot see PostgreSQL. This module is the
+seam: it loads rows into simulation state, asks the rules what should happen, and writes the
+described effects back inside one transaction. It also owns what is genuinely the database's
+job and not the simulation's -- locking, authorisation, idempotency and the clock.
+
+The lock model is deliberate and is the reason the rules are per-entity rather than global.
+Economic operations take `world FOR SHARE`: they proceed in parallel with each other but not
+with a tick, and they serialise only on their own city row. The tick takes `world FOR UPDATE`
+and observes a quiescent world.
+"""
 import hashlib
 import secrets
-from datetime import timedelta
 from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
 from app.db import database_now
-from app.domain import (
-    MAX_LEVEL, RULESET, STARTING_ALLOY, UPGRADE_COST, elected_policy, production_amount,
-)
+from app.sim import CityState, OrderState, WorldState, advance
+from app.sim.config import RULESET, STARTING_ALLOY
+from app.sim.rules import settle_city
 
 
 class DomainError(Exception):
@@ -68,13 +79,35 @@ def entry(conn, city_id, amount, reason, event_key, effective_at):
     )
 
 
+def city_state(row) -> CityState:
+    """A database row as the simulation sees it: nothing about ownership or naming, which
+    are the adapter's business, and no column the rules do not actually read."""
+    return CityState(
+        id=row["id"],
+        level=row["level"],
+        balance_milli=int(row["balance_milli"]),
+        settled_at=row["settled_at"],
+    )
+
+
+def world_state(row) -> WorldState:
+    return WorldState(
+        policy=row["policy"], last_tick=row["last_tick"], next_tick_at=row["next_tick_at"]
+    )
+
+
+def write_entry(conn, described):
+    entry(conn, described.city_id, described.amount, described.reason,
+          described.event_key, described.effective_at)
+
+
 def settle(conn, city, until, policy):
-    amount = production_amount(city["settled_at"], until, policy, city["level"])
-    if until == city["settled_at"]:
+    """Apply the settlement the rules describe for this one city."""
+    settlement = settle_city(city_state(city), until, policy)
+    if settlement is None:
         return
-    if amount:
-        key = f"production:{city['id']}:{city['settled_at'].isoformat()}:{until.isoformat()}"
-        entry(conn, city["id"], amount, "production", key, until)
+    if settlement.entry is not None:
+        write_entry(conn, settlement.entry)
     conn.execute("UPDATE cities SET settled_at = %s WHERE id = %s", (until, city["id"]))
 
 
@@ -135,47 +168,57 @@ def submit_order(conn, city_id, owner_id, key, kind, choice):
 
 
 def run_tick(conn):
-    """One tick per transaction. Caller commits; retry is safe after any failure."""
-    world = lock_world(conn)
-    if database_now(conn) < world["next_tick_at"]:
+    """One tick per transaction. Caller commits; retry is safe after any failure.
+
+    The decision is made entirely by `sim.advance`, which touches nothing. What is left here
+    is loading the inputs under the world lock and writing the described effects -- in the
+    same order the rules described them, so a failure part-way leaves the transaction to roll
+    back a coherent prefix rather than an arbitrary one.
+    """
+    world_row = lock_world(conn)
+    if database_now(conn) < world_row["next_tick_at"]:
         return None
-    due, number = world["next_tick_at"], world["last_tick"] + 1
-    cities = conn.execute("SELECT * FROM cities ORDER BY id").fetchall()
-    for city in cities:
-        settle(conn, city, due, world["policy"])
-    orders = conn.execute(
-        "SELECT * FROM orders WHERE target_tick = %s AND status = 'pending' ORDER BY id", (number,)
-    ).fetchall()
-    votes = {}
-    applied = rejected = 0
-    for order in orders:
-        status, outcome = "applied", "vote_counted"
-        if order["kind"] == "policy_vote":
-            votes[order["choice"]] = votes.get(order["choice"], 0) + 1
-        else:
-            level = conn.execute("SELECT level FROM cities WHERE id = %s", (order["city_id"],)).fetchone()["level"]
-            if level >= MAX_LEVEL:
-                status, outcome = "rejected", "maximum_level"
-            elif balance(conn, order["city_id"]) < UPGRADE_COST:
-                status, outcome = "rejected", "insufficient_alloy"
-            else:
-                entry(conn, order["city_id"], -UPGRADE_COST, "upgrade", f"upgrade:{order['id']}", due)
-                conn.execute("UPDATE cities SET level = level + 1 WHERE id = %s", (order["city_id"],))
-                outcome = "level_increased"
-        conn.execute("UPDATE orders SET status = %s, outcome = %s WHERE id = %s", (status, outcome, order["id"]))
-        applied += status == "applied"
-        rejected += status == "rejected"
-    policy = elected_policy(world["policy"], votes)
-    summary = {
-        "policy_before": world["policy"], "policy_after": policy,
-        "cities_settled": len(cities), "applied": applied, "rejected": rejected, "votes": votes,
-    }
+    world = world_state(world_row)
+    cities = [
+        city_state(row)
+        for row in conn.execute("SELECT * FROM cities ORDER BY id").fetchall()
+    ]
+    orders = [
+        OrderState(id=row["id"], city_id=row["city_id"], kind=row["kind"], choice=row["choice"])
+        for row in conn.execute(
+            "SELECT * FROM orders WHERE target_tick = %s AND status = 'pending' ORDER BY id",
+            (world.last_tick + 1,),
+        ).fetchall()
+    ]
+
+    result = advance(world, cities, orders, world.next_tick_at)
+
+    for settlement in result.settlements:
+        if settlement.entry is not None:
+            write_entry(conn, settlement.entry)
+        conn.execute(
+            "UPDATE cities SET settled_at = %s WHERE id = %s",
+            (settlement.city.settled_at, settlement.city.id),
+        )
+    for resolution in result.resolutions:
+        if resolution.entry is not None:
+            write_entry(conn, resolution.entry)
+        if resolution.level_after is not None:
+            conn.execute(
+                "UPDATE cities SET level = %s WHERE id = %s",
+                (resolution.level_after, resolution.city_id),
+            )
+        conn.execute(
+            "UPDATE orders SET status = %s, outcome = %s WHERE id = %s",
+            (resolution.status, resolution.outcome, resolution.order_id),
+        )
+
     conn.execute(
         "INSERT INTO ticks(number, due_at, ruleset, summary) VALUES (%s, %s, %s, %s)",
-        (number, due, RULESET, Jsonb(summary)),
+        (result.number, result.due_at, RULESET, Jsonb(result.summary)),
     )
     conn.execute(
         "UPDATE world SET last_tick = %s, next_tick_at = %s, policy = %s WHERE id = 1",
-        (number, due + timedelta(days=1), policy),
+        (result.number, result.next_tick_at, result.policy_after),
     )
-    return {"number": number, "due_at": due, **summary}
+    return {"number": result.number, "due_at": result.due_at, **result.summary}
