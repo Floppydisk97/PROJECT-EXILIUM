@@ -12,7 +12,7 @@ import {
   type Tile, type WorldMap,
 } from "./biomes";
 import {
-  buildCliffs, buildRivers, buildSteps, buildTerrain, SEA, TERRAIN_FRAG, TERRAIN_LIGHT,
+  buildCliffs, buildGlyphs, buildRivers, buildTerrain, SEA, TERRAIN_FRAG, TERRAIN_LIGHT,
   TERRAIN_VERT, tileAt, tileRadius, tileRing,
 } from "./terrain";
 
@@ -27,7 +27,7 @@ const WAKE_NOTICE_MS = 8_000;
 
 // Shells around the planet, in radii. The ground itself and the water it meets are the
 // terrain module's business; these are the sky.
-const CLOUDS = 1.082;   // cloud deck, just above the tallest peaks
+const CLOUDS = 1.082;   // cloud deck; the ground is one shell now, so this is pure sky
 const RIM = 1.11;       // atmospheric rim drawn over the planet's own limb
 const HALO = 1.5;       // outer halo shell; its falloff ends well inside it
 const HALO_EDGE = 1.3;  // distance from planet centre where the halo fades to zero
@@ -176,14 +176,19 @@ export default function Globe() {
       const cliffMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
       scene.add(new THREE.Mesh(cliffGeom, cliffMat));
 
-      // Inner steps get the same treatment as the coasts: without them the land breaks up
-      // into separate hexagons wherever the planet is seen at a glancing angle.
-      const scarps = buildSteps(map, built.steps);
-      const scarpGeom = new THREE.BufferGeometry();
-      scarpGeom.setAttribute("position", new THREE.BufferAttribute(scarps.positions, 3));
-      scarpGeom.setAttribute("color", new THREE.BufferAttribute(scarps.colors, 3));
-      const scarpMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
-      scene.add(new THREE.Mesh(scarpGeom, scarpMat));
+      // Hills and mountains are marked inside their own hexagon rather than raised out of
+      // it. Double-sided because a glyph's winding follows the tangent frame of wherever it
+      // happens to sit on the sphere, and offset forward so the ground cannot nibble it.
+      const glyphs = buildGlyphs(map);
+      const glyphGeom = new THREE.BufferGeometry();
+      glyphGeom.setAttribute("position", new THREE.BufferAttribute(glyphs.positions, 3));
+      glyphGeom.setAttribute("color", new THREE.BufferAttribute(glyphs.colors, 3));
+      glyphGeom.setDrawRange(0, glyphs.triangles * 3);
+      const glyphMat = new THREE.MeshBasicMaterial({
+        vertexColors: true, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6,
+      });
+      scene.add(new THREE.Mesh(glyphGeom, glyphMat));
 
       const coastGeom = new THREE.BufferGeometry();
       coastGeom.setAttribute("position", new THREE.BufferAttribute(cliffs.lines, 3));
@@ -402,8 +407,8 @@ export default function Globe() {
         renderer.dispose();
         // Materials and shader programs leak just as readily as geometries, and the retry
         // button rebuilds the whole scene.
-        [geom, cliffGeom, scarpGeom, coastGeom, borderGeom, riverGeom].forEach((g) => g.dispose());
-        [terrainMat, cliffMat, scarpMat, coastMat, borderMat, riverMat, cloudMat, rimMat, haloMat]
+        [geom, cliffGeom, glyphGeom, coastGeom, borderGeom, riverGeom].forEach((g) => g.dispose());
+        [terrainMat, cliffMat, glyphMat, coastMat, borderMat, riverMat, cloudMat, rimMat, haloMat]
           .forEach((m) => m.dispose());
         if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       } });

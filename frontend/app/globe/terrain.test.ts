@@ -3,8 +3,8 @@
 // frame someone happened to look at. These tests check the arithmetic directly.
 import { describe, expect, it } from "vitest";
 import {
-  buildCliffs, buildRivers, buildSteps, buildTerrain, ICE, SEA, SHELF, relief, tileAt,
-  tileRadius,
+  buildCliffs, buildGlyphs, buildRivers, buildTerrain, GROUND, HILL_ELEVATION, ICE,
+  MOUNTAIN_ELEVATION, SEA, SHELF, tileAt, tileRadius, tileRelief, tileSpacing,
 } from "./terrain";
 import { RIVER_MAJOR, RIVER_MINOR, type WorldMap } from "./biomes";
 
@@ -19,7 +19,6 @@ type TileSpec = {
   elevation: number;
   biome: string;
   center?: [number, number, number];
-  normal?: [number, number, number];
   river_flow?: number;
 };
 
@@ -40,15 +39,17 @@ function world(tiles: TileSpec[], corners: number[], rivers: Partial<WorldMap["r
   };
   return {
     name: "Test", seed: "test", frequency: 20, sea_level: 0,
-    tile_count: tiles.length, land_count: tiles.filter((t) => t.elevation >= 0).length,
-    elevation_max: 7000, relief_gain: 0.075, river_min_flow: 20,
+    // The real backend tiles a subdivided icosahedron, so the count follows from the
+    // frequency: 10f^2 + 2. Widths are sized against the spacing that count implies, and a
+    // handful of hand-built tiles must not be mistaken for a planet with four of them.
+    tile_count: 10 * 20 ** 2 + 2, land_count: tiles.filter((t) => t.elevation >= 0).length,
+    river_min_flow: 20,
     biome_names: BIOMES,
     corners,
     tiles: {
       id: tiles.map((_, i) => i),
       center: tiles.flatMap((t, i) => t.center ?? unit(i)),
-      normal: tiles.flatMap((t, i) => t.normal ?? t.center ?? unit(i)),
-      elevation: tiles.map((t) => t.elevation),
+        elevation: tiles.map((t) => t.elevation),
       temperature: tiles.map(() => 10),
       rainfall: tiles.map(() => 800),
       biome: tiles.map((t) => biome(t.biome)),
@@ -123,20 +124,24 @@ describe("buildTerrain", () => {
     expect(buildTerrain(map).borders).toHaveLength(3 * 6);
   });
 
-  // The regression this suite exists for: when the shading normal was computed only in the
-  // land branch, every sea-ice tile came out at one fixed brightness and the polar caps
-  // turned into flat plates with a seam along the shore.
-  it("hillshades sea ice, not just land", () => {
+  // The ground used to be hillshaded against a fixed light, which is meaningless once the
+  // terrain is flat: the same biome would read as two different greens depending only on
+  // where it sat, and no reader can match that against a legend. Two identical tiles facing
+  // opposite ways must now come out identically.
+  it("colours a biome by what it is, not by which way it faces", () => {
     const facing: [number, number, number] = [0.52, -0.55, 0.65];
     const away: [number, number, number] = [-0.52, 0.55, -0.65];
     const map = world([
-      { ring: [0, 1, 2], elevation: -50, biome: "sea_ice", center: facing, normal: facing },
-      { ring: [1, 0, 3], elevation: -50, biome: "sea_ice", center: away, normal: away },
+      { ring: [0, 1, 2], elevation: 400, biome: "tundra", center: facing },
+      { ring: [1, 0, 3], elevation: 400, biome: "tundra", center: away },
     ], CORNERS);
     const { colors } = buildTerrain(map);
-    const lit = colors[0];
-    const shadowed = colors[3 * 9];
-    expect(lit).toBeGreaterThan(shadowed);
+    // Same biome, same id-independent jitter aside: the two differ only by tileJitter, so
+    // compare the ratio between channels, which the jitter scales uniformly.
+    const one = [colors[0], colors[1], colors[2]];
+    const other = [colors[3 * 9], colors[3 * 9 + 1], colors[3 * 9 + 2]];
+    expect(one[0] / one[1]).toBeCloseTo(other[0] / other[1], 6);
+    expect(one[2] / one[1]).toBeCloseTo(other[2] / other[1], 6);
   });
 });
 
@@ -147,7 +152,7 @@ describe("tile geometry", () => {
       { ring: [1, 0, 3], elevation: -50, biome: "sea_ice" },
       { ring: [2, 3, 0], elevation: -400, biome: "ocean" },
     ], CORNERS);
-    expect(tileRadius(map, 0)).toBeCloseTo(1 + map.relief_gain, 6);   // full relief
+    expect(tileRadius(map, 0)).toBe(GROUND);   // the highest ground there is, still flat
     expect(tileRadius(map, 1)).toBe(ICE);
     expect(tileRadius(map, 2)).toBe(SHELF);
     // Water layers stack in the order the cliffs assume: the shell is under everything.
@@ -156,10 +161,20 @@ describe("tile geometry", () => {
     expect(ICE).toBeLessThan(1);
   });
 
-  it("clamps relief at the ceiling the server declared", () => {
-    const map = twoLand();
-    expect(relief(map, -3000)).toBe(1);                       // underwater is not sunken
-    expect(relief(map, map.elevation_max * 2)).toBeCloseTo(1 + map.relief_gain, 6);
+  it("puts all dry land on one shell, whatever its elevation", () => {
+    const map = world([
+      { ring: [0, 1, 2], elevation: 0, biome: "desert" },
+      { ring: [1, 0, 3], elevation: 6800, biome: "snow_cap" },
+    ], CORNERS);
+    expect(tileRadius(map, 0)).toBe(tileRadius(map, 1));
+  });
+
+  it("reads elevation as a relief class instead of as a height", () => {
+    expect(tileRelief(0)).toBe("flat");
+    expect(tileRelief(HILL_ELEVATION - 1)).toBe("flat");
+    expect(tileRelief(HILL_ELEVATION)).toBe("hill");
+    expect(tileRelief(MOUNTAIN_ELEVATION - 1)).toBe("hill");
+    expect(tileRelief(MOUNTAIN_ELEVATION)).toBe("mountain");
   });
 
   it("derives latitude and longitude from the centre vector", () => {
@@ -188,7 +203,7 @@ describe("buildCliffs", () => {
         radii.push(Math.hypot(cliffs.positions[o], cliffs.positions[o + 1], cliffs.positions[o + 2]));
       }
       expect(Math.min(...radii)).toBeCloseTo(SEA, 6);
-      expect(Math.max(...radii)).toBeGreaterThan(1);
+      expect(Math.max(...radii)).toBeCloseTo(GROUND, 6);
     }
   });
 });
@@ -215,9 +230,10 @@ describe("buildRivers", () => {
 
   it("scales widths with the tiling, so they stay in proportion", () => {
     const coarse = world([], CORNERS, reach(100));
-    const fine = { ...world([], CORNERS, reach(100)), frequency: 80 };
-    // Four times the frequency, a quarter of the tile, a quarter of the river.
-    expect(widthOf(fine)).toBeCloseTo(widthOf(coarse) / 4, 6);
+    const fine = { ...world([], CORNERS, reach(100)), frequency: 80, tile_count: 10 * 80 ** 2 + 2 };
+    // Four times the frequency is sixteen times the tiles, so a quarter of the spacing --
+    // and a quarter of the river, to within the two pentagon-poles the formula adds.
+    expect(widthOf(fine)).toBeCloseTo(widthOf(coarse) / 4, 5);
   });
 
   it("skips a reach that goes nowhere instead of emitting a degenerate ribbon", () => {
@@ -228,49 +244,61 @@ describe("buildRivers", () => {
   });
 });
 
-describe("buildSteps", () => {
-  const stepped = (low: number, high: number) => world([
-    { ring: [0, 1, 2], elevation: low, biome: "temperate_forest" },
-    { ring: [1, 0, 3], elevation: high, biome: "bare_rock" },
-  ], CORNERS);
+describe("tileSpacing", () => {
+  it("is the distance that makes the tiles cover the sphere exactly", () => {
+    const map = twoLand();
+    const d = tileSpacing(map);
+    // Each hexagonal cell covers (sqrt(3)/2) d^2, and together they cover 4*pi.
+    expect((Math.sqrt(3) / 2) * d * d * map.tile_count).toBeCloseTo(4 * Math.PI, 9);
+    // The formula this replaced -- 2*pi / (1.5 * frequency) -- was 3.48 times too large.
+    expect((2 * Math.PI) / (1.5 * map.frequency) / d).toBeCloseTo(3.48, 2);
+  });
+});
 
-  // The defect these exist for: every tile is a flat plate at its own radius, so a height
-  // step between neighbours leaves a slit with nothing behind it but the ocean shell. From
-  // straight above it is invisible; at a glancing angle the land breaks into loose hexagons
-  // with blue showing through.
-  it("walls an inner edge once the step is worth seeing", () => {
-    const built = buildTerrain(stepped(100, 5000));
-    expect(built.steps).toHaveLength(3);          // one edge: key, higher tile, lower tile
-    expect(built.steps[1]).toBe(1);               // the 5000 m tile is the higher one
-    expect(built.steps[2]).toBe(0);
+describe("buildGlyphs", () => {
+  const ground = (elevation: number, biome = "temperate_forest") =>
+    world([{ ring: [0, 1, 2], elevation, biome, center: [0, 1, 0] }], CORNERS);
+
+  it("marks a hill with one peak and a mountain with two, and flat ground with none", () => {
+    expect(buildGlyphs(ground(300)).triangles).toBe(0);
+    expect(buildGlyphs(ground(HILL_ELEVATION)).triangles).toBe(1);
+    expect(buildGlyphs(ground(MOUNTAIN_ELEVATION)).triangles).toBe(2);
   });
 
-  it("leaves a step under a pixel open rather than paying for it", () => {
-    expect(buildTerrain(stepped(500, 520)).steps).toHaveLength(0);
+  it("never marks water, however high it sits", () => {
+    // A lake can rest well above sea level, and an alpine tarn is still not a mountain.
+    expect(buildGlyphs(ground(MOUNTAIN_ELEVATION, "lake")).triangles).toBe(0);
+    expect(buildGlyphs(ground(MOUNTAIN_ELEVATION, "ice_sheet")).triangles).toBe(2);
   });
 
-  it("spans exactly from the higher ground to its neighbour, and no further", () => {
-    const map = stepped(100, 5000);
-    const built = buildTerrain(map);
-    const walls = buildSteps(map, built.steps);
-    expect(walls.positions).toHaveLength(18);     // two triangles for the one edge
-    expect(walls.lines).toHaveLength(0);          // a fold in the ground is not a shoreline
+  it("sizes buffers exactly, with no slack to draw past", () => {
+    const glyphs = buildGlyphs(ground(MOUNTAIN_ELEVATION));
+    expect(glyphs.positions).toHaveLength(glyphs.triangles * 9);
+    expect(glyphs.colors).toHaveLength(glyphs.triangles * 9);
+  });
 
-    const radii: number[] = [];
-    for (let v = 0; v < 18; v += 3) {
-      radii.push(Math.hypot(walls.positions[v], walls.positions[v + 1], walls.positions[v + 2]));
+  it("keeps the glyph inside its own tile and just off the ground", () => {
+    const map = ground(MOUNTAIN_ELEVATION);
+    const glyphs = buildGlyphs(map);
+    const span = tileSpacing(map);
+    for (let v = 0; v < glyphs.positions.length; v += 3) {
+      const x = glyphs.positions[v], y = glyphs.positions[v + 1], z = glyphs.positions[v + 2];
+      expect(Math.hypot(x, y, z)).toBeGreaterThan(GROUND);
+      expect(Math.hypot(x, y, z)).toBeLessThan(GROUND * 1.01);
+      // Angular distance from the tile centre, which sits at [0, 1, 0].
+      expect(Math.acos(Math.min(1, y / Math.hypot(x, y, z)))).toBeLessThan(span * 0.5);
     }
-    expect(Math.max(...radii)).toBeCloseTo(tileRadius(map, 1), 6);
-    expect(Math.min(...radii)).toBeCloseTo(tileRadius(map, 0), 6);
-    // A wall that ran to the sea would poke out from under the lower tile.
-    expect(Math.min(...radii)).toBeGreaterThan(SEA);
   });
 
-  it("never treats a shoreline as an inner step", () => {
-    const map = stepped(100, 5000);
-    const built = buildTerrain(map);
-    const coastKeys = new Set<number>();
-    for (let i = 0; i < built.coast.length; i += 2) coastKeys.add(built.coast[i]);
-    for (let i = 0; i < built.steps.length; i += 3) expect(coastKeys.has(built.steps[i])).toBe(false);
+  it("stands the glyph up towards north, wherever the tile sits", () => {
+    // Two tiles on the same meridian: each glyph's apex must be further north than its
+    // base, or a range drawn near the limb would appear to have toppled over.
+    for (const centre of [[0, 1, 0], [0, 0.6, 0.8]] as [number, number, number][]) {
+      const map = world([{ ring: [0, 1, 2], elevation: HILL_ELEVATION, biome: "tundra", center: centre }], CORNERS);
+      const p = buildGlyphs(map).positions;
+      const latitude = (i: number) => Math.asin(p[i * 3 + 2] / Math.hypot(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]));
+      expect(latitude(2)).toBeGreaterThan(latitude(0));   // apex above the left base corner
+      expect(latitude(2)).toBeGreaterThan(latitude(1));   // and above the right one
+    }
   });
 });

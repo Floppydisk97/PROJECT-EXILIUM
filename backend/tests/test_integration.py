@@ -329,7 +329,6 @@ def test_world_map_generates_persists_and_is_immutable(database):
                  "landmass_size", "neighbor_count"):
         assert len(columns[name]) == count, name
     assert len(columns["center"]) == 3 * count
-    assert len(columns["normal"]) == 3 * count
     assert len(columns["ring_offset"]) == count + 1
     assert columns["ring_offset"][-1] == len(columns["ring"])
 
@@ -347,8 +346,10 @@ def test_world_map_generates_persists_and_is_immutable(database):
         if columns["elevation"][t] >= 0:
             continue
         assert names[columns["biome"][t]] in ("sea_ice", "ocean")
-    # Rivers arrive as ready-to-draw segments keyed to the same relief the client renders.
-    assert world["relief_gain"] > 0 and world["elevation_max"] > 0
+    # What the flat map does not read, the map does not carry: the terrain normals and the
+    # relief exaggeration went with the extruded terrain they were computed for.
+    assert "normal" not in columns
+    assert "relief_gain" not in world and "elevation_max" not in world
     rivers = world["rivers"]
     assert len(rivers["a"]) == len(rivers["b"]) == 3 * len(rivers["flow"])
     # One-shot: a second generation is refused, never a silent overwrite.

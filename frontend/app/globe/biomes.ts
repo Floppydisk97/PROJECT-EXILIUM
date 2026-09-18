@@ -8,7 +8,6 @@
 export type TileColumns = {
   id: number[];
   center: number[];        // flat, 3 per tile
-  normal: number[];        // flat, 3 per tile
   elevation: number[];
   temperature: number[];
   rainfall: number[];
@@ -35,8 +34,6 @@ export type WorldMap = {
   sea_level: number;
   tile_count: number;
   land_count: number;
-  elevation_max: number;
-  relief_gain: number;
   river_min_flow: number;   // the smallest reach the backend sends, for the width ramp
   biome_names: string[];
   corners: number[];       // flat, 3 per corner
@@ -112,21 +109,6 @@ const GRAIN: Record<string, number> = {
 
 export function biomeGrain(id: string): number {
   return GRAIN[id] ?? 0.2;
-}
-
-// How strongly a surface answers to the hillshade and to altitude. At the default response
-// an ice sheet the size of a subcontinent reads as one flat white mass with no ridge or
-// valley in it, and high rock as one brown smear. Deepening their shadows -- the highlights
-// are left alone, or the white would simply clip -- gives the relief back its shape.
-const RELIEF_RESPONSE: Record<string, number> = {
-  ice_sheet: 1.6,
-  snow_cap: 1.6,
-  bare_rock: 1.4,
-  tundra: 1.15,
-};
-
-export function biomeRelief(id: string): number {
-  return RELIEF_RESPONSE[id] ?? 1;
 }
 
 export function biomeLabel(id: string): string {
