@@ -63,8 +63,8 @@ export const BIOMES: Record<string, { label: string; color: number }> = {
   ocean: { label: "Oceano", color: 0x2a5a86 },
   lake: { label: "Lago", color: 0x3d84bd },
   sea_ice: { label: "Banchisa", color: 0xd3e3ef },
-  ice_sheet: { label: "Calotta glaciale", color: 0xf3f8fc },
-  snow_cap: { label: "Vetta innevata", color: 0xe9eef3 },
+  ice_sheet: { label: "Calotta glaciale", color: 0xe9f0f6 },
+  snow_cap: { label: "Vetta innevata", color: 0xe0e8f0 },
   bare_rock: { label: "Roccia d'alta quota", color: 0x9a9287 },
   tundra: { label: "Tundra", color: 0x9ea089 },
   boreal_forest: { label: "Foresta boreale", color: 0x548a62 },
@@ -103,8 +103,8 @@ const GRAIN: Record<string, number> = {
   arid_shrubland: 0.22,
   tundra: 0.22,
   desert: 0.15,
-  snow_cap: 0.10,
-  ice_sheet: 0.08,
+  snow_cap: 0.18,
+  ice_sheet: 0.16,
   sea_ice: 0.08,
   lake: 0.05,
   ocean: 0.05,
@@ -112,6 +112,21 @@ const GRAIN: Record<string, number> = {
 
 export function biomeGrain(id: string): number {
   return GRAIN[id] ?? 0.2;
+}
+
+// How strongly a surface answers to the hillshade and to altitude. At the default response
+// an ice sheet the size of a subcontinent reads as one flat white mass with no ridge or
+// valley in it, and high rock as one brown smear. Deepening their shadows -- the highlights
+// are left alone, or the white would simply clip -- gives the relief back its shape.
+const RELIEF_RESPONSE: Record<string, number> = {
+  ice_sheet: 1.6,
+  snow_cap: 1.6,
+  bare_rock: 1.4,
+  tundra: 1.15,
+};
+
+export function biomeRelief(id: string): number {
+  return RELIEF_RESPONSE[id] ?? 1;
 }
 
 export function biomeLabel(id: string): string {

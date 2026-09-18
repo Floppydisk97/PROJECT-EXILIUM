@@ -142,6 +142,13 @@ fine, d'ampiezza scelta per bioma. Gli strati d'acqua si impilano sotto la terra
 zero — guscio oceanico, piattaforma, banchisa — e ogni spigolo posseduto da una sola casella
 di terra è una linea di costa, da cui scende una parete fino all'acqua.
 
+Ogni casella è un piano alla propria quota, quindi un dislivello fra due vicine lascia una
+fessura con dietro soltanto il guscio oceanico: a picco è invisibile, di scorcio — cioè su
+quasi tutto il disco del pianeta — la terra si sgrana in esagoni separati con l'azzurro in
+mezzo. Anche gli spigoli interni ricevono quindi una parete, dalla casella alta a quella
+bassa. Non a tutti: sotto una frazione di casella il gradino non arriva a un pixel nemmeno
+al massimo ingrandimento, e la soglia dimezza le pareti da disegnare.
+
 La matematica sta in `app/globe/terrain.ts`: funzioni pure sulle colonne, senza scena e senza
 renderer, verificabili senza una GPU. È una separazione voluta, non estetica — il type
 checker vede array di numeri e uno screenshot mostra solo il fotogramma che qualcuno ha
