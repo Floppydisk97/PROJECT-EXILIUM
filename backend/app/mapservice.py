@@ -77,17 +77,18 @@ def generate_and_store(conn, seed: str, frequency: int = worldgen.PRODUCTION_FRE
     biomes: dict[str, int] = {}
     land = 0
     rivers = 0
+    threshold = worldgen.river_min_flow(len(world.tiles))
     for t in world.tiles:
         biomes[t.biome] = biomes.get(t.biome, 0) + 1
         land += t.elevation >= 0 and t.biome not in worldgen.WATER_BIOMES
-        rivers += t.river_flow >= worldgen.RIVER_MIN_FLOW and t.elevation >= 0
+        rivers += t.river_flow >= threshold and t.elevation >= 0
     return {
         "name": worldgen.WORLD_NAME, "seed": world.seed, "frequency": world.frequency,
         "tiles": len(world.tiles), "land": land, "rivers": rivers, "biomes": biomes,
     }
 
 
-def _river_columns(conn) -> dict:
+def _river_columns(conn, tile_count: int) -> dict:
     """Rivers as ready-to-draw segments, in columns. The backend pairs each reach with the
     tile it drains into, so the client needs no adjacency and can build the ribbons directly.
 
@@ -95,6 +96,9 @@ def _river_columns(conn) -> dict:
     the `elevation >= 0` test, and it carries every drop its basin collected, so it passes
     the flow test too -- which drew a river straight across the middle of the lake. A river
     still ends at the shore, because the reach whose downstream is the lake is kept.
+
+    The threshold comes from the size of the map actually stored, not from a fixed number,
+    because flow is counted in tiles: the same cut-off on a finer grid draws the ditches too.
     """
     rows = conn.execute(
         """SELECT up.cx AS ax, up.cy AS ay, up.cz AS az,
@@ -106,7 +110,7 @@ def _river_columns(conn) -> dict:
            WHERE up.map_id = 1 AND up.elevation >= 0 AND up.biome <> 'lake'
                  AND up.river_flow >= %s
            ORDER BY up.id""",
-        (worldgen.RIVER_MIN_FLOW,),
+        (worldgen.river_min_flow(tile_count),),
     ).fetchall()
     a: list[float] = []
     b: list[float] = []
@@ -213,10 +217,10 @@ def read_map(conn) -> dict:
         "sea_level": meta["sea_level"], "tile_count": total, "land_count": land_count,
         # Shared with worldgen so the client's relief matches the normals computed there.
         "elevation_max": worldgen.ELEVATION_MAX, "relief_gain": worldgen.RELIEF_GAIN,
-        "river_min_flow": worldgen.RIVER_MIN_FLOW,
+        "river_min_flow": worldgen.river_min_flow(total),
         "biome_names": list(worldgen.BIOMES),
         "corners": corners,
-        "rivers": _river_columns(conn),
+        "rivers": _river_columns(conn, total),
         "tiles": {
             "id": ids, "center": center, "normal": normal, "elevation": elevation,
             "temperature": temperature, "rainfall": rainfall, "biome": biome,

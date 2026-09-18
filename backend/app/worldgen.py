@@ -10,7 +10,8 @@ Generator v3 builds a world with recognisable landforms rather than noise blobs:
 * mountains  -- ridged noise gathered into belts, so ranges run in chains with alpine
                 rock and snow caps on top, not isolated bumps;
 * rivers     -- real downhill flow accumulation over the tile graph; every land tile
-                knows its downstream tile, and closed basins with enough water are lakes;
+                knows its downstream tile, closed basins with enough water are lakes, and a
+                river crosses the lake it meets and comes out of the spill point;
 * coasts     -- the continental field is sampled through a domain warp, so outlines are
                 irregular instead of round, and a second pass of detail that bites only
                 near the waterline cuts the gulfs, straits and offshore islets;
@@ -38,7 +39,7 @@ from collections import deque
 from dataclasses import dataclass
 
 WORLD_NAME = "Hesperia"
-GENERATOR_VERSION = 5
+GENERATOR_VERSION = 6
 
 # Production size. Sea level sits at SEA_PERCENTILE, so ~24% of tiles are land; one player
 # settles one land tile. f=139 -> 193212 tiles, ~46000 land: nine times the 5000-player
@@ -54,9 +55,27 @@ MIN_PLAYER_CAPACITY = 5000
 ELEVATION_MAX = 7000
 RELIEF_GAIN = 0.075
 
-# A tile carries this much water before it counts as a river; a closed basin holding this
-# much is a lake. Units are "tiles' worth of rainfall", from the flow accumulation below.
-RIVER_MIN_FLOW = 20
+# How much water a tile carries before it counts as a river. Units are "tiles' worth of
+# average rainfall", from the flow accumulation below -- so the same number means a much
+# smaller real catchment on a fine grid than on a coarse one. That is why tripling the tile
+# count tripled the channels drawn without making a single one of them bigger: at twenty,
+# a reach on the production planet was the drainage of about ten tiles, a ditch. Measured
+# there, nearly every reach had a second one running alongside it, which is the hatching
+# that shows up as soon as you zoom in.
+#
+# The threshold is therefore stated against the grid it is measured on: one drawn reach per
+# this many tiles of planet. The floor keeps a deliberately coarse test world wet.
+RIVER_TILES_PER_REACH = 2000
+
+
+def river_min_flow(tile_count: int) -> int:
+    """The flow a reach must carry to be a river on a planet of this many tiles."""
+    return max(8, round(tile_count / RIVER_TILES_PER_REACH))
+
+
+# The production planet's value, which is what the map service and the client use. Kept as a
+# constant so a reader can see the number without evaluating a formula.
+RIVER_MIN_FLOW = river_min_flow(10 * PRODUCTION_FREQUENCY**2 + 2)
 # Metres of standing water before a tile counts as lake rather than damp ground. Small
 # enough that tarns survive, large enough that a rounding artefact is not a lake.
 LAKE_MIN_DEPTH = 8
@@ -618,8 +637,16 @@ def _fill_depressions(elevations, neighbors):
     enough rain -- could only ever find a single-tile pit, because a real basin's floor is
     several tiles wide and each of them has a lower neighbour inside the same basin. It
     produced thirty lakes on a planet of a hundred and ninety thousand tiles.
+
+    Returns the surface *and* the order tiles were reached in, which is the sequence water
+    would leave by: a tile popped earlier is nearer an outlet than one popped later. That
+    order is the only thing that can route drainage across a flat, and a lake is a flat --
+    see `_river_network`, where its absence was draining every river into the deepest point
+    of the first lake it met and leaving nothing to come out the far side.
     """
     surface = list(elevations)
+    order = [len(elevations)] * len(elevations)
+    rank = 0
     frontier: list[tuple[int, int]] = []
     seen = bytearray(len(elevations))
     for index, elevation in enumerate(elevations):
@@ -632,6 +659,8 @@ def _fill_depressions(elevations, neighbors):
     while frontier:
         level, index = heapq.heappop(frontier)
         surface[index] = level
+        order[index] = rank
+        rank += 1
         for neighbor in neighbors[index]:
             if seen[neighbor]:
                 continue
@@ -639,7 +668,7 @@ def _fill_depressions(elevations, neighbors):
             heapq.heappush(frontier, (max(elevations[neighbor], level), neighbor))
     # Land the sea could never reach -- an entirely enclosed basin with no path out at all --
     # keeps its own ground rather than an arbitrary flood.
-    return surface
+    return surface, order
 
 
 def _standing_water(elevations, surface, neighbors):
@@ -675,30 +704,40 @@ def _standing_water(elevations, surface, neighbors):
     return lake
 
 
-def _river_network(elevations, surface, neighbors, rainfall):
+def _river_network(elevations, surface, order, neighbors, rainfall):
     """Flow accumulation over the filled surface.
 
     Routing on the filled surface rather than the raw ground is what lets a river run into a
-    lake, across it and out the far side instead of stopping at the first hollow. Ties are
-    broken by the real ground beneath, so water crossing a flat lake still heads for the
-    outlet.
+    lake, across it and out the far side instead of stopping at the first hollow. But the
+    surface of a lake is exactly flat, so "lower neighbour" decides nothing there, and the
+    tie has to be broken by something that knows where the outlet is. The ground beneath was
+    tried first and is wrong in the worst possible way: it sends water to the deepest point
+    of the basin, which is the one tile guaranteed to have no way out. Measured on the
+    shipped planet, that ended 651 rivers inside a lake, the largest of them carrying the
+    whole drainage of a continent -- the planet had no river that reached the sea.
+
+    The fill order is the fix, because it is already the answer: priority flood reaches
+    tiles outward from the sea, so a smaller order means nearer an outlet. Routing downhill,
+    then outward, crosses a lake to its spill point and carries on down the far side.
+
+    Both tests strictly decrease the key (level, order), so the graph cannot contain a cycle
+    and the same key sorted downward is a valid order to accumulate in.
     """
     count = len(elevations)
     downstream = [-1] * count
     land = [i for i in range(count) if elevations[i] >= 0]
     for i in land:
-        best, best_level, best_ground = -1, surface[i], elevations[i]
+        best, best_level, best_order = -1, surface[i], order[i]
         for nb in neighbors[i]:
             level = surface[nb] if elevations[nb] >= 0 else elevations[nb]
-            if level < best_level or (level == best_level and elevations[nb] < best_ground):
-                best, best_level, best_ground = nb, level, elevations[nb]
+            if level < best_level or (level == best_level and order[nb] < best_order):
+                best, best_level, best_order = nb, level, order[nb]
         downstream[i] = best
 
     flow = [0.0] * count
     for i in land:
         flow[i] = max(0.25, rainfall[i] / 900.0)
-    # High to low on the filled surface: a valid topological order for the routing above.
-    for i in sorted(land, key=lambda t: (surface[t], elevations[t]), reverse=True):
+    for i in sorted(land, key=lambda t: (surface[t], order[t]), reverse=True):
         target = downstream[i]
         if target != -1 and elevations[target] >= 0:
             flow[target] += flow[i]
@@ -872,16 +911,22 @@ def generate(seed: str, frequency: int = 12) -> World:
     # These generation-only arrays otherwise overlap with the river, normal and immutable
     # Tile objects at the peak. Releasing them is material on the 512 MB production plan.
     del base_elev, raw_elev, mountains, ocean_distance
-    surface = _fill_depressions(elevations, neighbors)
-    river_flow, downstream = _river_network(elevations, surface, neighbors, rainfalls)
+    surface, fill_order = _fill_depressions(elevations, neighbors)
+    river_flow, downstream = _river_network(
+        elevations, surface, fill_order, neighbors, rainfalls
+    )
+    del fill_order
 
-    # A water tile's elevation is its water surface, the way an ocean tile's is sea level --
-    # not the bed underneath. Every tile in one basin fills to the same spill level, so the
-    # lake comes out flat; left at the bed it would be drawn as a lumpy blue hillside.
+    # From here on the terrain *is* the filled surface, for every tile and not only the ones
+    # deep enough to be called a lake. A water tile then sits at its water level rather than
+    # on the bed underneath -- a lake drawn at its bed is a lumpy blue hillside -- and, just
+    # as importantly, the ground the client draws is the same ground the water was routed
+    # over. A hollow too shallow to be a lake used to keep its bed while the river above it
+    # was routed across the fill, which is a river drawn running uphill out of a puddle.
+    # The hollows this levels are shallower than LAKE_MIN_DEPTH by construction: at most a
+    # few metres, and already underwater.
     lake = _standing_water(elevations, surface, neighbors)
-    elevations = [
-        surface[i] if lake[i] else elevations[i] for i in range(len(elevations))
-    ]
+    elevations = surface
     normals = _terrain_normals(verts, elevations, neighbors)
 
     tiles: list[Tile] = []

@@ -116,14 +116,13 @@ def test_rivers_flow_downhill_into_the_sea_or_a_lake():
     """
     world = worldgen.generate("Church", frequency=24)
     by_id = {t.id: t for t in world.tiles}
-    rivers = [t for t in world.tiles if t.elevation >= 0 and t.river_flow >= worldgen.RIVER_MIN_FLOW]
+    rivers = [t for t in world.tiles if t.elevation >= 0 and t.river_flow >= worldgen.river_min_flow(len(world.tiles))]
     assert rivers, "a world this size must carry rivers"
     for t in world.tiles:
         if t.elevation < 0:
             assert t.downstream == -1
             continue
-        if t.downstream == -1:
-            continue  # a basin with nowhere to spill
+        assert t.downstream != -1   # see test_every_river_reaches_the_sea
         downstream = by_id[t.downstream]
         assert downstream.id in t.neighbors            # water only moves to a neighbour
         assert downstream.elevation <= t.elevation     # and never uphill
@@ -250,3 +249,69 @@ def test_the_production_world_is_not_one_supercontinent():
     assert biggest < len(land) * 0.55   # no single mass holding most of the world
     assert sum(1 for size in counts if size > 300) >= 3   # at least three real continents
     assert masses >= 20                                    # and a scattering of islands
+
+
+def test_every_river_reaches_the_sea_and_none_dies_in_a_lake():
+    """The surface of a lake is flat, so "flow downhill" decides nothing on it and the tie
+    has to be broken by something that knows where the outlet is. Breaking it on the ground
+    beneath -- which is what the generator did for three versions -- sends water to the
+    deepest point of the basin: the one tile with no way out. On the shipped planet that
+    ended 651 rivers inside a lake, the largest of them carrying the drainage of a whole
+    continent, and the planet had no river that reached the sea at all.
+
+    Two assertions, because the cheap one alone would pass on a planet whose rivers were all
+    trickles: drainage never terminates inland, *and* the biggest river on the planet is one
+    that makes it to the coast.
+    """
+    world = worldgen.generate(SHIPPED_SEED, frequency=60)
+    by_id = {t.id: t for t in world.tiles}
+    land = [t for t in world.tiles if t.elevation >= 0]
+
+    stranded = [t for t in land if t.downstream == -1]
+    assert not stranded, f"{len(stranded)} land tiles drain nowhere"
+
+    biggest = max(t.river_flow for t in land)
+    mouths = [t for t in land if by_id[t.downstream].elevation < 0]
+    assert max(t.river_flow for t in mouths) == biggest
+
+
+def test_rivers_do_not_run_in_parallel_combs():
+    """What the threshold is *for*. Flow is counted in tiles, so a fixed cut-off means a
+    smaller and smaller catchment as the grid gets finer: at twenty on the production planet
+    a reach was the drainage of about ten tiles, and nearly every reach had a second one
+    running alongside it -- 0.94 unrelated neighbours per reach, drawn as hatching the moment
+    you zoomed in. `river_min_flow` scales the cut-off with the grid instead.
+
+    "Alongside" has to be defined carefully: a river that turns on a hex grid puts two of its
+    own tiles side by side without either draining into the other, and that is a meander, not
+    a second river. So a neighbouring reach counts against us only when the two do not meet
+    again within four steps downstream.
+    """
+    world = worldgen.generate(SHIPPED_SEED, frequency=60)
+    by_id = {t.id: t for t in world.tiles}
+    threshold = worldgen.river_min_flow(len(world.tiles))
+    drawn = {
+        t.id for t in world.tiles
+        if t.elevation >= 0 and t.biome != "lake" and t.river_flow >= threshold
+    }
+    assert len(drawn) > 100, "a world this size must carry rivers to measure"
+
+    def downstream_of(start, limit=40):
+        seen, step, at = {}, 0, start
+        while at != -1 and step <= limit:
+            seen[at] = step
+            at, step = by_id[at].downstream, step + 1
+        return seen
+
+    paths = {i: downstream_of(i) for i in drawn}
+    unrelated = 0
+    for i in drawn:
+        for n in by_id[i].neighbors:
+            if n <= i or n not in drawn:
+                continue
+            if by_id[i].downstream == n or by_id[n].downstream == i:
+                continue
+            shared = paths[i].keys() & paths[n].keys()
+            if min((paths[i][k] + paths[n][k] for k in shared), default=99) > 4:
+                unrelated += 1
+    assert unrelated / len(drawn) < 0.45
