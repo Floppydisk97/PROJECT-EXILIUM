@@ -83,6 +83,70 @@ Il confronto precede il controllo degli arretrati: un retry non crea nuovi effet
 Il cutoff è l'ora DB dopo acquisizione lock, non l'arrivo HTTP. Alla scadenza esatta
 non si accettano ordini per il tick in chiusura.
 
+## Geografia: il pianeta Hesperia
+
+La mappa è separata dal mondo economico. `world_map` è singleton (id 1) e conserva nome,
+seed, frequenza geodetica, livello del mare e versione del generatore; `world_tiles` conserva
+una riga per casella. Come il ledger, entrambe sono un audit: trigger vietano
+UPDATE/DELETE/TRUNCATE. Rigenerare non è un'operazione applicativa — `generate_and_store`
+rifiuta con 409 se la mappa esiste già — ed è possibile solo tramite una migrazione dedicata
+che disabilita i trigger, azzera le tabelle e le riabilita. È il percorso usato da `0004`
+(mondo più grande), `0005` (forme del terreno) e `0006` (tassellatura più fitta).
+
+La sfera è un icosaedro suddiviso: ogni vertice originale è una casella del duale di
+Goldberg, quindi esagoni con esattamente dodici pentagoni ai vertici dell'icosaedro
+(`10*f² + 2` caselle). La generazione è deterministica dal seed e gira una volta sola: la
+riproducibilità cross-platform dei float non è richiesta, quella entro un interprete sì ed è
+verificata dai test. Nessun valore economico è in virgola mobile.
+
+Il generatore v2 produce forme riconoscibili anziché macchie di rumore: catene montuose da
+rumore *ridged* raccolto in cinture; fiumi da accumulo di deflusso a valle sul grafo delle
+caselle, con i bacini chiusi abbastanza pieni promossi a laghi; deserti da un profilo zonale
+delle precipitazioni con fasce aride subtropicali, continentalità (BFS della distanza dal
+mare) e ombra pluviometrica campionata sopravvento; arcipelaghi da un'ottava ad alta
+frequenza, con le componenti connesse a dare la dimensione di ogni massa continentale.
+
+### Il render model
+
+`GET /world/map` non è un dump della tabella ma ciò che il client disegna: le terre, la
+banchisa che forma le calotte polari, un anello di piattaforma continentale attorno a ogni
+costa (l'oceano oltre la piattaforma è un guscio liscio lato client, quindi le sue polilinee
+sarebbero peso morto) e la rete idrografica già risolta in segmenti. Latitudine e longitudine
+non viaggiano: il client le ricava dal vettore centro.
+
+Due scelte lo rendono sostenibile alla dimensione di produzione. I campi sono **colonne** e
+non un oggetto per casella: a questa scala i nomi dei campi ripetuti peserebbero più della
+geografia. E i vertici dei poligoni sono centroidi di faccia condivisi da tre caselle
+ciascuno, quindi vivono in un **pool** unico e la casella ne cita gli indici. Insieme
+riducono il payload a un terzo della codifica ingenua.
+
+La risposta è immutabile per costruzione — sostituirla richiede una migrazione, che richiede
+un deploy, che riavvia il processo — quindi viene costruita **una volta per processo** e
+servita come byte, anche già compressa, con ETag e `Cache-Control: immutable`. Prima di
+questa cache ogni richiesta a un endpoint pubblico e non autenticato rifaceva secondi di
+lavoro e centinaia di megabyte di liste intermedie. Un limite di richieste per indirizzo fa
+da difesa in profondità sulla banda; gli endpoint di salute ne sono esenti, perché un health
+check strozzato spegnerebbe il servizio.
+
+Alcune costanti devono combaciare fra i due lati e quindi **viaggiano nei metadati** invece
+di essere ricopiate: `elevation_max` e `relief_gain` (la stessa esagerazione del rilievo con
+cui il server ha calcolato le normali del terreno) e `river_min_flow`. Una costante ricopiata
+a mano è una deriva silenziosa in attesa di accadere.
+
+### Il render
+
+Il terreno è **non illuminato**: l'ombreggiatura del rilievo è calcolata a mano nei colori
+dei vertici contro una luce fissa nello spazio del pianeta. Una mappa deve restare leggibile
+ovunque, e il modello PBR lasciava metà pianeta al buio. Lo shader aggiunge solo una grana
+fine, d'ampiezza scelta per bioma. Gli strati d'acqua si impilano sotto la terra a quota
+zero — guscio oceanico, piattaforma, banchisa — e ogni spigolo posseduto da una sola casella
+di terra è una linea di costa, da cui scende una parete fino all'acqua.
+
+La matematica sta in `app/globe/terrain.ts`: funzioni pure sulle colonne, senza scena e senza
+renderer, verificabili senza una GPU. È una separazione voluta, non estetica — il type
+checker vede array di numeri e uno screenshot mostra solo il fotogramma che qualcuno ha
+guardato, quindi senza test di unità un errore aritmetico qui non ha nulla che lo fermi.
+
 ## Limiti deliberati
 
 Le operazioni economiche non prendono più un lock globale esclusivo: usano `world FOR
@@ -98,6 +162,14 @@ sviluppo locale; non include TLS né gestione account pubblica. `scripts/backup.
 `scripts/restore.sh` producono e ricaricano dump verificati (il restore rifiuta un mondo
 in cui il saldo materializzato diverge dal ledger). I token si provisionano con CLI e non
 vengono salvati nel frontend.
+
+Sulla geografia i limiti sono altrettanto espliciti. La generazione costruisce l'intera
+sfera in memoria in una volta: è il picco di memoria, non il tempo, a fissare il tetto della
+frequenza, e su un'istanza piccola quel tetto è vicino. Il payload e il tempo di costruzione
+lato client crescono linearmente con le caselle, quindi ogni aumento della tassellatura è un
+compromesso con il primo caricamento, soprattutto su mobile. La mappa non ha ancora alcun
+legame con le città: quando esisterà, una migrazione che azzera le caselle non sarà più
+un'operazione innocua e andrà ripensata.
 
 ## Riferimenti tecnici
 

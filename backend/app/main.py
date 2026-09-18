@@ -1,15 +1,17 @@
+import threading
+import time
 from typing import Annotated, Literal
 from uuid import UUID
 
 import psycopg
-from fastapi import Depends, FastAPI, Header, Query
+from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from app import mapservice
 from app.db import transaction
-from app.mapservice import read_map
 from app.service import DomainError, owned_city, read_city, submit_order, token_hash
 
 app = FastAPI(title="Project Exilium", version="0.1.0")
@@ -18,10 +20,44 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 bearer = HTTPBearer(auto_error=False)
 
 
+# A crude fixed window, per client address, over the whole API. It is not a fairness
+# mechanism; it is there so one client cannot keep a single small instance busy. Health
+# checks are exempt: Render polls them from one address and must never be throttled out.
+RATE_LIMIT = 120
+RATE_WINDOW = 60.0
+_rate_lock = threading.Lock()
+_rate: dict[str, tuple[float, int]] = {}
+
+
+def client_address(request: Request) -> str:
+    # Behind Render's proxy the socket address is the proxy, so the forwarded header is
+    # what identifies a caller. It is only trustworthy because a proxy we control sets it.
+    forwarded = request.headers.get("x-forwarded-for", "")
+    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+def over_rate_limit(address: str) -> bool:
+    now = time.monotonic()
+    with _rate_lock:
+        # Bounded memory: a flood of distinct addresses resets the table rather than growing it.
+        if len(_rate) > 10_000:
+            _rate.clear()
+        start, count = _rate.get(address, (now, 0))
+        if now - start >= RATE_WINDOW:
+            start, count = now, 0
+        _rate[address] = (start, count + 1)
+        return count >= RATE_LIMIT
+
+
 @app.middleware("http")
-async def disable_state_caching(request, call_next):
+async def throttle_and_cache_policy(request: Request, call_next):
+    if not request.url.path.startswith("/health/") and over_rate_limit(client_address(request)):
+        return JSONResponse({"detail": "Too many requests"}, status_code=429,
+                            headers={"Retry-After": "60", "Cache-Control": "no-store"})
     response = await call_next(request)
-    response.headers["Cache-Control"] = "no-store"
+    # Everything here is live state and must not be cached -- except where the handler has
+    # already said otherwise, which only the immutable map does.
+    response.headers.setdefault("Cache-Control", "no-store")
     return response
 
 
@@ -90,10 +126,28 @@ def world_state():
 
 
 @app.get("/world/map")
-def world_map():
+def world_map(request: Request):
     # Public, immutable geography: the geodesic tiles the client renders as the planet.
-    with transaction() as conn:
-        return read_map(conn)
+    # Built once per process and served as bytes; only a cache miss touches the database.
+    payload = mapservice.cached_payload()
+    if payload is None:
+        with transaction() as conn:
+            payload = mapservice.build_payload(conn)
+    headers = {
+        "ETag": payload["etag"],
+        # Immutable for the life of this world: a new map only ever arrives with a deploy,
+        # and the ETag changes with it.
+        "Cache-Control": "public, max-age=86400, immutable",
+    }
+    if request.headers.get("if-none-match") == payload["etag"]:
+        return Response(status_code=304, headers=headers)
+    if "gzip" in request.headers.get("accept-encoding", ""):
+        # Pre-compressed, so the gzip middleware passes it through untouched rather than
+        # spending CPU on twelve megabytes per request.
+        return Response(payload["gzip"], media_type="application/json",
+                        headers={**headers, "Content-Encoding": "gzip",
+                                 "Vary": "Accept-Encoding"})
+    return Response(payload["raw"], media_type="application/json", headers=headers)
 
 
 @app.get("/me/cities")
