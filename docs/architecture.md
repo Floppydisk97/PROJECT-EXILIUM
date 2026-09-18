@@ -161,6 +161,46 @@ bordo frastagliato dentro un lago solo — la riva bassa diventa terra mentre il
 e lascia un fiume che risale verso il proprio lago. E la quota di una casella d'acqua è la
 superficie, non il fondale, esattamente come per l'oceano: ogni casella di un bacino si riempie
 allo stesso livello di sfioro, quindi il lago è piatto anziché una collina blu bitorzoluta.
+La quota riempita vale però per **ogni** casella, non solo per i laghi: una conca troppo poco
+profonda per contare come lago conservava il proprio fondale mentre il fiume che la attraversa
+veniva instradato sul riempimento, cioè un fiume disegnato in salita fuori da una pozza.
+
+### Dove va l'acqua su una superficie piatta
+
+Il riempimento risolve una questione e ne apre un'altra: la superficie di un lago è piatta per
+costruzione, quindi «scendi verso la vicina più bassa» non decide nulla proprio lì. Il pareggio
+veniva risolto sul fondale sottostante, il che è sbagliato nel modo peggiore possibile: manda
+l'acqua nel punto più profondo del bacino, l'unica casella che per definizione non ha uscita.
+Misurato sulla mappa in produzione della v5: 709 caselle di terra senza deflusso, 651 dentro un
+lago, e la portata più alta del pianeta — il drenaggio di un continente intero — si fermava lì.
+Il pianeta non aveva un solo fiume che arrivasse al mare, cosa che nessuna metrica allora in uso
+avrebbe potuto segnalare.
+
+La risposta era già nel riempimento. Il *priority flood* raggiunge le caselle partendo dal mare
+e andando verso l'interno, quindi **l'ordine in cui le raggiunge è l'ordine in cui l'acqua ne
+uscirebbe**: a parità di livello, la vicina con ordine minore è quella più vicina a uno sbocco.
+Il fiume attraversa il lago, esce dall'emissario e prosegue. Entrambi i confronti fanno calare
+in senso stretto la chiave `(livello, ordine)`, quindi il grafo di deflusso non può contenere
+cicli e la stessa chiave ordinata al contrario è un ordine valido per accumulare.
+
+### Quanti fiumi disegnare
+
+La portata si conta in caselle d'acqua piovana, quindi una soglia fissa significa un bacino
+sempre più piccolo man mano che la griglia si infittisce. Triplicando il numero di caselle
+abbiamo quindi triplicato i *corsi* senza ingrandirne nemmeno uno: a soglia 20, su questo
+pianeta, un tratto di fiume era il drenaggio di una decina di caselle — un fosso. Ne venivano
+disegnati 5.529 e quasi ognuno aveva un secondo corso parallelo accanto (0,94 vicini non
+collegati per tratto), cioè il tratteggio che compare appena si zooma.
+
+La soglia è quindi espressa **rispetto alla griglia su cui è misurata**, un tratto disegnato
+ogni duemila caselle di pianeta (`river_min_flow`), e viaggia nei metadati come le altre
+costanti condivise. Sul pianeta di produzione fa 97: 946 tratti, 92 sistemi fluviali, 0,17
+paralleli per tratto.
+
+Resta un difetto noto e non corretto: il percorso passa per i centri delle caselle, quindi su
+una griglia esagonale svolta a scatti di 60°. Con un decimo dei tratti si nota molto meno di
+prima, ma è una scalinata, non un meandro; risolverlo vuol dire disegnare la polilinea
+smussata invece che segmento per segmento.
 
 Le dimensioni contano quanto l'esistenza: alla prima versione con i laghi il corpo maggiore
 copriva 625 caselle e dominava il continente che lo ospitava. Il raggio massimo delle conche

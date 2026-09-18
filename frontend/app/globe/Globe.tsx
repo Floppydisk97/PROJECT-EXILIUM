@@ -436,7 +436,13 @@ export default function Globe() {
             <dt>Precipitazioni</dt><dd>{selected.rainfall} mm</dd>
             <dt>Quota</dt>
             <dd>{selected.elevation >= 0 ? `${selected.elevation} m` : `${-selected.elevation} m sotto il mare`}</dd>
-            {selected.river_flow > 0 && (<><dt>Corso d&apos;acqua</dt><dd>portata {selected.river_flow}</dd></>)}
+            {/* Only where a river is actually drawn. A lake carries the flow of everything
+                that drains into it and passes it out the far side, so its tiles hold a large
+                river_flow -- but the reach is the river crossing the lake, not a river
+                running through open water, and labelling the lake with it read as a bug. */}
+            {!water && selected.river_flow > 0 && (
+              <><dt>Corso d&apos;acqua</dt><dd>portata {selected.river_flow}</dd></>
+            )}
             <dt>Terra emersa</dt><dd>{water && selected.elevation < 0 ? "—" : landmassLabel(selected.landmass_size)}</dd>
             <dt>Confini</dt><dd>{selected.neighbor_count} tile</dd>
           </dl>
