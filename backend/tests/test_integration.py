@@ -383,3 +383,42 @@ def test_multiple_players_share_one_election(database):
     with transaction() as conn:
         assert conn.execute("SELECT policy FROM world").fetchone()["policy"] == "industrial"
         assert conn.execute("SELECT summary FROM ticks").fetchone()["summary"]["votes"] == {"industrial": 2, "balanced": 1}
+
+
+def test_world_map_is_cached_and_revalidates(database):
+    with TestClient(app) as client:
+        with transaction() as conn:
+            generate_and_store(conn, "Church", frequency=6)
+        first = client.get("/world/map")
+        assert first.status_code == 200
+        etag = first.headers["ETag"]
+        # Immutable geography may be cached; live state elsewhere may not.
+        assert "immutable" in first.headers["Cache-Control"]
+        assert client.get("/world").headers["Cache-Control"] == "no-store"
+
+        # A second call is served from the process cache: same bytes, same tag.
+        second = client.get("/world/map")
+        assert second.headers["ETag"] == etag
+        assert second.content == first.content
+
+        # And a client that already has it gets told so instead of the payload again.
+        revalidated = client.get("/world/map", headers={"If-None-Match": etag})
+        assert revalidated.status_code == 304
+        assert revalidated.content == b""
+
+
+def test_rate_limit_counts_per_address_and_spares_health():
+    from app.main import RATE_LIMIT, _rate, over_rate_limit
+
+    _rate.clear()
+    try:
+        assert not any(over_rate_limit("1.2.3.4") for _ in range(RATE_LIMIT))
+        assert over_rate_limit("1.2.3.4")          # the next one is refused
+        assert not over_rate_limit("5.6.7.8")      # a different caller is unaffected
+    finally:
+        _rate.clear()
+
+    # Health checks bypass the limit entirely: Render polls them from one address and a
+    # throttled health check would take the service down.
+    with TestClient(app) as client:
+        assert client.get("/health/live").status_code == 200

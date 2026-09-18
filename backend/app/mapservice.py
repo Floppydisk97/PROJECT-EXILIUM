@@ -10,12 +10,25 @@ plus a neighbour count instead of the full adjacency array. Open ocean beyond th
 smooth shell on the client, so its polygons would be dead weight. The table keeps the
 complete geography either way.
 """
+import gzip
+import hashlib
+import json
+import threading
+
 from psycopg.types.json import Jsonb
 
 from app import worldgen
 from app.service import DomainError
 
 INSERT_CHUNK = 4000  # bound peak memory while writing tens of thousands of tiles
+
+# Building the render model costs seconds of CPU and hundreds of megabytes of intermediate
+# lists. The map is immutable once generated -- replacing it takes a migration, which takes
+# a deploy, which restarts this process -- so the answer is built once and then handed out
+# as bytes. Without this, a public unauthenticated endpoint let anyone make the server
+# repeat that work, which on a small instance is a way to exhaust its memory.
+_payload_lock = threading.Lock()
+_payload: dict | None = None
 
 
 def _round(v, digits=4):
@@ -205,3 +218,34 @@ def read_map(conn) -> dict:
             "neighbor_count": neighbor_count, "ring": ring, "ring_offset": ring_offset,
         },
     }
+
+
+def forget_payload() -> None:
+    """Drop the built payload. Only the tests need this: each gets a fresh schema, and a
+    cache that outlived its world would answer with the previous one's geography."""
+    global _payload
+    with _payload_lock:
+        _payload = None
+
+
+def cached_payload() -> dict | None:
+    """The built payload, or None if nobody has paid for it yet. Needs no connection."""
+    return _payload
+
+
+def build_payload(conn) -> dict:
+    """Build and keep the serialized render model. Concurrent callers share one build.
+
+    Returns the raw JSON bytes, the gzipped bytes and an ETag. Serving pre-compressed
+    bytes also keeps the gzip middleware from re-compressing 14 MB on every request.
+    """
+    global _payload
+    with _payload_lock:
+        if _payload is None:
+            raw = json.dumps(read_map(conn), separators=(",", ":")).encode()
+            _payload = {
+                "raw": raw,
+                "gzip": gzip.compress(raw, 6),
+                "etag": f'"{hashlib.sha256(raw).hexdigest()[:32]}"',
+            }
+        return _payload

@@ -8,6 +8,9 @@ from alembic import command
 from alembic.config import Config
 from psycopg import sql
 
+from app import mapservice
+from app.main import _rate
+
 
 @pytest.fixture
 def database(monkeypatch):
@@ -21,9 +24,15 @@ def database(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.setenv("PGOPTIONS", f"-c search_path={schema}")
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    # Process-level caches would otherwise carry one test's world, or one test's request
+    # count, into the next.
+    mapservice.forget_payload()
+    _rate.clear()
     try:
         command.upgrade(config, "head")
         yield config
     finally:
+        mapservice.forget_payload()
+        _rate.clear()
         with psycopg.connect(url, autocommit=True) as conn:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
