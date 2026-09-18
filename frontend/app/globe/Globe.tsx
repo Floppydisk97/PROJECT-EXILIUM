@@ -12,8 +12,8 @@ import {
   type Tile, type WorldMap,
 } from "./biomes";
 import {
-  buildCliffs, buildRivers, buildTerrain, SEA, TERRAIN_FRAG, TERRAIN_LIGHT, TERRAIN_VERT,
-  tileAt, tileRadius, tileRing,
+  buildCliffs, buildRivers, buildSteps, buildTerrain, SEA, TERRAIN_FRAG, TERRAIN_LIGHT,
+  TERRAIN_VERT, tileAt, tileRadius, tileRing,
 } from "./terrain";
 
 type Status = "loading" | "waking" | "ready" | "ungenerated" | "error";
@@ -175,6 +175,15 @@ export default function Globe() {
       cliffGeom.setAttribute("color", new THREE.BufferAttribute(cliffs.colors, 3));
       const cliffMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
       scene.add(new THREE.Mesh(cliffGeom, cliffMat));
+
+      // Inner steps get the same treatment as the coasts: without them the land breaks up
+      // into separate hexagons wherever the planet is seen at a glancing angle.
+      const scarps = buildSteps(map, built.steps);
+      const scarpGeom = new THREE.BufferGeometry();
+      scarpGeom.setAttribute("position", new THREE.BufferAttribute(scarps.positions, 3));
+      scarpGeom.setAttribute("color", new THREE.BufferAttribute(scarps.colors, 3));
+      const scarpMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      scene.add(new THREE.Mesh(scarpGeom, scarpMat));
 
       const coastGeom = new THREE.BufferGeometry();
       coastGeom.setAttribute("position", new THREE.BufferAttribute(cliffs.lines, 3));
@@ -393,8 +402,8 @@ export default function Globe() {
         renderer.dispose();
         // Materials and shader programs leak just as readily as geometries, and the retry
         // button rebuilds the whole scene.
-        [geom, cliffGeom, coastGeom, borderGeom, riverGeom].forEach((g) => g.dispose());
-        [terrainMat, cliffMat, coastMat, borderMat, riverMat, cloudMat, rimMat, haloMat]
+        [geom, cliffGeom, scarpGeom, coastGeom, borderGeom, riverGeom].forEach((g) => g.dispose());
+        [terrainMat, cliffMat, scarpMat, coastMat, borderMat, riverMat, cloudMat, rimMat, haloMat]
           .forEach((m) => m.dispose());
         if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       } });

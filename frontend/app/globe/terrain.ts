@@ -3,8 +3,8 @@
 // check the arithmetic that the type checker and a screenshot both miss.
 import * as THREE from "three";
 import {
-  biomeColor, biomeGrain, SHELF_DEEP, SHELF_MAX_DEPTH, SHELF_SHALLOW, WATER_BIOMES,
-  type Tile, type WorldMap,
+  biomeColor, biomeGrain, biomeRelief, SHELF_DEEP, SHELF_MAX_DEPTH, SHELF_SHALLOW,
+  WATER_BIOMES, type Tile, type WorldMap,
 } from "./biomes";
 
 // Water sits just under land at elevation zero. The gap used to be 0.005 of a radius --
@@ -13,7 +13,14 @@ import {
 export const SEA = 0.9982;     // smooth open-ocean shell, beyond the shelf
 export const SHELF = 0.9988;   // shallow sea around every coast, above that shell
 export const ICE = 0.9994;     // sea ice floats just above the water
-export const CLIFF_SHADE = 0.55;  // how much darker a coastal wall is than the ground above it
+export const CLIFF_SHADE = 0.55;  // how much darker a wall is than the ground above it
+// Every tile is a flat plate at its own radius, so a step in height between two neighbours
+// leaves a slit with nothing behind it but the ocean shell. Seen from straight above that
+// is invisible; seen at a glancing angle -- which is most of the planet's disc -- the land
+// breaks up into separate hexagons with blue showing through. Walls close the slits. A step
+// smaller than this fraction of a tile is under a pixel even at full zoom, so it is left
+// open rather than paid for: at production tiling that is still half of all inner edges.
+export const STEP_MIN = 0.015;
 
 // Terrain is hillshaded by hand against this fixed direction in planet space instead of
 // being lit by the scene: a map should stay readable everywhere, so the darkest slope is
@@ -128,6 +135,8 @@ export type Terrain = {
   borders: Float32Array;
   /** Shoreline edges as [packedEdgeKey, owningTileIndex] pairs. */
   coast: number[];
+  /** Inner edges worth walling, as [packedEdgeKey, higherTile, lowerTile] triples. */
+  steps: number[];
 };
 
 /** Land hexes, the sea ice of the polar caps, and the shelf ring of shallow sea around
@@ -142,6 +151,7 @@ export function buildTerrain(map: WorldMap): Terrain {
 
   const biomeColors = map.biome_names.map((n) => new THREE.Color(biomeColor(n)));
   const biomeGrains = map.biome_names.map((n) => biomeGrain(n));
+  const biomeReliefs = map.biome_names.map((n) => biomeRelief(n));
   const biomeIsWater = map.biome_names.map((n) => WATER_BIOMES.has(n));
 
   const positions = new Float32Array(triangleCount * 9);
@@ -169,7 +179,7 @@ export function buildTerrain(map: WorldMap): Terrain {
   // An edge shared by two land tiles is inland; one that only a single land tile owns is a
   // shoreline. Corners are already shared indices, so an edge is just its pair of them.
   const edgeOwner = new Map<number, number>();
-  const sharedEdges = new Set<number>();
+  const edgePartner = new Map<number, number>();
 
   let v = 0;   // vertex cursor, in floats
   let f = 0;   // triangle cursor
@@ -194,14 +204,19 @@ export function buildTerrain(map: WorldMap): Terrain {
       cy + (columns.normal[t * 3 + 1] - cy) * NORMAL_BLEND,
       cz + (columns.normal[t * 3 + 2] - cz) * NORMAL_BLEND,
     ).normalize();
-    const lambert = SHADE_FLOOR + SHADE_RANGE * Math.max(0, shadeNormal.dot(TERRAIN_LIGHT));
+    // Some surfaces answer more strongly than others; the response widens the shadow side
+    // only, since the lit side is already at the top of the range and would just clip.
+    const response = biomeReliefs[biomeIndex];
+    const midpoint = SHADE_FLOOR + SHADE_RANGE * 0.5;
+    const plain = SHADE_FLOOR + SHADE_RANGE * Math.max(0, shadeNormal.dot(TERRAIN_LIGHT));
+    const lambert = Math.min(SHADE_FLOOR + SHADE_RANGE, midpoint + (plain - midpoint) * response);
 
     if (dry) {
       // Height brightens the ground on top of the hillshade, so a highland reads as a
       // highland even where it happens to face away from the light.
       const altitude = Math.min(elevation, map.elevation_max) / map.elevation_max;
-      tmp.copy(biomeColors[biomeIndex])
-        .multiplyScalar(lambert * (1 + ALTITUDE_TINT * altitude) * (1 + tileJitter(columns.id[t])));
+      tmp.copy(biomeColors[biomeIndex]).multiplyScalar(
+        lambert * (1 + ALTITUDE_TINT * response * altitude) * (1 + tileJitter(columns.id[t])));
     } else if (map.biome_names[biomeIndex] === "ocean") {
       // Shelf: real depth, on a curve that lets the pale water fade back into the open sea
       // quickly -- a shelf should read as shallow water, not as an outline stroke.
@@ -242,17 +257,24 @@ export function buildTerrain(map: WorldMap): Terrain {
       }
       if (dry) {
         const key = ca < cb ? ca * cornerCount + cb : cb * cornerCount + ca;
-        if (edgeOwner.has(key)) sharedEdges.add(key);
+        if (edgeOwner.has(key)) edgePartner.set(key, t);
         else edgeOwner.set(key, t);
       }
     }
   }
 
   const coast: number[] = [];
+  const steps: number[] = [];
+  const minStep = ((2 * Math.PI) / (1.5 * map.frequency)) * STEP_MIN;
   for (const [key, owner] of edgeOwner) {
-    if (!sharedEdges.has(key)) coast.push(key, owner);
+    const partner = edgePartner.get(key);
+    if (partner === undefined) { coast.push(key, owner); continue; }
+    const a = tileRadius(map, owner);
+    const b = tileRadius(map, partner);
+    if (Math.abs(a - b) < minStep) continue;
+    steps.push(key, a > b ? owner : partner, a > b ? partner : owner);
   }
-  return { positions, colors, grains, faceTile, borders, coast };
+  return { positions, colors, grains, faceTile, borders, coast, steps };
 }
 
 export type Cliffs = {
@@ -365,4 +387,44 @@ export function buildRivers(map: WorldMap, minor: number, major: number): Rivers
     reaches += 1;
   }
   return { positions, colors, reaches };
+}
+
+/** Walls along the inner steps, from the higher tile's ground down to its neighbour's.
+ *  Same idea as the coastal cliffs, and the same shading, but bounded by the neighbour
+ *  rather than by the sea: a wall that went further would poke out below the lower tile. */
+export function buildSteps(map: WorldMap, steps: number[]): Cliffs {
+  const corners = map.corners;
+  const cornerCount = corners.length / 3;
+  const edges = steps.length / 3;
+  const positions = new Float32Array(edges * 18);
+  const colors = new Float32Array(edges * 18);
+  const biomeColors = map.biome_names.map((n) => new THREE.Color(biomeColor(n)));
+  const colour = new THREE.Color();
+
+  for (let i = 0; i < edges; i++) {
+    const key = steps[i * 3];
+    const high = steps[i * 3 + 1];
+    const low = steps[i * 3 + 2];
+    const ca = Math.floor(key / cornerCount);
+    const cb = key % cornerCount;
+    const top = tileRadius(map, high);
+    const foot = tileRadius(map, low);
+    const o = i * 18;
+    positions.set([
+      corners[ca * 3] * top, corners[ca * 3 + 1] * top, corners[ca * 3 + 2] * top,
+      corners[cb * 3] * top, corners[cb * 3 + 1] * top, corners[cb * 3 + 2] * top,
+      corners[cb * 3] * foot, corners[cb * 3 + 1] * foot, corners[cb * 3 + 2] * foot,
+      corners[ca * 3] * top, corners[ca * 3 + 1] * top, corners[ca * 3 + 2] * top,
+      corners[cb * 3] * foot, corners[cb * 3 + 1] * foot, corners[cb * 3 + 2] * foot,
+      corners[ca * 3] * foot, corners[ca * 3 + 1] * foot, corners[ca * 3 + 2] * foot,
+    ], o);
+    colour.copy(biomeColors[map.tiles.biome[high]]).multiplyScalar(CLIFF_SHADE);
+    for (let k = 0; k < 6; k++) {
+      colors[o + k * 3] = colour.r;
+      colors[o + k * 3 + 1] = colour.g;
+      colors[o + k * 3 + 2] = colour.b;
+    }
+  }
+  // No separate outline: an inner step is a fold in the ground, not a shoreline.
+  return { positions, colors, lines: new Float32Array(0) };
 }

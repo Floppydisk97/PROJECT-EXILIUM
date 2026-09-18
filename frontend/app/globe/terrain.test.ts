@@ -3,7 +3,8 @@
 // frame someone happened to look at. These tests check the arithmetic directly.
 import { describe, expect, it } from "vitest";
 import {
-  buildCliffs, buildRivers, buildTerrain, ICE, SEA, SHELF, relief, tileAt, tileRadius,
+  buildCliffs, buildRivers, buildSteps, buildTerrain, ICE, SEA, SHELF, relief, tileAt,
+  tileRadius,
 } from "./terrain";
 import { RIVER_MAJOR, RIVER_MINOR, type WorldMap } from "./biomes";
 
@@ -224,5 +225,52 @@ describe("buildRivers", () => {
       a: [1, 0, 0], b: [1, 0, 0], flow: [50], ae: [100], be: [100],
     });
     expect(buildRivers(stuck, RIVER_MINOR, RIVER_MAJOR).reaches).toBe(0);
+  });
+});
+
+describe("buildSteps", () => {
+  const stepped = (low: number, high: number) => world([
+    { ring: [0, 1, 2], elevation: low, biome: "temperate_forest" },
+    { ring: [1, 0, 3], elevation: high, biome: "bare_rock" },
+  ], CORNERS);
+
+  // The defect these exist for: every tile is a flat plate at its own radius, so a height
+  // step between neighbours leaves a slit with nothing behind it but the ocean shell. From
+  // straight above it is invisible; at a glancing angle the land breaks into loose hexagons
+  // with blue showing through.
+  it("walls an inner edge once the step is worth seeing", () => {
+    const built = buildTerrain(stepped(100, 5000));
+    expect(built.steps).toHaveLength(3);          // one edge: key, higher tile, lower tile
+    expect(built.steps[1]).toBe(1);               // the 5000 m tile is the higher one
+    expect(built.steps[2]).toBe(0);
+  });
+
+  it("leaves a step under a pixel open rather than paying for it", () => {
+    expect(buildTerrain(stepped(500, 520)).steps).toHaveLength(0);
+  });
+
+  it("spans exactly from the higher ground to its neighbour, and no further", () => {
+    const map = stepped(100, 5000);
+    const built = buildTerrain(map);
+    const walls = buildSteps(map, built.steps);
+    expect(walls.positions).toHaveLength(18);     // two triangles for the one edge
+    expect(walls.lines).toHaveLength(0);          // a fold in the ground is not a shoreline
+
+    const radii: number[] = [];
+    for (let v = 0; v < 18; v += 3) {
+      radii.push(Math.hypot(walls.positions[v], walls.positions[v + 1], walls.positions[v + 2]));
+    }
+    expect(Math.max(...radii)).toBeCloseTo(tileRadius(map, 1), 6);
+    expect(Math.min(...radii)).toBeCloseTo(tileRadius(map, 0), 6);
+    // A wall that ran to the sea would poke out from under the lower tile.
+    expect(Math.min(...radii)).toBeGreaterThan(SEA);
+  });
+
+  it("never treats a shoreline as an inner step", () => {
+    const map = stepped(100, 5000);
+    const built = buildTerrain(map);
+    const coastKeys = new Set<number>();
+    for (let i = 0; i < built.coast.length; i += 2) coastKeys.add(built.coast[i]);
+    for (let i = 0; i < built.steps.length; i += 3) expect(coastKeys.has(built.steps[i])).toBe(false);
   });
 });
