@@ -8,6 +8,9 @@
 export type TileColumns = {
   id: number[];
   center: number[];        // flat, 3 per tile
+  // The server's terrain normals, computed against the relief it used to be drawn with.
+  // Nothing reads them since the ground became one shell; they are still sent, and dropping
+  // them from the payload would save about a quarter of it.
   normal: number[];        // flat, 3 per tile
   elevation: number[];
   temperature: number[];
@@ -36,6 +39,8 @@ export type WorldMap = {
   tile_count: number;
   land_count: number;
   elevation_max: number;
+  // Shared with the server when the client extruded each tile to its own height. The ground
+  // is flat now, so nothing here uses it; elevation_max still bounds the relief classes.
   relief_gain: number;
   river_min_flow: number;   // the smallest reach the backend sends, for the width ramp
   biome_names: string[];
@@ -112,21 +117,6 @@ const GRAIN: Record<string, number> = {
 
 export function biomeGrain(id: string): number {
   return GRAIN[id] ?? 0.2;
-}
-
-// How strongly a surface answers to the hillshade and to altitude. At the default response
-// an ice sheet the size of a subcontinent reads as one flat white mass with no ridge or
-// valley in it, and high rock as one brown smear. Deepening their shadows -- the highlights
-// are left alone, or the white would simply clip -- gives the relief back its shape.
-const RELIEF_RESPONSE: Record<string, number> = {
-  ice_sheet: 1.6,
-  snow_cap: 1.6,
-  bare_rock: 1.4,
-  tundra: 1.15,
-};
-
-export function biomeRelief(id: string): number {
-  return RELIEF_RESPONSE[id] ?? 1;
 }
 
 export function biomeLabel(id: string): string {

@@ -3,7 +3,7 @@
 // check the arithmetic that the type checker and a screenshot both miss.
 import * as THREE from "three";
 import {
-  biomeColor, biomeGrain, biomeRelief, SHELF_DEEP, SHELF_MAX_DEPTH, SHELF_SHALLOW,
+  biomeColor, biomeGrain, SHELF_DEEP, SHELF_MAX_DEPTH, SHELF_SHALLOW,
   WATER_BIOMES, type Tile, type WorldMap,
 } from "./biomes";
 
@@ -14,29 +14,42 @@ export const SEA = 0.9982;     // smooth open-ocean shell, beyond the shelf
 export const SHELF = 0.9988;   // shallow sea around every coast, above that shell
 export const ICE = 0.9994;     // sea ice floats just above the water
 export const CLIFF_SHADE = 0.55;  // how much darker a wall is than the ground above it
-// Every tile is a flat plate at its own radius, so a step in height between two neighbours
-// leaves a slit with nothing behind it but the ocean shell. Seen from straight above that
-// is invisible; seen at a glancing angle -- which is most of the planet's disc -- the land
-// breaks up into separate hexagons with blue showing through. Walls close the slits. A step
-// smaller than this fraction of a tile is under a pixel even at full zoom, so it is left
-// open rather than paid for: at production tiling that is still half of all inner edges.
-export const STEP_MIN = 0.015;
 
-// Terrain is hillshaded by hand against this fixed direction in planet space instead of
-// being lit by the scene: a map should stay readable everywhere, so the darkest slope is
-// still bright and the limb never falls into shadow.
+// All dry land sits on one shell. Elevation decides a tile's colour and which relief glyph
+// it carries, never its radius: this is a map, drawn the way a map is drawn, and not a
+// scale model of the planet. Extruding each tile to its own height cost more than it paid
+// -- every difference in height between two neighbours opened a slit that had to be walled
+// shut, and at a glancing angle the mountains hid the ground behind them, which is exactly
+// the ground a player is trying to read.
+export const GROUND = 1;
+
+// Relief is drawn inside the hexagon instead, the way a paper map marks it. Thresholds in
+// metres; on the shipped planet they come out at about one land tile in seven for hills and
+// one in ten for mountains, which is dense enough to read as a range and sparse enough that
+// the biome underneath still shows.
+export const HILL_ELEVATION = 1200;
+export const MOUNTAIN_ELEVATION = 2500;
+export const GLYPH_SHADE = 0.62;    // how far a glyph is mixed towards the ink below
+export const GLYPH_LIFT = 1.0009;   // just off the ground, so it cannot fight it for depth
+export const GLYPH_WIDTH = 0.60;    // of one tile's centre-to-centre span
+export const GLYPH_HEIGHT = 0.34;
+// A glyph is mixed towards this rather than simply darkened, so it keeps the same contrast
+// on a snowfield as on rainforest. Multiplying a near-white biome leaves a pale grey mark
+// that disappears at the zoom a player actually reads the map at.
+export const GLYPH_INK = 0x241f1a;
+
+// The direction the sky is lit from. The ground is not lit at all -- a flat map has no
+// slopes to shade, and a biome that changes brightness with where it happens to sit is a
+// biome you cannot compare against the legend -- but the cloud deck and the atmosphere are
+// scene-lit, and they need a sun.
 export const TERRAIN_LIGHT = new THREE.Vector3(0.52, -0.55, 0.65).normalize();
-export const NORMAL_BLEND = 0.62; // how far terrain normals lean off radial when shading
-export const SHADE_FLOOR = 0.76;  // brightness of a slope facing fully away from the light
-export const SHADE_RANGE = 0.40;  // extra brightness a slope facing straight into it picks up
-export const ALTITUDE_TINT = 0.16; // how much brighter the highest ground is than the lowest
 
 // Rivers are ribbons, not hairlines: a trunk carrying ten times its headwaters' water has
 // to look like it. Widths are fractions of a tile, not absolute lengths, so they stay in
 // proportion whatever tiling the world is generated at.
 export const RIVER_LIFT = 1.0022;
-export const RIVER_MIN_HALF = 0.025;   // of one tile's width
-export const RIVER_MAX_HALF = 0.080;
+export const RIVER_MIN_HALF = 0.087;   // of one tile's width
+export const RIVER_MAX_HALF = 0.278;
 export const RIVER_FULL_FLOW = 240;    // flow above the smallest reach at which a river is full width
 
 // Unlit terrain: the hillshade is already baked into the vertex colours, and the fragment
@@ -71,6 +84,20 @@ export const TERRAIN_FRAG = `
     gl_FragColor = vec4(vCol * (1.0 + (n - 0.5) * vGrain), 1.0);
   }`;
 
+/** Centre-to-centre distance between neighbouring tiles, on the unit sphere.
+ *
+ *  Derived from the tile count, not from the frequency: a hexagonal cell whose opposite
+ *  sides are d apart covers (sqrt(3)/2) d^2, and the tiles cover the whole sphere. The
+ *  module used to use `2*pi / (1.5 * frequency)`, which is 3.48 times too large -- harmless
+ *  while every width expressed against it was tuned by eye through the same error, and not
+ *  harmless at all the moment something is sized against a real tile, as the relief glyphs
+ *  are. The river widths below were re-expressed against this one; they draw the same
+ *  ribbons they always did, to within a thousandth of a tile.
+ */
+export function tileSpacing(map: WorldMap): number {
+  return Math.sqrt((8 * Math.PI) / (Math.sqrt(3) * map.tile_count));
+}
+
 // Deterministic per-tile jitter: breaks the flatness of a thousand identical hexes without
 // inventing geography. The same id always gets the same shade.
 export function tileJitter(id: number): number {
@@ -78,17 +105,18 @@ export function tileJitter(id: number): number {
   return (x - Math.floor(x) - 0.5) * 0.09;
 }
 
-/** Relief exaggeration, taken from the server together with the normals it computed
- *  against it, so geometry and shading can never drift apart. */
-export function relief(map: WorldMap, elevation: number): number {
-  const height = Math.min(Math.max(elevation, 0), map.elevation_max) / map.elevation_max;
-  return 1 + height * map.relief_gain;
+/** Which relief a tile reads as. Plain ground carries no glyph at all. */
+export function tileRelief(elevation: number): "flat" | "hill" | "mountain" {
+  if (elevation >= MOUNTAIN_ELEVATION) return "mountain";
+  if (elevation >= HILL_ELEVATION) return "hill";
+  return "flat";
 }
 
-/** The radius a tile is drawn at: its own ground, or the water layer it belongs to. */
+/** The radius a tile is drawn at: the one ground shell, or the water layer it belongs to.
+ *  Land no longer varies with elevation -- see GROUND. */
 export function tileRadius(map: WorldMap, index: number): number {
   const elevation = map.tiles.elevation[index];
-  if (elevation >= 0) return relief(map, elevation);
+  if (elevation >= 0) return GROUND;
   return map.biome_names[map.tiles.biome[index]] === "sea_ice" ? ICE : SHELF;
 }
 
@@ -135,8 +163,6 @@ export type Terrain = {
   borders: Float32Array;
   /** Shoreline edges as [packedEdgeKey, owningTileIndex] pairs. */
   coast: number[];
-  /** Inner edges worth walling, as [packedEdgeKey, higherTile, lowerTile] triples. */
-  steps: number[];
 };
 
 /** Land hexes, the sea ice of the polar caps, and the shelf ring of shallow sea around
@@ -151,7 +177,6 @@ export function buildTerrain(map: WorldMap): Terrain {
 
   const biomeColors = map.biome_names.map((n) => new THREE.Color(biomeColor(n)));
   const biomeGrains = map.biome_names.map((n) => biomeGrain(n));
-  const biomeReliefs = map.biome_names.map((n) => biomeRelief(n));
   const biomeIsWater = map.biome_names.map((n) => WATER_BIOMES.has(n));
 
   const positions = new Float32Array(triangleCount * 9);
@@ -174,7 +199,6 @@ export function buildTerrain(map: WorldMap): Terrain {
   // palette and only show up where a flat material sits next to a vertex colour.
   const shelfShallow = new THREE.Color(SHELF_SHALLOW);
   const shelfDeep = new THREE.Color(SHELF_DEEP);
-  const shadeNormal = new THREE.Vector3();
 
   // An edge shared by two land tiles is inland; one that only a single land tile owns is a
   // shoreline. Corners are already shared indices, so an edge is just its pair of them.
@@ -195,28 +219,13 @@ export function buildTerrain(map: WorldMap): Terrain {
     const cy = columns.center[t * 3 + 1];
     const cz = columns.center[t * 3 + 2];
 
-    // Leaning the terrain normal part-way back towards the radial one keeps ranges
-    // catching the light without throwing every slope behind them into pitch black.
-    // Every tile gets one: the sea ice of the caps is lit by the same hillshade as the
-    // land it touches, or the cap reads as a flat plate with a seam along its shore.
-    shadeNormal.set(
-      cx + (columns.normal[t * 3] - cx) * NORMAL_BLEND,
-      cy + (columns.normal[t * 3 + 1] - cy) * NORMAL_BLEND,
-      cz + (columns.normal[t * 3 + 2] - cz) * NORMAL_BLEND,
-    ).normalize();
-    // Some surfaces answer more strongly than others; the response widens the shadow side
-    // only, since the lit side is already at the top of the range and would just clip.
-    const response = biomeReliefs[biomeIndex];
-    const midpoint = SHADE_FLOOR + SHADE_RANGE * 0.5;
-    const plain = SHADE_FLOOR + SHADE_RANGE * Math.max(0, shadeNormal.dot(TERRAIN_LIGHT));
-    const lambert = Math.min(SHADE_FLOOR + SHADE_RANGE, midpoint + (plain - midpoint) * response);
-
+    // A biome is drawn at its own colour wherever it sits, plus the per-tile jitter that
+    // keeps a thousand identical hexes from reading as one painted slab. Nothing here
+    // depends on which way the tile faces: the ground is flat, so there is no slope to
+    // shade, and a green that changes with latitude is a green you cannot match against
+    // the legend. Altitude is carried by the glyphs, not by the colour.
     if (dry) {
-      // Height brightens the ground on top of the hillshade, so a highland reads as a
-      // highland even where it happens to face away from the light.
-      const altitude = Math.min(elevation, map.elevation_max) / map.elevation_max;
-      tmp.copy(biomeColors[biomeIndex]).multiplyScalar(
-        lambert * (1 + ALTITUDE_TINT * response * altitude) * (1 + tileJitter(columns.id[t])));
+      tmp.copy(biomeColors[biomeIndex]).multiplyScalar(1 + tileJitter(columns.id[t]));
     } else if (map.biome_names[biomeIndex] === "ocean") {
       // Shelf: real depth, on a curve that lets the pale water fade back into the open sea
       // quickly -- a shelf should read as shallow water, not as an outline stroke.
@@ -224,7 +233,7 @@ export function buildTerrain(map: WorldMap): Terrain {
       tmp.copy(shelfShallow).lerp(shelfDeep, Math.pow(depth, 0.85));
       tmp.multiplyScalar(1 + tileJitter(columns.id[t]) * 0.12);
     } else {
-      tmp.copy(biomeColors[biomeIndex]).multiplyScalar(lambert);
+      tmp.copy(biomeColors[biomeIndex]);
     }
     const grain = biomeGrains[biomeIndex];
 
@@ -263,18 +272,13 @@ export function buildTerrain(map: WorldMap): Terrain {
     }
   }
 
+  // Only the shoreline is a step now: inland, every tile is on the same shell, so there is
+  // no slit between neighbours left to wall shut.
   const coast: number[] = [];
-  const steps: number[] = [];
-  const minStep = ((2 * Math.PI) / (1.5 * map.frequency)) * STEP_MIN;
   for (const [key, owner] of edgeOwner) {
-    const partner = edgePartner.get(key);
-    if (partner === undefined) { coast.push(key, owner); continue; }
-    const a = tileRadius(map, owner);
-    const b = tileRadius(map, partner);
-    if (Math.abs(a - b) < minStep) continue;
-    steps.push(key, a > b ? owner : partner, a > b ? partner : owner);
+    if (!edgePartner.has(key)) coast.push(key, owner);
   }
-  return { positions, colors, grains, faceTile, borders, coast, steps };
+  return { positions, colors, grains, faceTile, borders, coast };
 }
 
 export type Cliffs = {
@@ -337,10 +341,9 @@ export function buildRivers(map: WorldMap, minor: number, major: number): Rivers
   const positions = new Float32Array(count * 18);
   const colors = new Float32Array(count * 18);
 
-  // Centre-to-centre spacing of the tiling this world was generated at.
-  const tileSpan = (2 * Math.PI) / (1.5 * map.frequency);
-  const minHalf = tileSpan * RIVER_MIN_HALF;
-  const maxHalf = tileSpan * RIVER_MAX_HALF;
+  const span = tileSpacing(map);
+  const minHalf = span * RIVER_MIN_HALF;
+  const maxHalf = span * RIVER_MAX_HALF;
 
   const head = new THREE.Vector3();
   const foot = new THREE.Vector3();
@@ -353,10 +356,11 @@ export function buildRivers(map: WorldMap, minor: number, major: number): Rivers
 
   let reaches = 0;
   for (let i = 0; i < count; i++) {
-    const ra = relief(map, columns.ae[i]) * RIVER_LIFT;
-    const rb = relief(map, columns.be[i]) * RIVER_LIFT;
-    head.set(columns.a[i * 3] * ra, columns.a[i * 3 + 1] * ra, columns.a[i * 3 + 2] * ra);
-    foot.set(columns.b[i * 3] * rb, columns.b[i * 3 + 1] * rb, columns.b[i * 3 + 2] * rb);
+    // Both ends ride the same shell: the backend still sends each end's elevation, but on a
+    // flat map it decides nothing about where the ribbon is drawn.
+    const r = GROUND * RIVER_LIFT;
+    head.set(columns.a[i * 3] * r, columns.a[i * 3 + 1] * r, columns.a[i * 3 + 2] * r);
+    foot.set(columns.b[i * 3] * r, columns.b[i * 3 + 1] * r, columns.b[i * 3 + 2] * r);
     along.subVectors(foot, head);
     if (along.lengthSq() < 1e-12) continue;
     along.normalize();
@@ -389,42 +393,95 @@ export function buildRivers(map: WorldMap, minor: number, major: number): Rivers
   return { positions, colors, reaches };
 }
 
-/** Walls along the inner steps, from the higher tile's ground down to its neighbour's.
- *  Same idea as the coastal cliffs, and the same shading, but bounded by the neighbour
- *  rather than by the sea: a wall that went further would poke out below the lower tile. */
-export function buildSteps(map: WorldMap, steps: number[]): Cliffs {
-  const corners = map.corners;
-  const cornerCount = corners.length / 3;
-  const edges = steps.length / 3;
-  const positions = new Float32Array(edges * 18);
-  const colors = new Float32Array(edges * 18);
-  const biomeColors = map.biome_names.map((n) => new THREE.Color(biomeColor(n)));
-  const colour = new THREE.Color();
+export type Glyphs = {
+  positions: Float32Array;
+  colors: Float32Array;
+  /** Triangles actually emitted, so the caller can clip the draw. */
+  triangles: number;
+};
 
-  for (let i = 0; i < edges; i++) {
-    const key = steps[i * 3];
-    const high = steps[i * 3 + 1];
-    const low = steps[i * 3 + 2];
-    const ca = Math.floor(key / cornerCount);
-    const cb = key % cornerCount;
-    const top = tileRadius(map, high);
-    const foot = tileRadius(map, low);
-    const o = i * 18;
-    positions.set([
-      corners[ca * 3] * top, corners[ca * 3 + 1] * top, corners[ca * 3 + 2] * top,
-      corners[cb * 3] * top, corners[cb * 3 + 1] * top, corners[cb * 3 + 2] * top,
-      corners[cb * 3] * foot, corners[cb * 3 + 1] * foot, corners[cb * 3 + 2] * foot,
-      corners[ca * 3] * top, corners[ca * 3 + 1] * top, corners[ca * 3 + 2] * top,
-      corners[cb * 3] * foot, corners[cb * 3 + 1] * foot, corners[cb * 3 + 2] * foot,
-      corners[ca * 3] * foot, corners[ca * 3 + 1] * foot, corners[ca * 3 + 2] * foot,
-    ], o);
-    colour.copy(biomeColors[map.tiles.biome[high]]).multiplyScalar(CLIFF_SHADE);
-    for (let k = 0; k < 6; k++) {
-      colors[o + k * 3] = colour.r;
-      colors[o + k * 3 + 1] = colour.g;
-      colors[o + k * 3 + 2] = colour.b;
+/** Hills and mountains, drawn as a mark inside the tile's own hexagon rather than modelled.
+ *
+ *  A glyph lives in the tile's tangent plane, with its "up" pointing north, so a range reads
+ *  the same way everywhere on the sphere and does not appear to lie on its side once the
+ *  camera has been turned around. It is sized as a fraction of the tile's own span, so it
+ *  stays in proportion whatever tiling the world was generated at, and it is coloured out of
+ *  the ground it sits on, so it stays legible on rock, on snow and on rainforest alike
+ *  without a second palette to keep in step.
+ *
+ *  A hill is one peak; a mountain is a taller peak with a smaller one beside it. The two
+ *  meet at their bases and never overlap: coplanar triangles at the same radius would fight
+ *  each other for depth, and the flicker is visible exactly where the glyphs are densest.
+ */
+export function buildGlyphs(map: WorldMap): Glyphs {
+  const columns = map.tiles;
+  const tileCount = columns.id.length;
+  const biomeColors = map.biome_names.map((n) => new THREE.Color(biomeColor(n)));
+  const biomeIsWater = map.biome_names.map((n) => WATER_BIOMES.has(n));
+
+  const marked = (t: number) =>
+    columns.elevation[t] >= 0 && !biomeIsWater[columns.biome[t]]
+      ? tileRelief(columns.elevation[t])
+      : "flat";
+
+  // Sized exactly up front: at production tiling a growing array here would churn tens of
+  // megabytes for nothing.
+  let triangleCount = 0;
+  for (let t = 0; t < tileCount; t++) {
+    const kind = marked(t);
+    if (kind === "hill") triangleCount += 1;
+    else if (kind === "mountain") triangleCount += 2;
+  }
+  const positions = new Float32Array(triangleCount * 9);
+  const colors = new Float32Array(triangleCount * 9);
+
+  const span = tileSpacing(map);
+  const half = (span * GLYPH_WIDTH) / 2;
+  const height = span * GLYPH_HEIGHT;
+  const foot = -height * 0.40;
+
+  // [east, north] offsets of each corner, per shape.
+  const HILL = [[[-half, foot], [half, foot], [0, foot + height * 0.80]]];
+  const MOUNTAIN = [
+    [[-half * 0.15, foot], [half, foot], [half * 0.48, foot + height * 1.15]],
+    [[-half, foot], [-half * 0.15, foot], [-half * 0.60, foot + height * 0.78]],
+  ];
+
+  const up = new THREE.Vector3();
+  const north = new THREE.Vector3();
+  const east = new THREE.Vector3();
+  const colour = new THREE.Color();
+  const ink = new THREE.Color(GLYPH_INK);
+  const POLE = new THREE.Vector3(0, 0, 1);
+  const FALLBACK = new THREE.Vector3(1, 0, 0);
+
+  let v = 0;
+  for (let t = 0; t < tileCount; t++) {
+    const kind = marked(t);
+    if (kind === "flat") continue;
+
+    up.set(columns.center[t * 3], columns.center[t * 3 + 1], columns.center[t * 3 + 2]).normalize();
+    // North, flattened into the tangent plane. Directly over a pole there is no north to
+    // point at, so any direction in the plane will do and the glyph simply picks one.
+    north.copy(POLE).addScaledVector(up, -POLE.dot(up));
+    if (north.lengthSq() < 1e-12) north.copy(FALLBACK).addScaledVector(up, -FALLBACK.dot(up));
+    north.normalize();
+    east.crossVectors(north, up).normalize();
+
+    colour.copy(biomeColors[columns.biome[t]]).lerp(ink, GLYPH_SHADE);
+    const shape = kind === "mountain" ? MOUNTAIN : HILL;
+    for (const triangle of shape) {
+      for (const [e, n] of triangle) {
+        // Off the tangent plane and back onto the shell: at this size the difference is
+        // under a pixel, but it keeps the glyph from sinking into the ground at the limb.
+        const x = (up.x + east.x * e + north.x * n) * GLYPH_LIFT;
+        const y = (up.y + east.y * e + north.y * n) * GLYPH_LIFT;
+        const z = (up.z + east.z * e + north.z * n) * GLYPH_LIFT;
+        positions[v] = x; positions[v + 1] = y; positions[v + 2] = z;
+        colors[v] = colour.r; colors[v + 1] = colour.g; colors[v + 2] = colour.b;
+        v += 3;
+      }
     }
   }
-  // No separate outline: an inner step is a fold in the ground, not a shoreline.
-  return { positions, colors, lines: new Float32Array(0) };
+  return { positions, colors, triangles: triangleCount };
 }
