@@ -90,6 +90,11 @@ def generate_and_store(conn, seed: str, frequency: int = worldgen.PRODUCTION_FRE
 def _river_columns(conn) -> dict:
     """Rivers as ready-to-draw segments, in columns. The backend pairs each reach with the
     tile it drains into, so the client needs no adjacency and can build the ribbons directly.
+
+    A lake tile is never the *source* of a reach. It sits at its water surface, so it passes
+    the `elevation >= 0` test, and it carries every drop its basin collected, so it passes
+    the flow test too -- which drew a river straight across the middle of the lake. A river
+    still ends at the shore, because the reach whose downstream is the lake is kept.
     """
     rows = conn.execute(
         """SELECT up.cx AS ax, up.cy AS ay, up.cz AS az,
@@ -98,7 +103,8 @@ def _river_columns(conn) -> dict:
            FROM world_tiles up
            JOIN world_tiles down
              ON down.map_id = up.map_id AND down.id = up.downstream
-           WHERE up.map_id = 1 AND up.elevation >= 0 AND up.river_flow >= %s
+           WHERE up.map_id = 1 AND up.elevation >= 0 AND up.biome <> 'lake'
+                 AND up.river_flow >= %s
            ORDER BY up.id""",
         (worldgen.RIVER_MIN_FLOW,),
     ).fetchall()
