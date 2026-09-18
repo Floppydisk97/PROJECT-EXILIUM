@@ -42,7 +42,7 @@ def test_climate_is_physically_ordered():
     equator = [t.temperature for t in world.tiles if abs(t.lat) < 10]
     assert sum(poles) / len(poles) < sum(equator) / len(equator)
     ocean = sum(1 for t in world.tiles if t.elevation < 0) / len(world.tiles)
-    assert 0.5 < ocean < 0.75  # a water world, not fully flooded
+    assert 0.5 < ocean < 0.85  # a water world, not fully flooded
 
 
 def test_production_frequency_supports_the_player_capacity():
@@ -112,8 +112,30 @@ def test_the_production_world_has_deserts_mountains_and_polar_caps():
     forest = sum(counts.get(b, 0) for b in
                  ("boreal_forest", "temperate_forest", "tropical_rainforest"))
     assert forest > land * 0.15
+    # Deserts are a feature, not the default surface: the generator used to paint a third
+    # of the land arid, which is what this bound exists to stop coming back.
+    assert counts.get("desert", 0) + counts.get("arid_shrubland", 0) < land * 0.25
+    assert counts.get("desert", 0) > 0  # ... but a world with no desert at all is wrong too
     # Ice belongs at the poles, deserts do not.
     ice = [abs(t.lat) for t in world.tiles if t.biome == "ice_sheet"]
     assert min(ice) > 45
     sizes = {t.landmass_size for t in world.tiles if t.elevation >= 0}
     assert len(sizes) > 3  # several separate continents and islands, not one blob
+
+
+def test_the_production_world_is_not_one_supercontinent():
+    """The land must be broken into continents with sea between them, and be dotted with
+    islands. Nothing about a smooth elevation field guarantees this -- at this sea level it
+    percolates into a single mass unless the ocean basins cut it -- so it is asserted."""
+    world = worldgen.generate("Hesperia-01", frequency=48)
+    land = [t for t in world.tiles if t.elevation >= 0]
+    counts: dict[int, int] = {}
+    for t in land:
+        counts[t.landmass_size] = counts.get(t.landmass_size, 0) + 1
+    # tiles-of-this-size / size == how many distinct masses have that size.
+    masses = sum(n // size for size, n in counts.items())
+    biggest = max(t.landmass_size for t in land)
+
+    assert biggest < len(land) * 0.55   # no single mass holding most of the world
+    assert sum(1 for size in counts if size > 300) >= 3   # at least three real continents
+    assert masses >= 20                                    # and a scattering of islands

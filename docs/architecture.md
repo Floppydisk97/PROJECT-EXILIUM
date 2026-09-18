@@ -91,7 +91,8 @@ una riga per casella. Come il ledger, entrambe sono un audit: trigger vietano
 UPDATE/DELETE/TRUNCATE. Rigenerare non è un'operazione applicativa — `generate_and_store`
 rifiuta con 409 se la mappa esiste già — ed è possibile solo tramite una migrazione dedicata
 che disabilita i trigger, azzera le tabelle e le riabilita. È il percorso usato da `0004`
-(mondo più grande), `0005` (forme del terreno) e `0006` (tassellatura più fitta).
+(mondo più grande), `0005` (forme del terreno), `0006` (tassellatura più fitta) e `0007`
+(generatore v3).
 
 La sfera è un icosaedro suddiviso: ogni vertice originale è una casella del duale di
 Goldberg, quindi esagoni con esattamente dodici pentagoni ai vertici dell'icosaedro
@@ -99,12 +100,35 @@ Goldberg, quindi esagoni con esattamente dodici pentagoni ai vertici dell'icosae
 riproducibilità cross-platform dei float non è richiesta, quella entro un interprete sì ed è
 verificata dai test. Nessun valore economico è in virgola mobile.
 
-Il generatore v2 produce forme riconoscibili anziché macchie di rumore: catene montuose da
+Il generatore v3 produce forme riconoscibili anziché macchie di rumore: catene montuose da
 rumore *ridged* raccolto in cinture; fiumi da accumulo di deflusso a valle sul grafo delle
 caselle, con i bacini chiusi abbastanza pieni promossi a laghi; deserti da un profilo zonale
 delle precipitazioni con fasce aride subtropicali, continentalità (BFS della distanza dal
-mare) e ombra pluviometrica campionata sopravvento; arcipelaghi da un'ottava ad alta
-frequenza, con le componenti connesse a dare la dimensione di ogni massa continentale.
+mare) e ombra pluviometrica campionata sopravvento; arcipelaghi da rumore ad alta frequenza,
+con le componenti connesse a dare la dimensione di ogni massa continentale.
+
+Tre meccanismi decidono la geografia, e vale la pena distinguerli perché fanno cose diverse.
+Il **domain warping** — il campo continentale letto in un punto spostato da un secondo campo
+di rumore — è ciò che dà penisole, insenature e un profilo che non sembra disegnato col
+compasso; ma deforma un contorno senza cambiare che cosa è collegato a che cosa. A cambiarlo
+sono i **bacini oceanici**: rumore *ridged* alto lungo linee e quasi nullo altrove,
+sottratto alla terra. Dove una linea taglia un istmo lascia uno stretto, dove arriva a una
+costa e si ferma lascia un golfo, dove due si incontrano lascia un mare interno. Il terzo è
+un **dettaglio di costa** che si spegne con la distanza dalla linea d'acqua: applicato
+ovunque bucherebbe gli interni continentali e punteggerebbe l'oceano profondo, applicato
+solo alla costa è ciò che sfrangia le rive e lascia isolotti al largo.
+
+Alzare la frequenza del campo continentale, che sarebbe la mossa ovvia per avere più
+continenti, fa il contrario: misurata da 2.2 a 4.6, porta una massa sola a tenere dal 88 al
+99% delle terre emerse, perché più terra vicino alla linea d'acqua percola più facilmente,
+non meno. È il motivo per cui quel parametro è rimasto dov'era.
+
+I deserti sono passati da un terzo delle terre emerse a un quinto, e soprattutto hanno
+cambiato natura. La continentalità non è più uniforme ma **pesata su quanto è già arida la
+latitudine**: prosciugare tutto il pianeta in modo uniforme rendeva arida ogni massa
+abbastanza larga da avere un interno e non lasciava comunque un deserto vero da nessuna
+parte. Pesandola, il prosciugamento va dove i deserti nascono davvero — l'interno di un
+continente subtropicale — e un interno equatoriale o temperato resta umido.
 
 ### Il render model
 
@@ -172,7 +196,18 @@ vengono salvati nel frontend.
 
 Sulla geografia i limiti sono altrettanto espliciti. La generazione costruisce l'intera
 sfera in memoria in una volta: è il picco di memoria, non il tempo, a fissare il tetto della
-frequenza, e su un'istanza piccola quel tetto è vicino. Il payload e il tempo di costruzione
+frequenza, e su un'istanza piccola quel tetto è vicino.
+
+**La divisione in continenti non è garantita dall'algoritmo.** Con le costanti attuali il
+seed `Hesperia-01` dà tre continenti e la massa maggiore tiene il 40% delle terre emerse,
+ed è un risultato stabile: tutto il vicinato dei due parametri che lo governano dà lo stesso
+esito, quindi non è un equilibrio in bilico. Ma provati altri seed, alcuni tornano a un
+supercontinente con l'85%. I bacini oceanici rendono la divisione probabile, non certa. Un
+generatore che la garantisse dovrebbe partire da una struttura esplicita — placche tettoniche
+come celle di Voronoi sulla sfera, con i bordi affondati — invece che da un campo di rumore
+sperando che tagli nel punto giusto. Finché il mondo è uno solo e il suo seed è fissato la
+differenza non si vede; diventerebbe un problema il giorno in cui i mondi fossero generati
+su richiesta. Il payload e il tempo di costruzione
 lato client crescono linearmente con le caselle, quindi ogni aumento della tassellatura è un
 compromesso con il primo caricamento, soprattutto su mobile. La mappa non ha ancora alcun
 legame con le città: quando esisterà, una migrazione che azzera le caselle non sarà più

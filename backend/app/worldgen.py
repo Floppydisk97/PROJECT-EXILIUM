@@ -5,17 +5,23 @@ what this module produced and the API persisted. The planet is a geodesic sphere
 (a subdivided icosahedron); every original vertex is one hexagonal tile, with exactly
 twelve pentagons at the icosahedron's corners, so the render reads like RimWorld's globe.
 
-Generator v2 builds a world with recognisable landforms rather than noise blobs:
+Generator v3 builds a world with recognisable landforms rather than noise blobs:
 
 * mountains  -- ridged noise gathered into belts, so ranges run in chains with alpine
                 rock and snow caps on top, not isolated bumps;
 * rivers     -- real downhill flow accumulation over the tile graph; every land tile
                 knows its downstream tile, and closed basins with enough water are lakes;
-* deserts    -- a latitude rainfall profile with genuine subtropical dry belts, plus
-                continentality (distance from the sea) and orographic rain shadow
-                behind the ranges, which is where the big deserts actually come from;
-* islands    -- a high-frequency elevation octave speckles archipelagos into the ocean;
-                connected components give every tile the size of its landmass;
+* coasts     -- the continental field is sampled through a domain warp, so outlines are
+                irregular instead of round, and a second pass of detail that bites only
+                near the waterline cuts the gulfs, straits and offshore islets;
+* islands    -- ridged high-frequency noise gated by a slow mask, so islands arrive in
+                arcs and chains rather than as lone specks; connected components give
+                every tile the size of its landmass;
+* deserts    -- a latitude rainfall profile with subtropical dry belts, plus
+                continentality (distance from the sea) and orographic rain shadow behind
+                the ranges. The dry belt is a belt, not a trench: deserts are meant to be
+                a feature of continental interiors and rain shadows, not the default
+                colour of the subtropics;
 * poles      -- colder poles, so ice sheets and sea ice form real caps.
 
 Generation uses floats and a seeded PRNG. It runs once and its result is persisted, so
@@ -31,12 +37,12 @@ from collections import deque
 from dataclasses import dataclass
 
 WORLD_NAME = "Hesperia"
-GENERATOR_VERSION = 2
+GENERATOR_VERSION = 3
 
-# Production size. Sea level sits at the 72nd elevation percentile, so ~28% of tiles are
-# land; one player settles one land tile. f=139 -> 193212 tiles, ~54100 land: ten times the
-# 5000-player target, and fine enough that a coastline reads as a coastline up close.
-# Generation measures ~6 s and ~330 MB peak, which is what sets the ceiling here: the whole
+# Production size. Sea level sits at SEA_PERCENTILE, so ~24% of tiles are land; one player
+# settles one land tile. f=139 -> 193212 tiles, ~46000 land: nine times the 5000-player
+# target, and fine enough that a coastline reads as a coastline up close.
+# Generation measures ~10 s and ~328 MB peak, which is what sets the ceiling here: the whole
 # sphere is built in memory at once, so a small instance cannot go much past this.
 PRODUCTION_FREQUENCY = 139
 MIN_PLAYER_CAPACITY = 5000
@@ -51,6 +57,47 @@ RELIEF_GAIN = 0.075
 # much is a lake. Units are "tiles' worth of rainfall", from the flow accumulation below.
 RIVER_MIN_FLOW = 20
 LAKE_MIN_FLOW = 26
+
+# Coastline shape. The continental field is a sum of sinusoids, which on its own draws
+# round blobs however many octaves it gets. Sampling it at a point displaced by a second
+# noise field -- domain warping -- is what gives peninsulas, bays and an outline that does
+# not look like it was drawn with a compass.
+WARP_STRENGTH = 0.28
+
+# Detail that fades out with distance from the waterline, as a fraction of the elevation
+# span. Applied everywhere it would punch lakes into continental interiors and speckle the
+# deep ocean; applied only at the coast it is exactly what cuts gulfs and straits and
+# leaves islets just offshore. The amplitude is deliberately larger than the band, so the
+# coast really moves instead of being merely roughened.
+COAST_DETAIL = 0.15
+COAST_BAND = 0.10
+
+# Island arcs: ridged high-frequency noise, allowed only where a slow mask is high. Ridges
+# are lines, so the islands come out in chains the way volcanic arcs do; a plain octave of
+# noise gives isolated dots instead.
+ARC_STRENGTH = 0.66
+ARC_BIAS = 0.34
+SPECKLE_STRENGTH = 0.18
+
+# Ocean basins. Ridged noise -- high along lines, near zero away from them -- subtracted
+# from the land. Where a line crosses a neck of land it leaves a strait, where it reaches a
+# coast and stops it leaves a gulf, and where two of them meet it leaves an inland sea.
+# This is the only thing here that changes what is connected to what: warping an outline
+# makes it irregular but leaves the same landmass behind it, and raising the continental
+# frequency makes things worse rather than better, because more land near the waterline
+# percolates more readily, not less. Measured at f=48, seed Hesperia-01, this takes the
+# largest landmass from 75% of all land down to 40%, leaving three continents.
+RIFT_STRENGTH = 0.85
+RIFT_FREQUENCY = 3.8
+RIFT_SHARPNESS = 2
+
+# The base frequency of the continental field. Swept from 2.2 to 4.6: higher values gave a
+# *single* mass holding 88-99% of the land, so this stays where it is.
+CONTINENT_FREQUENCY = 2.2
+
+# Fraction of the planet under water. Fixes how much land exists, never how it is connected.
+# At f=139 this leaves ~46000 land tiles, nine times the 5000-player target.
+SEA_PERCENTILE = 0.76
 
 # Biome ids are stable identifiers; the frontend maps them to colours and labels.
 BIOMES = (
@@ -243,6 +290,16 @@ class _BandNoise:
         return value / self.total  # roughly [-1, 1]
 
 
+def _domain_warp(fields, p, amount: float):
+    """Displace a sample point by a vector noise field. The continental field then reads
+    its own smooth shape through a distorted lens, which is what turns round blobs into
+    coastlines with peninsulas and bays."""
+    wx, wy, wz = fields
+    return _normalize((p[0] + amount * wx.at(p),
+                       p[1] + amount * wy.at(p),
+                       p[2] + amount * wz.at(p)))
+
+
 def _percentile(values: list[float], fraction: float) -> float:
     ordered = sorted(values)
     idx = min(len(ordered) - 1, max(0, int(fraction * len(ordered))))
@@ -255,12 +312,15 @@ def _smoothstep(edge0: float, edge1: float, x: float) -> float:
 
 
 def _rain_profile(lat: float) -> float:
-    """Zonal rainfall: a wet equator (the ITCZ), dry subtropics around 25° where the big
-    deserts sit, wet mid-latitude storm tracks around 52°, and dry poles."""
+    """Zonal rainfall: a wet equator (the ITCZ), drier subtropics around 25° where the big
+    deserts sit, wet mid-latitude storm tracks around 52°, and dry poles. The two wet bands
+    are wide enough to overlap in the subtropics and the floor is well above zero, so the
+    dry belt is a belt and not a trench: a subtropical coast comes out as shrubland, and
+    only a continental interior or the lee of a range goes all the way to desert."""
     a = abs(lat)
-    itcz = math.exp(-((a / 13.0) ** 2))
-    storm_track = math.exp(-(((a - 52.0) / 16.0) ** 2))
-    return 2600.0 * itcz + 1500.0 * storm_track + 120.0
+    itcz = math.exp(-((a / 15.0) ** 2))
+    storm_track = math.exp(-(((a - 52.0) / 18.0) ** 2))
+    return 2400.0 * itcz + 1500.0 * storm_track + 230.0
 
 
 def _upwind_angle(lat: float) -> float:
@@ -418,20 +478,47 @@ def generate(seed: str, frequency: int = 12) -> World:
     ridge_rng = random.Random(_seed_int(seed, "mountains"))
     belt_rng = random.Random(_seed_int(seed, "belts"))
     isle_rng = random.Random(_seed_int(seed, "islands"))
+    shape_rng = random.Random(_seed_int(seed, "coastline"))
+    arc_rng = random.Random(_seed_int(seed, "arcs"))
 
-    continents = _BandNoise(elev_rng, octaves=6, base_freq=2.2)
+    continents = _BandNoise(elev_rng, octaves=6, base_freq=CONTINENT_FREQUENCY)
     warp_noise = _BandNoise(temp_rng, octaves=3, base_freq=2.2)
     rain_noise = _BandNoise(rain_rng, octaves=5, base_freq=2.6)
     ridge_noise = _BandNoise(ridge_rng, octaves=4, base_freq=3.1)
     belt_noise = _BandNoise(belt_rng, octaves=3, base_freq=1.7)
     island_noise = _BandNoise(isle_rng, octaves=3, base_freq=13.0)
+    # Three independent fields drawn from one generator: the displacement vector.
+    coast_warp = tuple(_BandNoise(shape_rng, octaves=3, base_freq=3.4) for _ in range(3))
+    coast_noise = _BandNoise(shape_rng, octaves=3, base_freq=8.0)
+    arc_noise = _BandNoise(arc_rng, octaves=3, base_freq=17.0)
+    arc_mask = _BandNoise(arc_rng, octaves=2, base_freq=2.5)
+    rift_noise = _BandNoise(shape_rng, octaves=3, base_freq=RIFT_FREQUENCY)
 
-    # Continental shape plus a high-frequency octave: the latter is what breaks coastlines
-    # up and leaves archipelagos out in open water.
-    raw_elev = [continents.at(v) + 0.20 * island_noise.at(v) for v in verts]
-    # ~72% ocean. Below that the land percolates into one supercontinent; here it breaks
-    # into a handful of continents plus archipelagos, and still seats far over 5000 players.
-    sea_level = _percentile(raw_elev, 0.72)
+    # Pass one: the continents, read through the domain warp so their outline is irregular,
+    # plus arcs of islands out in open water and a light speckle that breaks up the coasts.
+    base_elev = []
+    for v in verts:
+        arc = _smoothstep(0.50, 0.90, arc_mask.at(v) * 0.5 + 0.5)
+        chain = (1.0 - abs(arc_noise.at(v))) ** 3
+        rift = (1.0 - abs(rift_noise.at(v))) ** RIFT_SHARPNESS
+        base_elev.append(
+            continents.at(_domain_warp(coast_warp, v, WARP_STRENGTH))
+            + SPECKLE_STRENGTH * island_noise.at(v)
+            + ARC_STRENGTH * arc * (chain - ARC_BIAS)
+            - RIFT_STRENGTH * rift
+        )
+
+    # Pass two: detail that bites only near the waterline. It needs a waterline to measure
+    # against, hence the provisional one here; the real sea level is taken again afterwards
+    # so the land fraction -- and with it the player capacity -- is unchanged by the detail.
+    waterline = _percentile(base_elev, SEA_PERCENTILE)
+    reach = COAST_BAND * max(1e-6, 1.0 - waterline)
+    amplitude = COAST_DETAIL * max(1e-6, 1.0 - waterline)
+    raw_elev = [
+        e + amplitude * math.exp(-(((e - waterline) / reach) ** 2)) * coast_noise.at(v)
+        for e, v in zip(base_elev, verts)
+    ]
+    sea_level = _percentile(raw_elev, SEA_PERCENTILE)
     span = max(1e-6, 1.0 - sea_level)
 
     mountains = [_mountain_field(ridge_noise, belt_noise, v) for v in verts]
@@ -462,17 +549,25 @@ def generate(seed: str, frequency: int = 12) -> World:
         temperatures.append(round(base_temp - lapse + 6 * warp_noise.at(v), 1))
 
         rain = _rain_profile(lat)
-        # Continentality: rain is wrung out on the way inland.
-        rain *= 0.30 + 0.70 * math.exp(-ocean_distance[i] / 11.0)
+        # Continentality: rain is wrung out on the way inland, but weighted by how dry the
+        # latitude already is. A flat continentality dries the whole planet evenly, which
+        # turns every wide landmass arid and still leaves no real desert anywhere; weighting
+        # it puts the drying where deserts actually come from -- the interior of a
+        # subtropical continent -- and leaves an equatorial or mid-latitude interior wet.
+        dryness = _smoothstep(1500.0, 550.0, rain)
+        inland = 1.0 - math.exp(-ocean_distance[i] / 13.0)
+        rain *= 1.0 - (0.22 + 0.70 * dryness) * inland
         # Orographic effect: compare the range upwind with the ground here. Downwind of a
         # high chain the air is already dry (rain shadow); climbing into it, it dumps rain.
         upwind = _mountain_field(ridge_noise, belt_noise, _rotate_z(v, _upwind_angle(lat)))
         relief = upwind - mountains[i]
         if relief > 0:
-            rain *= 1.0 - min(0.78, relief * 2.6)     # in the lee: desert
+            rain *= 1.0 - min(0.66, relief * 2.2)     # in the lee: dry, and sometimes desert
         else:
             rain *= 1.0 + min(0.6, -relief * 1.8)     # windward slope: soaked
-        rain *= 0.65 + 0.70 * (rain_noise.at(v) * 0.5 + 0.5)
+        # Narrower than before on the dry side: a desert should be the work of the three
+        # mechanisms above agreeing, not of the noise alone rolling low.
+        rain *= 0.70 + 0.58 * (rain_noise.at(v) * 0.5 + 0.5)
         if elevation < 0:
             rain = max(rain, 900)
         rainfalls.append(max(0, int(round(rain))))
