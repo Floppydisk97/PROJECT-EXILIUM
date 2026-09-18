@@ -320,21 +320,37 @@ def test_world_map_generates_persists_and_is_immutable(database):
     with transaction() as conn:
         world = read_map(conn)
     assert world["tile_count"] == 362 and world["frequency"] == 6
-    sample = world["tiles"][0]
-    assert set(sample) >= {"id", "lat", "lon", "center", "normal", "biome", "river_flow",
-                           "landmass_size", "neighbor_count", "polygon"}
-    assert len(sample["polygon"]) in (5, 6)
+    columns = world["tiles"]
+    count = len(columns["id"])
+    assert count > 0
+    # Columns are parallel: one entry per tile, three numbers per vector, and the ring
+    # offsets bracket every tile's corners.
+    for name in ("elevation", "temperature", "rainfall", "biome", "river_flow",
+                 "landmass_size", "neighbor_count"):
+        assert len(columns[name]) == count, name
+    assert len(columns["center"]) == 3 * count
+    assert len(columns["normal"]) == 3 * count
+    assert len(columns["ring_offset"]) == count + 1
+    assert columns["ring_offset"][-1] == len(columns["ring"])
+
+    names = world["biome_names"]
+    # Every corner index points into the shared pool, and every cell is a pentagon or hexagon.
+    corner_count = len(world["corners"]) // 3
+    assert all(0 <= i < corner_count for i in columns["ring"])
+    for t in range(count):
+        span = columns["ring_offset"][t + 1] - columns["ring_offset"][t]
+        assert span in (5, 6)
     # The render model carries land, the polar sea ice and the shelf ring around every
     # coast -- never the open ocean beyond it.
-    by_id = {t["id"]: t for t in world["tiles"]}
-    assert any(t["elevation"] >= 0 for t in world["tiles"])
-    for t in world["tiles"]:
-        if t["elevation"] >= 0 or t["biome"] == "sea_ice":
+    assert any(e >= 0 for e in columns["elevation"])
+    for t in range(count):
+        if columns["elevation"][t] >= 0:
             continue
-        assert t["biome"] == "ocean"  # deep water only reaches the payload as shelf
+        assert names[columns["biome"][t]] in ("sea_ice", "ocean")
     # Rivers arrive as ready-to-draw segments keyed to the same relief the client renders.
     assert world["relief_gain"] > 0 and world["elevation_max"] > 0
-    assert all({"a", "b", "flow"} <= set(r) for r in world["rivers"])
+    rivers = world["rivers"]
+    assert len(rivers["a"]) == len(rivers["b"]) == 3 * len(rivers["flow"])
     # One-shot: a second generation is refused, never a silent overwrite.
     with pytest.raises(DomainError) as error, transaction() as conn:
         generate_and_store(conn, "Church", frequency=6)

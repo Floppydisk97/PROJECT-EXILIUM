@@ -34,9 +34,11 @@ WORLD_NAME = "Hesperia"
 GENERATOR_VERSION = 2
 
 # Production size. Sea level sits at the 72nd elevation percentile, so ~28% of tiles are
-# land; one player settles one land tile. f=80 -> 64002 tiles, ~17900 land: far beyond the
-# 5000-player target, and fine-grained enough that continents read in detail from orbit.
-PRODUCTION_FREQUENCY = 80
+# land; one player settles one land tile. f=139 -> 193212 tiles, ~54100 land: ten times the
+# 5000-player target, and fine enough that a coastline reads as a coastline up close.
+# Generation measures ~6 s and ~330 MB peak, which is what sets the ceiling here: the whole
+# sphere is built in memory at once, so a small instance cannot go much past this.
+PRODUCTION_FREQUENCY = 139
 MIN_PLAYER_CAPACITY = 5000
 
 # Relief exaggeration, shared with the client so terrain normals computed here match the
@@ -180,7 +182,8 @@ def _dual_cells(verts, faces):
 
     polygons: list[tuple[tuple[float, float, float], ...]] = []
     ordered_neighbors: list[tuple[int, ...]] = []
-    for vi, faces_here in enumerate(incident):
+    for vi in range(len(verts)):
+        faces_here = incident[vi]
         normal = verts[vi]
         u_axis, v_axis = _tangent_basis(normal)
 
@@ -193,6 +196,11 @@ def _dual_cells(verts, faces):
         ordered_neighbors.append(tuple(
             sorted(adjacency[vi], key=lambda nb: angle_of(verts[nb]))
         ))
+        # Release each vertex's scratch as soon as its cell is built. At production size the
+        # incidence lists and adjacency sets are tens of megabytes, and holding all of them
+        # to the end is what pushes a small instance towards its memory limit.
+        incident[vi] = ()
+        adjacency[vi] = frozenset()
     return polygons, ordered_neighbors
 
 
@@ -395,13 +403,14 @@ def _terrain_normals(centers, elevations, neighbors):
 
 
 def generate(seed: str, frequency: int = 12) -> World:
-    if not 2 <= frequency <= 96:
-        raise ValueError("frequency must be between 2 and 96")
+    if not 2 <= frequency <= 160:
+        raise ValueError("frequency must be between 2 and 160")
     if not seed.strip():
         raise ValueError("seed must be non-empty")
 
     verts, faces = _subdivide(frequency)
     polygons, neighbors = _dual_cells(verts, faces)
+    del faces  # the dual cells carry everything the rest of the pipeline needs
 
     elev_rng = random.Random(_seed_int(seed, "elevation"))
     temp_rng = random.Random(_seed_int(seed, "temperature"))

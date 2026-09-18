@@ -74,10 +74,10 @@ def generate_and_store(conn, seed: str, frequency: int = worldgen.PRODUCTION_FRE
     }
 
 
-def _river_segments(conn) -> list[dict]:
-    """Rivers as ready-to-draw segments: every tile carrying enough water, paired with the
-    tile it drains into. Resolving the pairing here means the client needs no adjacency and
-    can render the network as plain line segments, coast included."""
+def _river_columns(conn) -> dict:
+    """Rivers as ready-to-draw segments, in columns. The backend pairs each reach with the
+    tile it drains into, so the client needs no adjacency and can build the ribbons directly.
+    """
     rows = conn.execute(
         """SELECT up.cx AS ax, up.cy AS ay, up.cz AS az,
                   down.cx AS bx, down.cy AS by, down.cz AS bz,
@@ -89,16 +89,31 @@ def _river_segments(conn) -> list[dict]:
            ORDER BY up.id""",
         (worldgen.RIVER_MIN_FLOW,),
     ).fetchall()
-    return [
-        {
-            "a": [r["ax"], r["ay"], r["az"]], "b": [r["bx"], r["by"], r["bz"]],
-            "flow": r["flow"], "ae": r["up_elev"], "be": max(0, r["down_elev"]),
-        }
-        for r in rows
-    ]
+    a: list[float] = []
+    b: list[float] = []
+    flow: list[int] = []
+    ae: list[int] = []
+    be: list[int] = []
+    for r in rows:
+        a += [r["ax"], r["ay"], r["az"]]
+        b += [r["bx"], r["by"], r["bz"]]
+        flow.append(r["flow"])
+        ae.append(r["up_elev"])
+        be.append(max(0, r["down_elev"]))
+    return {"a": a, "b": b, "flow": flow, "ae": ae, "be": be}
 
 
 def read_map(conn) -> dict:
+    """The render model, in columns.
+
+    Two things keep this affordable at production size. Every tile's polygon corner is a
+    face centroid shared by three tiles, so the corners live in one pool and a tile only
+    quotes indices into it. And the per-tile fields are columns rather than a list of
+    objects: a JSON object per tile would spend more bytes repeating field names than on
+    the geography itself. Together they cut the payload to a third of the naive encoding.
+
+    Latitude and longitude are not sent: the client derives them from the centre vector.
+    """
     meta = conn.execute(
         "SELECT name, seed, frequency, sea_level, generated_at FROM world_map WHERE id = 1"
     ).fetchone()
@@ -110,37 +125,82 @@ def read_map(conn) -> dict:
     # Land, the sea ice that makes the polar caps read as caps rather than open water, and
     # one ring of sea around every coast: shaded by its real depth, that ring is the shelf
     # that stops continents looking like plates dropped on flat blue.
-    tiles = conn.execute(
-        """WITH shelf AS (
-               SELECT DISTINCT unnest(neighbors) AS id
-               FROM world_tiles WHERE map_id = 1 AND elevation >= 0
-           )
-           SELECT t.id, t.lat, t.lon, t.cx, t.cy, t.cz, t.elevation, t.temperature,
-                  t.rainfall, t.biome, t.nx, t.ny, t.nz, t.river_flow, t.landmass_size,
-                  COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon
-           FROM world_tiles t
-           WHERE t.map_id = 1
-             AND (t.elevation >= 0 OR t.biome = 'sea_ice'
-                  OR t.id IN (SELECT id FROM shelf))
-           ORDER BY t.id"""
+    #
+    # Deliberately three plain statements instead of one query with the shelf as a subquery:
+    # at production size the planner turns `id IN (SELECT ...)` over 193k rows into something
+    # that runs for minutes, while a sequential scan plus a primary-key lookup on an explicit
+    # id array stays in the seconds and does not depend on how fresh the statistics are.
+    shelf_ids = [
+        row["id"] for row in conn.execute(
+            """SELECT DISTINCT unnest(neighbors) AS id
+               FROM world_tiles WHERE map_id = 1 AND elevation >= 0"""
+        ).fetchall()
+    ]
+    select = """SELECT t.id, t.cx, t.cy, t.cz, t.elevation, t.temperature, t.rainfall,
+                       t.biome, t.nx, t.ny, t.nz, t.river_flow, t.landmass_size,
+                       COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon
+                FROM world_tiles t WHERE t.map_id = 1 AND """
+    rows = conn.execute(
+        select + "(t.elevation >= 0 OR t.biome = 'sea_ice')"
     ).fetchall()
-    land_count = sum(1 for t in tiles if t["elevation"] >= 0 and t["biome"] != "lake")
+    rows += conn.execute(
+        select + "t.elevation < 0 AND t.biome = 'ocean' AND t.id = ANY(%s)",
+        (shelf_ids,),
+    ).fetchall()
+    rows.sort(key=lambda row: row["id"])
+
+    biome_index = {name: i for i, name in enumerate(worldgen.BIOMES)}
+    corner_index: dict[tuple[float, float, float], int] = {}
+    corners: list[float] = []
+    ids: list[int] = []
+    center: list[float] = []
+    normal: list[float] = []
+    elevation: list[int] = []
+    temperature: list[float] = []
+    rainfall: list[int] = []
+    biome: list[int] = []
+    river_flow: list[int] = []
+    landmass_size: list[int] = []
+    neighbor_count: list[int] = []
+    ring: list[int] = []
+    ring_offset: list[int] = [0]
+    land_count = 0
+
+    for row in rows:
+        ids.append(row["id"])
+        center += [row["cx"], row["cy"], row["cz"]]
+        normal += [row["nx"], row["ny"], row["nz"]]
+        elevation.append(row["elevation"])
+        temperature.append(row["temperature"])
+        rainfall.append(row["rainfall"])
+        biome.append(biome_index[row["biome"]])
+        river_flow.append(row["river_flow"])
+        landmass_size.append(row["landmass_size"])
+        neighbor_count.append(row["neighbor_count"])
+        if row["elevation"] >= 0 and row["biome"] != "lake":
+            land_count += 1
+        for point in row["polygon"]:
+            key = (point[0], point[1], point[2])
+            index = corner_index.get(key)
+            if index is None:
+                index = len(corner_index)
+                corner_index[key] = index
+                corners += point
+            ring.append(index)
+        ring_offset.append(len(ring))
+
     return {
         "name": meta["name"], "seed": meta["seed"], "frequency": meta["frequency"],
         "sea_level": meta["sea_level"], "tile_count": total, "land_count": land_count,
         # Shared with worldgen so the client's relief matches the normals computed there.
         "elevation_max": worldgen.ELEVATION_MAX, "relief_gain": worldgen.RELIEF_GAIN,
-        "rivers": _river_segments(conn),
-        "tiles": [
-            {
-                "id": t["id"], "lat": t["lat"], "lon": t["lon"],
-                "center": [t["cx"], t["cy"], t["cz"]],
-                "normal": [t["nx"], t["ny"], t["nz"]],
-                "elevation": t["elevation"], "temperature": t["temperature"],
-                "rainfall": t["rainfall"], "biome": t["biome"],
-                "river_flow": t["river_flow"], "landmass_size": t["landmass_size"],
-                "neighbor_count": t["neighbor_count"], "polygon": t["polygon"],
-            }
-            for t in tiles
-        ],
+        "biome_names": list(worldgen.BIOMES),
+        "corners": corners,
+        "rivers": _river_columns(conn),
+        "tiles": {
+            "id": ids, "center": center, "normal": normal, "elevation": elevation,
+            "temperature": temperature, "rainfall": rainfall, "biome": biome,
+            "river_flow": river_flow, "landmass_size": landmass_size,
+            "neighbor_count": neighbor_count, "ring": ring, "ring_offset": ring_offset,
+        },
     }
