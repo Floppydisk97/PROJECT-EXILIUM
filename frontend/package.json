@@ -6,7 +6,8 @@
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build --webpack && node scripts/prepare-standalone.mjs",
     "start": "node .next/standalone/server.js",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "next": "16.3.5",
@@ -19,6 +20,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/three": "^0.169.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.1"
   }
 }
