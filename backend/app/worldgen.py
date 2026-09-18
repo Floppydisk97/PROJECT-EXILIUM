@@ -31,13 +31,14 @@ within one interpreter, which the tests assert. No economic value is float-based
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 import random
 from collections import deque
 from dataclasses import dataclass
 
 WORLD_NAME = "Hesperia"
-GENERATOR_VERSION = 3
+GENERATOR_VERSION = 4
 
 # Production size. Sea level sits at SEA_PERCENTILE, so ~24% of tiles are land; one player
 # settles one land tile. f=139 -> 193212 tiles, ~46000 land: nine times the 5000-player
@@ -56,7 +57,40 @@ RELIEF_GAIN = 0.075
 # A tile carries this much water before it counts as a river; a closed basin holding this
 # much is a lake. Units are "tiles' worth of rainfall", from the flow accumulation below.
 RIVER_MIN_FLOW = 20
-LAKE_MIN_FLOW = 26
+# Metres of standing water before a tile counts as lake rather than damp ground. Small
+# enough that tarns survive, large enough that a rounding artefact is not a lake.
+LAKE_MIN_DEPTH = 8
+
+# Basins. Smooth noise gated into isolated patches and dug out of the land, which the
+# depression fill then turns into standing water. Without them a planet built from ridged
+# uplift and river erosion has almost nowhere for water to collect: relief alone gives a
+# handful of tarns, never a Caspian. The dug ground is clamped at sea level, so a basin
+# takes nothing away from the land area -- it only decides that some of it is under water.
+# Seeded bowls rather than a noise field, for the same reason the islands are: a smooth
+# hollow dug into a smooth field does not close a contour, it just moves the drainage and
+# the water runs out. A bowl with its own rim ponds by construction, and giving the radii a
+# wide range is what produces tarns, proper lakes and the occasional inland sea from one
+# mechanism instead of three.
+BASIN_COUNT = 90
+BASIN_RADIUS_MIN = 0.010
+BASIN_RADIUS_MAX = 0.075
+BASIN_DEPTH_MIN = 350.0
+BASIN_DEPTH_MAX = 1400.0
+
+# Inland seas are a separate, deliberately small population rather than the tail of the
+# same draw. A single skewed distribution either makes every lake too big or never reaches
+# this size at all; two populations say plainly how many of each the planet gets.
+INLAND_SEA_COUNT = 4
+INLAND_SEA_RADIUS_MIN = 0.105
+INLAND_SEA_RADIUS_MAX = 0.165
+INLAND_SEA_DEPTH = 1900.0
+BASIN_PLACEMENT_TRIES = 200
+# A bowl of constant radius is a circle, and a planet of circular lakes reads as clip art.
+# Wobbling the rim with high-frequency noise costs one sample per tile and is the whole
+# difference between a procedural disc and a shoreline.
+BASIN_WOBBLE = 0.42
+BASIN_WOBBLE_FREQUENCY = 26.0
+BASIN_INLAND_MARGIN = 0.12
 
 # Coastline shape. The continental field is a sum of sinusoids, which on its own draws
 # round blobs however many octaves it gets. Sampling it at a point displaced by a second
@@ -72,11 +106,15 @@ WARP_STRENGTH = 0.28
 COAST_DETAIL = 0.15
 COAST_BAND = 0.10
 
-# Island arcs: ridged high-frequency noise, allowed only where a slow mask is high. Ridges
-# are lines, so the islands come out in chains the way volcanic arcs do; a plain octave of
-# noise gives isolated dots instead.
-ARC_STRENGTH = 0.66
-ARC_BIAS = 0.34
+# Island arcs are compact, seeded radial uplifts. Each chain follows a great-circle segment
+# and each centre owns its radius and falloff; unlike a ridged wave, the field has no
+# parallel, periodically repeated zero contours.
+ISLAND_ARC_COUNT = 10
+ISLANDS_PER_ARC = 6
+ISLAND_RADIUS_MIN = 0.012
+ISLAND_RADIUS_MAX = 0.025
+ISLAND_STRENGTH_MIN = 0.585
+ISLAND_STRENGTH_MAX = 0.835
 SPECKLE_STRENGTH = 0.18
 
 # Ocean basins. Ridged noise -- high along lines, near zero away from them -- subtracted
@@ -88,7 +126,7 @@ SPECKLE_STRENGTH = 0.18
 # percolates more readily, not less. Measured at f=48, seed Hesperia-01, this takes the
 # largest landmass from 75% of all land down to 40%, leaving three continents.
 RIFT_STRENGTH = 0.85
-RIFT_FREQUENCY = 3.8
+RIFT_FREQUENCY = 4.0
 RIFT_SHARPNESS = 2
 
 # The base frequency of the continental field. Swept from 2.2 to 4.6: higher values gave a
@@ -226,6 +264,9 @@ def _dual_cells(verts, faces):
         adjacency[a].update((b, c))
         adjacency[b].update((a, c))
         adjacency[c].update((a, b))
+        # The primal triangles are dead after this pass. Releasing tuples progressively
+        # avoids overlapping their full storage with the completed adjacency sets.
+        faces[fi] = None
 
     polygons: list[tuple[tuple[float, float, float], ...]] = []
     ordered_neighbors: list[tuple[int, ...]] = []
@@ -265,6 +306,130 @@ def _rotate_z(v, angle):
     return (v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2])
 
 
+def _slerp(a, b, fraction: float):
+    angle = math.acos(max(-1.0, min(1.0, _dot(a, b))))
+    if angle < 1e-9:
+        return a
+    scale = math.sin(angle)
+    return _normalize(tuple(
+        math.sin((1.0 - fraction) * angle) / scale * a[i]
+        + math.sin(fraction * angle) / scale * b[i] for i in range(3)
+    ))
+
+
+def _island_centers(rng: random.Random):
+    """Deterministic compact island centres arranged on jittered great-circle segments."""
+    centers = []
+    for _ in range(ISLAND_ARC_COUNT):
+        start = _normalize((rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1)))
+        tangent = _normalize(_cross(start, _normalize(
+            (rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1)))))
+        length = rng.uniform(0.20, 0.36)
+        end = _normalize(tuple(math.cos(length) * start[i] + math.sin(length) * tangent[i]
+                               for i in range(3)))
+        for index in range(ISLANDS_PER_ARC):
+            fraction = index / (ISLANDS_PER_ARC - 1)
+            point = _slerp(start, end, fraction)
+            along = _normalize(_cross(_cross(point, tangent), point))
+            jitter_axis = _normalize(_cross(point, along))
+            jitter = rng.uniform(-0.010, 0.010)
+            point = _normalize(tuple(math.cos(jitter) * point[i]
+                                     + math.sin(jitter) * jitter_axis[i] for i in range(3)))
+            radius = rng.uniform(ISLAND_RADIUS_MIN, ISLAND_RADIUS_MAX)
+            centers.append((point, radius, math.cos(radius),
+                            rng.uniform(ISLAND_STRENGTH_MIN, ISLAND_STRENGTH_MAX)))
+    return tuple(centers)
+
+
+class _SeededIslandField:
+    """Compact radial uplifts indexed in 3-D bins, so unused ocean costs stay negligible."""
+    CELL = 0.05  # wider than every island radius (chord length is smaller than arc length)
+
+    def __init__(self, centers):
+        self.bins = {}
+        for item in centers:
+            center = item[0]
+            key = tuple(math.floor(value / self.CELL) for value in center)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        self.bins.setdefault((key[0] + dx, key[1] + dy, key[2] + dz), []).append(item)
+
+    def at(self, point) -> float:
+        uplift = 0.0
+        key = tuple(math.floor(value / self.CELL) for value in point)
+        for center, radius, radius_cosine, strength in self.bins.get(key, ()):
+            cosine = _dot(point, center)
+            if cosine > radius_cosine:
+                distance = math.acos(max(-1.0, min(1.0, cosine)))
+                t = 1.0 - distance / radius
+                uplift = max(uplift, strength * t * t * (3.0 - 2.0 * t))
+        return uplift
+
+
+class _SeededBowls:
+    """Radial depressions with rims, binned like the islands so empty ground stays cheap."""
+
+    def __init__(self, rng: random.Random, inland, wobble):
+        """`inland(point)` says whether a centre is far enough inside a landmass.
+
+        Basins are rejection-sampled against it rather than scattered over the whole sphere.
+        With three quarters of the planet under water, a blind draw puts most of them at sea,
+        where a hollow in the seabed is invisible; worse, whether the handful of large ones
+        land anywhere useful becomes a coin toss the seed wins or loses. Sampling until they
+        are on land makes the count mean what it says.
+        """
+        self.items = []
+        self.wobble = wobble
+        largest = 0.0
+        draws = [
+            # Cubed uniform: most basins are small, a few are large. A flat draw gives a
+            # planet of identically sized lakes, which reads as wallpaper.
+            (BASIN_COUNT, BASIN_RADIUS_MIN, BASIN_RADIUS_MAX, 3, BASIN_DEPTH_MIN, BASIN_DEPTH_MAX),
+            (INLAND_SEA_COUNT, INLAND_SEA_RADIUS_MIN, INLAND_SEA_RADIUS_MAX, 1,
+             INLAND_SEA_DEPTH, INLAND_SEA_DEPTH),
+        ]
+        for count, low, high, shape, deep_low, deep_high in draws:
+            for _ in range(count):
+                center = None
+                for _attempt in range(BASIN_PLACEMENT_TRIES):
+                    candidate = _normalize((rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1)))
+                    if inland(candidate):
+                        center = candidate
+                        break
+                if center is None:
+                    continue   # a world with almost no interior simply gets fewer basins
+                radius = low + (high - low) * rng.random() ** shape
+                depth = rng.uniform(deep_low, deep_high) if deep_high > deep_low else deep_low
+                self.items.append((center, radius, math.cos(radius), depth))
+                largest = max(largest, radius)
+        self.cell = max(largest * (1.0 + BASIN_WOBBLE), 1e-6)
+        self.bins: dict = {}
+        for item in self.items:
+            key = tuple(math.floor(value / self.cell) for value in item[0])
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        self.bins.setdefault((key[0] + dx, key[1] + dy, key[2] + dz), []).append(item)
+
+    def at(self, point) -> float:
+        deepest = 0.0
+        key = tuple(math.floor(value / self.cell) for value in point)
+        candidates = self.bins.get(key, ())
+        if not candidates:
+            return 0.0
+        reach = 1.0 + BASIN_WOBBLE * self.wobble.at(point)
+        for center, radius, _radius_cosine, depth in candidates:
+            edge = radius * reach
+            cosine = _dot(point, center)
+            if cosine <= math.cos(min(math.pi, edge)):
+                continue
+            distance = math.acos(max(-1.0, min(1.0, cosine)))
+            t = 1.0 - distance / edge
+            deepest = max(deepest, depth * t * t * (3.0 - 2.0 * t))
+        return deepest
+
+
 class _BandNoise:
     """Smooth band-limited noise on the unit sphere: a sum of directional sinusoids with
     seeded random directions, frequencies and phases. Cheap, continuous and deterministic."""
@@ -285,9 +450,47 @@ class _BandNoise:
 
     def at(self, p: tuple[float, float, float]) -> float:
         value = 0.0
+        x, y, z = p
         for direction, freq, phase, amp in self.terms:
-            value += amp * math.sin(freq * _dot(direction, p) + phase)
+            value += amp * math.sin(
+                freq * (direction[0] * x + direction[1] * y + direction[2] * z) + phase
+            )
         return value / self.total  # roughly [-1, 1]
+
+
+class _IsotropicBandNoise:
+    """Band noise whose every octave averages a seeded set of independent directions."""
+
+    def __init__(self, rng: random.Random, octaves: int, base_freq: float):
+        self.octaves = []
+        amplitude = 1.0
+        frequency = base_freq
+        total = 0.0
+        for _ in range(octaves):
+            count = rng.randint(8, 12)
+            terms = tuple((
+                _normalize((rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1))),
+                rng.uniform(0, 2 * math.pi),
+            ) for _ in range(count))
+            self.octaves.append((terms, frequency, amplitude, math.sqrt(count)))
+            total += amplitude
+            amplitude *= 0.55
+            frequency *= 1.9
+        self.total = total
+
+    def at(self, point) -> float:
+        value = 0.0
+        x, y, z = point
+        for terms, frequency, amplitude, normalization in self.octaves:
+            octave = 0.0
+            for direction, phase in terms:
+                octave += math.sin(
+                    frequency * (direction[0] * x + direction[1] * y + direction[2] * z)
+                    + phase
+                )
+            octave /= normalization
+            value += amplitude * octave
+        return max(-1.0, min(1.0, value / self.total))
 
 
 def _domain_warp(fields, p, amount: float):
@@ -403,27 +606,99 @@ def _landmass_sizes(elevations, neighbors) -> list[int]:
     return sizes
 
 
-def _river_network(elevations, neighbors, rainfall):
-    """Downhill flow accumulation. Each land tile drains to its lowest neighbour; walking
-    the tiles from high to low is a valid topological order, so one pass accumulates every
-    upstream contribution. Tiles with no lower neighbour are closed basins (lake candidates).
+def _fill_depressions(elevations, neighbors):
+    """Flood every closed basin up to the lowest lip it could spill over.
+
+    Priority flood: start from the sea and walk inland, always from the lowest frontier tile
+    outward. A tile's water surface is the higher of its own ground and the level the
+    frontier arrived at, so a basin ringed by higher ground fills exactly to its spill point
+    and not a metre more. The returned surface is what water would actually rest at.
+
+    This is what gives lakes at all. The old rule -- a tile with no lower neighbour, holding
+    enough rain -- could only ever find a single-tile pit, because a real basin's floor is
+    several tiles wide and each of them has a lower neighbour inside the same basin. It
+    produced thirty lakes on a planet of a hundred and ninety thousand tiles.
+    """
+    surface = list(elevations)
+    frontier: list[tuple[int, int]] = []
+    seen = bytearray(len(elevations))
+    for index, elevation in enumerate(elevations):
+        if elevation < 0:
+            seen[index] = 1
+            for neighbor in neighbors[index]:
+                if elevations[neighbor] >= 0 and not seen[neighbor]:
+                    seen[neighbor] = 1
+                    heapq.heappush(frontier, (elevations[neighbor], neighbor))
+    while frontier:
+        level, index = heapq.heappop(frontier)
+        surface[index] = level
+        for neighbor in neighbors[index]:
+            if seen[neighbor]:
+                continue
+            seen[neighbor] = 1
+            heapq.heappush(frontier, (max(elevations[neighbor], level), neighbor))
+    # Land the sea could never reach -- an entirely enclosed basin with no path out at all --
+    # keeps its own ground rather than an arbitrary flood.
+    return surface
+
+
+def _standing_water(elevations, surface, neighbors):
+    """Group flooded tiles into bodies, and keep only the bodies deep enough to be water.
+
+    Per body, not per tile. A depth threshold applied tile by tile carves a ragged edge out
+    of a single lake -- the shallow rim is called land while the middle is water -- and that
+    leaves a river running uphill into its own lake, which is how this was found. The
+    threshold exists to stop a metre of integer rounding becoming a pond; it has no business
+    deciding where one lake ends.
+    """
+    flooded = [surface[i] > elevations[i] for i in range(len(elevations))]
+    lake = [False] * len(elevations)
+    seen = bytearray(len(elevations))
+    for start in range(len(elevations)):
+        if not flooded[start] or seen[start]:
+            continue
+        seen[start] = 1
+        body = [start]
+        queue = deque([start])
+        deepest = surface[start] - elevations[start]
+        while queue:
+            current = queue.popleft()
+            for neighbor in neighbors[current]:
+                if flooded[neighbor] and not seen[neighbor]:
+                    seen[neighbor] = 1
+                    body.append(neighbor)
+                    queue.append(neighbor)
+                    deepest = max(deepest, surface[neighbor] - elevations[neighbor])
+        if deepest >= LAKE_MIN_DEPTH:
+            for index in body:
+                lake[index] = True
+    return lake
+
+
+def _river_network(elevations, surface, neighbors, rainfall):
+    """Flow accumulation over the filled surface.
+
+    Routing on the filled surface rather than the raw ground is what lets a river run into a
+    lake, across it and out the far side instead of stopping at the first hollow. Ties are
+    broken by the real ground beneath, so water crossing a flat lake still heads for the
+    outlet.
     """
     count = len(elevations)
     downstream = [-1] * count
     land = [i for i in range(count) if elevations[i] >= 0]
     for i in land:
-        best, best_elev = -1, elevations[i]
+        best, best_level, best_ground = -1, surface[i], elevations[i]
         for nb in neighbors[i]:
-            # Strictly lower only: no equal-height step, so the drainage graph stays acyclic.
-            if elevations[nb] < best_elev:
-                best, best_elev = nb, elevations[nb]
+            level = surface[nb] if elevations[nb] >= 0 else elevations[nb]
+            if level < best_level or (level == best_level and elevations[nb] < best_ground):
+                best, best_level, best_ground = nb, level, elevations[nb]
         downstream[i] = best
 
-    # Rain falling on a tile, in "tile-equivalents": a soaking tile contributes several.
     flow = [0.0] * count
     for i in land:
         flow[i] = max(0.25, rainfall[i] / 900.0)
-    for i in sorted(land, key=lambda t: elevations[t], reverse=True):
+    # High to low on the filled surface: a valid topological order for the routing above.
+    for i in sorted(land, key=lambda t: (surface[t], elevations[t]), reverse=True):
         target = downstream[i]
         if target != -1 and elevations[target] >= 0:
             flow[target] += flow[i]
@@ -490,21 +765,18 @@ def generate(seed: str, frequency: int = 12) -> World:
     # Three independent fields drawn from one generator: the displacement vector.
     coast_warp = tuple(_BandNoise(shape_rng, octaves=3, base_freq=3.4) for _ in range(3))
     coast_noise = _BandNoise(shape_rng, octaves=3, base_freq=8.0)
-    arc_noise = _BandNoise(arc_rng, octaves=3, base_freq=17.0)
-    arc_mask = _BandNoise(arc_rng, octaves=2, base_freq=2.5)
-    rift_noise = _BandNoise(shape_rng, octaves=3, base_freq=RIFT_FREQUENCY)
+    island_field = _SeededIslandField(_island_centers(arc_rng))
+    rift_noise = _IsotropicBandNoise(shape_rng, octaves=3, base_freq=RIFT_FREQUENCY)
 
     # Pass one: the continents, read through the domain warp so their outline is irregular,
     # plus arcs of islands out in open water and a light speckle that breaks up the coasts.
     base_elev = []
     for v in verts:
-        arc = _smoothstep(0.50, 0.90, arc_mask.at(v) * 0.5 + 0.5)
-        chain = (1.0 - abs(arc_noise.at(v))) ** 3
         rift = (1.0 - abs(rift_noise.at(v))) ** RIFT_SHARPNESS
         base_elev.append(
             continents.at(_domain_warp(coast_warp, v, WARP_STRENGTH))
             + SPECKLE_STRENGTH * island_noise.at(v)
-            + ARC_STRENGTH * arc * (chain - ARC_BIAS)
+            + island_field.at(v)
             - RIFT_STRENGTH * rift
         )
 
@@ -519,7 +791,29 @@ def generate(seed: str, frequency: int = 12) -> World:
         for e, v in zip(base_elev, verts)
     ]
     sea_level = _percentile(raw_elev, SEA_PERCENTILE)
-    span = max(1e-6, 1.0 - sea_level)
+    # The height scale is the field's OWN range above the waterline, not a hard-coded 1.0.
+    # The old constant silently assumed the sum of every contribution peaked at exactly one.
+    # It never did, and the moment another term was added the whole planet's relief was
+    # divided by too small a span: continents came out as mountain ranges, more than half the
+    # land as bare rock and snow, and the deserts vanished under the lapse rate.
+    span = max(1e-6, max(raw_elev) - sea_level)
+
+    def _base_field(point):
+        rift = (1.0 - abs(rift_noise.at(point))) ** RIFT_SHARPNESS
+        return (continents.at(_domain_warp(coast_warp, point, WARP_STRENGTH))
+                + SPECKLE_STRENGTH * island_noise.at(point)
+                + island_field.at(point)
+                - RIFT_STRENGTH * rift)
+
+    # Comfortably above the waterline, not merely above it: a basin dug on a beach drains
+    # straight out to sea and leaves nothing behind.
+    inland_margin = sea_level + BASIN_INLAND_MARGIN * span
+    basins = _SeededBowls(
+        random.Random(_seed_int(seed, "basins")),
+        lambda point: _base_field(point) > inland_margin,
+        _BandNoise(random.Random(_seed_int(seed, "shorelines")), octaves=2,
+                   base_freq=BASIN_WOBBLE_FREQUENCY),
+    )
 
     mountains = [_mountain_field(ridge_noise, belt_noise, v) for v in verts]
 
@@ -532,7 +826,10 @@ def generate(seed: str, frequency: int = 12) -> World:
         base = e * 2600 / span
         # Ranges rise inland; right at the shoreline they taper off into coastal hills.
         inland = _smoothstep(0.0, 0.18 * span, e)
-        elevations.append(int(round(base + 6200 * mountains[i] * inland)))
+        height = base + 6200 * mountains[i] * inland
+        # Dig the basins, but never below sea level: a hollow decides that ground is under
+        # water, not that it stops being land.
+        elevations.append(max(0, int(round(height - basins.at(v)))))
 
     ocean_distance = _distance_to_ocean(elevations, neighbors)
     landmass = _landmass_sizes(elevations, neighbors)
@@ -556,7 +853,7 @@ def generate(seed: str, frequency: int = 12) -> World:
         # subtropical continent -- and leaves an equatorial or mid-latitude interior wet.
         dryness = _smoothstep(1500.0, 550.0, rain)
         inland = 1.0 - math.exp(-ocean_distance[i] / 13.0)
-        rain *= 1.0 - (0.22 + 0.70 * dryness) * inland
+        rain *= 1.0 - (0.22 + 0.50 * dryness) * inland
         # Orographic effect: compare the range upwind with the ground here. Downwind of a
         # high chain the air is already dry (rain shadow); climbing into it, it dumps rain.
         upwind = _mountain_field(ridge_noise, belt_noise, _rotate_z(v, _upwind_angle(lat)))
@@ -572,16 +869,26 @@ def generate(seed: str, frequency: int = 12) -> World:
             rain = max(rain, 900)
         rainfalls.append(max(0, int(round(rain))))
 
-    river_flow, downstream = _river_network(elevations, neighbors, rainfalls)
+    # These generation-only arrays otherwise overlap with the river, normal and immutable
+    # Tile objects at the peak. Releasing them is material on the 512 MB production plan.
+    del base_elev, raw_elev, mountains, ocean_distance
+    surface = _fill_depressions(elevations, neighbors)
+    river_flow, downstream = _river_network(elevations, surface, neighbors, rainfalls)
+
+    # A water tile's elevation is its water surface, the way an ocean tile's is sea level --
+    # not the bed underneath. Every tile in one basin fills to the same spill level, so the
+    # lake comes out flat; left at the bed it would be drawn as a lumpy blue hillside.
+    lake = _standing_water(elevations, surface, neighbors)
+    elevations = [
+        surface[i] if lake[i] else elevations[i] for i in range(len(elevations))
+    ]
     normals = _terrain_normals(verts, elevations, neighbors)
 
     tiles: list[Tile] = []
     for i, v in enumerate(verts):
         lat = math.degrees(math.asin(max(-1.0, min(1.0, v[2]))))
         lon = math.degrees(math.atan2(v[1], v[0]))
-        # A closed basin that collects real water is a lake, not dry ground.
-        is_lake = (elevations[i] >= 0 and downstream[i] == -1
-                   and river_flow[i] >= LAKE_MIN_FLOW)
+        is_lake = lake[i]
         tiles.append(Tile(
             id=i, lat=round(lat, 4), lon=round(lon, 4), center=v,
             elevation=elevations[i], temperature=temperatures[i], rainfall=rainfalls[i],

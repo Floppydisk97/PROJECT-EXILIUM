@@ -118,7 +118,7 @@ Goldberg, quindi esagoni con esattamente dodici pentagoni ai vertici dell'icosae
 riproducibilità cross-platform dei float non è richiesta, quella entro un interprete sì ed è
 verificata dai test. Nessun valore economico è in virgola mobile.
 
-Il generatore v3 produce forme riconoscibili anziché macchie di rumore: catene montuose da
+Il generatore v4 produce forme riconoscibili anziché macchie di rumore: catene montuose da
 rumore *ridged* raccolto in cinture; fiumi da accumulo di deflusso a valle sul grafo delle
 caselle, con i bacini chiusi abbastanza pieni promossi a laghi; deserti da un profilo zonale
 delle precipitazioni con fasce aride subtropicali, continentalità (BFS della distanza dal
@@ -140,6 +140,37 @@ Alzare la frequenza del campo continentale, che sarebbe la mossa ovvia per avere
 continenti, fa il contrario: misurata da 2.2 a 4.6, porta una massa sola a tenere dal 88 al
 99% delle terre emerse, perché più terra vicino alla linea d'acqua percola più facilmente,
 non meno. È il motivo per cui quel parametro è rimasto dov'era.
+
+### L'acqua ferma
+
+Il terreno, da solo, non produce laghi. La regola precedente — una casella senza vicine più
+basse, che raccoglie abbastanza pioggia — poteva trovare soltanto una fossa larga una casella,
+perché il fondo di un bacino vero è largo parecchie caselle e ognuna di esse ha una vicina più
+bassa *dentro lo stesso bacino*. Su un pianeta di 193.212 caselle il risultato erano trenta
+caselle di lago.
+
+Le depressioni vengono quindi riempite fino al punto di sfioro (*priority flood*: si parte dal
+mare e si cammina verso l'interno sempre dalla casella più bassa del fronte, così un bacino
+circondato da terreno più alto si riempie esattamente fino al suo sfioro e non un metro di
+più). Ciò che quella superficie copre è acqua. I fiumi sono instradati sulla superficie e non
+sul terreno nudo, quindi un fiume entra in un lago, lo attraversa ed esce dall'altra parte
+invece di fermarsi alla prima conca.
+
+Due dettagli non ovvi, trovati entrambi da un test che falliva. La soglia di profondità si
+applica al corpo d'acqua, non alla singola casella: applicata casella per casella ritaglia un
+bordo frastagliato dentro un lago solo — la riva bassa diventa terra mentre il centro è acqua —
+e lascia un fiume che risale verso il proprio lago. E la quota di una casella d'acqua è la
+superficie, non il fondale, esattamente come per l'oceano: ogni casella di un bacino si riempie
+allo stesso livello di sfioro, quindi il lago è piatto anziché una collina blu bitorzoluta.
+
+Il rilievo da solo non offre comunque abbastanza conche, quindi il pianeta ne riceve di
+seminate: scodelle con un bordo proprio, in due popolazioni distinte — molte piccole, poche
+molto grandi — scavate nella terra e mai sotto il livello del mare, così una conca non toglie
+superficie emersa, decide solo che parte di essa sta sott'acqua. Sono campionate per rifiuto
+finché non cadono nell'entroterra: con tre quarti del pianeta sott'acqua un'estrazione cieca le
+manda quasi tutte in mare, e se le poche grandi finiscano in un posto utile diventa un lancio
+di dado che il seed vince o perde. Il bordo è deformato da rumore ad alta frequenza, perché una
+scodella di raggio costante è un cerchio e un pianeta di laghi circolari sembra clip art.
 
 I deserti sono passati da un terzo delle terre emerse a un quinto, e soprattutto hanno
 cambiato natura. La continentalità non è più uniforme ma **pesata su quanto è già arida la
@@ -215,6 +246,13 @@ vengono salvati nel frontend.
 Sulla geografia i limiti sono altrettanto espliciti. La generazione costruisce l'intera
 sfera in memoria in una volta: è il picco di memoria, non il tempo, a fissare il tetto della
 frequenza, e su un'istanza piccola quel tetto è vicino.
+
+La scala del rilievo normalizza sul massimo reale del campo, non su una costante. Prima lo
+faceva su un massimo fissato a 1.0, dando per scontato che la somma di tutti i contributi
+avesse quel picco; non l'aveva, e ogni termine aggiunto al campo gonfiava le altezze di tutto
+il pianeta. Il difetto è emerso solo quando metà delle terre emerse è diventata roccia e neve:
+era latente da tre versioni del generatore. Ogni contributo nuovo va aggiunto sapendo che la
+normalizzazione lo assorbe.
 
 **La divisione in continenti non è garantita dall'algoritmo.** Con le costanti attuali il
 seed `Hesperia-01` dà tre continenti e la massa maggiore tiene il 40% delle terre emerse,
