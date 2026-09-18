@@ -23,6 +23,24 @@ Regole dimostrative, versionate come ruleset 1 (non bilanciamento definitivo):
 Queste due regole esercitano ordini strategici e decisioni politiche differite.
 Guerre, fazioni, diplomazia e bilanciamento politico restano da progettare.
 
+## Dove vivono le regole
+
+Le regole del gioco stanno in `app/sim/`: stato e effetti come valori congelati (`state.py`),
+costanti di bilanciamento come dati (`config.py`), regole pure (`rules.py`) e il tick
+(`tick.py`). Quel modulo non può importare psycopg, FastAPI o il proprio adattatore, e il
+vincolo non è una convenzione ma un test che analizza gli import con `ast`.
+
+Una regola non scrive mai: **descrive**. `settle_city` restituisce una liquidazione,
+`resolve_order` un esito, `advance` l'intero risultato di un tick — voci di ledger comprese —
+senza toccare nulla. `app/service.py` è l'unico codice che trasforma un effetto descritto in
+una riga, dentro una sola transazione.
+
+La granularità è scelta, non casuale. Le operazioni economiche usano regole **per entità**
+perché città diverse devono procedere in parallelo e serializzare solo sulla propria riga;
+una regola che pretendesse il mondo intero a ogni lettura le rimetterebbe in fila. Solo il
+tick, che il lock esclusivo già serializza, è una regola su tutto il mondo. Il perché per
+esteso è in `decisions.md`, ADR-003.
+
 ## Schema e invarianti
 
 `world` contiene politica, prossimo confine temporale e numero dell'ultimo tick.
@@ -212,6 +230,12 @@ lato client crescono linearmente con le caselle, quindi ogni aumento della tasse
 compromesso con il primo caricamento, soprattutto su mobile. La mappa non ha ancora alcun
 legame con le città: quando esisterà, una migrazione che azzera le caselle non sarà più
 un'operazione innocua e andrà ripensata.
+
+## Decisioni
+
+Le scelte che vincolano il progetto — il tick da 24 ore, il multiplayer, il confine della
+simulazione, l'assenza di un formato di salvataggio separato — sono registrate in
+`decisions.md` con motivazione, alternative scartate e condizione di revisione.
 
 ## Riferimenti tecnici
 
