@@ -159,8 +159,13 @@ def read_map(conn) -> dict:
                FROM world_tiles WHERE map_id = 1 AND elevation >= 0"""
         ).fetchall()
     ]
+    # The terrain normals (nx, ny, nz) are deliberately not selected. They were computed for
+    # the hillshade of an extruded terrain; the ground is one flat shell now, so nothing
+    # reads them, and at three numbers per tile they were 13 per cent of the response (15 per
+    # cent gzipped, which is what actually travels). They stay in the table: recomputing them
+    # means regenerating the world, and the client could want them again.
     select = """SELECT t.id, t.cx, t.cy, t.cz, t.elevation, t.temperature, t.rainfall,
-                       t.biome, t.nx, t.ny, t.nz, t.river_flow, t.landmass_size,
+                       t.biome, t.river_flow, t.landmass_size,
                        COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon
                 FROM world_tiles t WHERE t.map_id = 1 AND """
     rows = conn.execute(
@@ -177,7 +182,6 @@ def read_map(conn) -> dict:
     corners: list[float] = []
     ids: list[int] = []
     center: list[float] = []
-    normal: list[float] = []
     elevation: list[int] = []
     temperature: list[float] = []
     rainfall: list[int] = []
@@ -192,7 +196,6 @@ def read_map(conn) -> dict:
     for row in rows:
         ids.append(row["id"])
         center += [row["cx"], row["cy"], row["cz"]]
-        normal += [row["nx"], row["ny"], row["nz"]]
         elevation.append(row["elevation"])
         temperature.append(row["temperature"])
         rainfall.append(row["rainfall"])
@@ -215,14 +218,16 @@ def read_map(conn) -> dict:
     return {
         "name": meta["name"], "seed": meta["seed"], "frequency": meta["frequency"],
         "sea_level": meta["sea_level"], "tile_count": total, "land_count": land_count,
-        # Shared with worldgen so the client's relief matches the normals computed there.
-        "elevation_max": worldgen.ELEVATION_MAX, "relief_gain": worldgen.RELIEF_GAIN,
+        # relief_gain and elevation_max used to travel with the map so the client's extrusion
+        # matched the normals the server shaded against. Neither exists any more: the client
+        # draws the ground flat and marks relief with a glyph, on absolute thresholds in
+        # metres that it owns itself.
         "river_min_flow": worldgen.river_min_flow(total),
         "biome_names": list(worldgen.BIOMES),
         "corners": corners,
         "rivers": _river_columns(conn, total),
         "tiles": {
-            "id": ids, "center": center, "normal": normal, "elevation": elevation,
+            "id": ids, "center": center, "elevation": elevation,
             "temperature": temperature, "rainfall": rainfall, "biome": biome,
             "river_flow": river_flow, "landmass_size": landmass_size,
             "neighbor_count": neighbor_count, "ring": ring, "ring_offset": ring_offset,

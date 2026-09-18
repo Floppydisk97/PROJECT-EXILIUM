@@ -8,10 +8,6 @@
 export type TileColumns = {
   id: number[];
   center: number[];        // flat, 3 per tile
-  // The server's terrain normals, computed against the relief it used to be drawn with.
-  // Nothing reads them since the ground became one shell; they are still sent, and dropping
-  // them from the payload would save about a quarter of it.
-  normal: number[];        // flat, 3 per tile
   elevation: number[];
   temperature: number[];
   rainfall: number[];
@@ -38,10 +34,6 @@ export type WorldMap = {
   sea_level: number;
   tile_count: number;
   land_count: number;
-  elevation_max: number;
-  // Shared with the server when the client extruded each tile to its own height. The ground
-  // is flat now, so nothing here uses it; elevation_max still bounds the relief classes.
-  relief_gain: number;
   river_min_flow: number;   // the smallest reach the backend sends, for the width ramp
   biome_names: string[];
   corners: number[];       // flat, 3 per corner

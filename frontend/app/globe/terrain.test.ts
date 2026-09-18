@@ -19,7 +19,6 @@ type TileSpec = {
   elevation: number;
   biome: string;
   center?: [number, number, number];
-  normal?: [number, number, number];
   river_flow?: number;
 };
 
@@ -44,14 +43,13 @@ function world(tiles: TileSpec[], corners: number[], rivers: Partial<WorldMap["r
     // frequency: 10f^2 + 2. Widths are sized against the spacing that count implies, and a
     // handful of hand-built tiles must not be mistaken for a planet with four of them.
     tile_count: 10 * 20 ** 2 + 2, land_count: tiles.filter((t) => t.elevation >= 0).length,
-    elevation_max: 7000, relief_gain: 0.075, river_min_flow: 20,
+    river_min_flow: 20,
     biome_names: BIOMES,
     corners,
     tiles: {
       id: tiles.map((_, i) => i),
       center: tiles.flatMap((t, i) => t.center ?? unit(i)),
-      normal: tiles.flatMap((t, i) => t.normal ?? t.center ?? unit(i)),
-      elevation: tiles.map((t) => t.elevation),
+        elevation: tiles.map((t) => t.elevation),
       temperature: tiles.map(() => 10),
       rainfall: tiles.map(() => 800),
       biome: tiles.map((t) => biome(t.biome)),
@@ -134,8 +132,8 @@ describe("buildTerrain", () => {
     const facing: [number, number, number] = [0.52, -0.55, 0.65];
     const away: [number, number, number] = [-0.52, 0.55, -0.65];
     const map = world([
-      { ring: [0, 1, 2], elevation: 400, biome: "tundra", center: facing, normal: facing },
-      { ring: [1, 0, 3], elevation: 400, biome: "tundra", center: away, normal: away },
+      { ring: [0, 1, 2], elevation: 400, biome: "tundra", center: facing },
+      { ring: [1, 0, 3], elevation: 400, biome: "tundra", center: away },
     ], CORNERS);
     const { colors } = buildTerrain(map);
     // Same biome, same id-independent jitter aside: the two differ only by tileJitter, so
