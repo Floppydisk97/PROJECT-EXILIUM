@@ -182,12 +182,16 @@ def test_the_world_has_lakes_of_many_sizes_and_at_least_one_inland_sea(frequency
     assert sum(1 for size in bodies if size <= 4) >= 3   # down to tarns
 
     # And at least one body big enough to read as an inland sea rather than a pond. The
-    # bound is resolution-aware for the same reason the islet count is: a coarse mesh
-    # cannot resolve a basin, so the same planet honestly shows a smaller largest lake at
-    # f=60 -- 36 tiles against 388 at production tiling. Asserting the production number
-    # everywhere would only be asserting that the test mesh is fine, and asserting the
-    # coarse number everywhere would let the shipped world lose its inland seas unnoticed.
-    assert max(bodies) >= (200 if frequency == worldgen.PRODUCTION_FREQUENCY else 25)
+    # bound is resolution-aware for the same reason the islet count is: a coarse mesh cannot
+    # resolve a basin, so the same planet honestly shows a smaller largest lake at f=60.
+    #
+    # These numbers came down on purpose. The world was asked for smaller lakes and smaller
+    # inland seas, and the geography around them changed too -- a lower sea level and deeper
+    # rifts leave less enclosed ground to flood -- so the largest body went from 388 tiles to
+    # 103. The bound follows the decision instead of the decision being bent to the bound;
+    # what it still protects is the thing that was nearly lost once and must not be again:
+    # standing water as a spectrum, from tarns up to one body that reads as a sea.
+    assert max(bodies) >= (80 if frequency == worldgen.PRODUCTION_FREQUENCY else 10)
 
     # A lake's surface is flat: every tile of one body shares an elevation. Stored at the
     # bed instead, a lake would be drawn as a lumpy blue hillside.
@@ -292,12 +296,17 @@ def test_rivers_do_not_run_in_parallel_combs():
     running alongside it -- 0.94 unrelated neighbours per reach, drawn as hatching the moment
     you zoomed in. `river_min_flow` scales the cut-off with the grid instead.
 
-    "Alongside" has to be defined carefully: a river that turns on a hex grid puts two of its
+"alongside" has to be defined carefully: a river that turns on a hex grid puts two of its
     own tiles side by side without either draining into the other, and that is a meander, not
     a second river. So a neighbouring reach counts against us only when the two do not meet
     again within four steps downstream.
+
+    Measured at production tiling and nowhere else. On a coarse mesh each tile is enormous
+    and every river is a few tiles long, so the same planet scores 0.53 at f=60 against 0.19
+    at f=152: that number describes the test mesh, not the world anyone looks at. This test
+    used to run at f=60 and passed only because its bound had been fitted to that mesh.
     """
-    world = worldgen.generate(SHIPPED_SEED, frequency=60)
+    world = worldgen.generate(SHIPPED_SEED, frequency=worldgen.PRODUCTION_FREQUENCY)
     by_id = {t.id: t for t in world.tiles}
     threshold = worldgen.river_min_flow(len(world.tiles))
     drawn = {
@@ -324,4 +333,4 @@ def test_rivers_do_not_run_in_parallel_combs():
             shared = paths[i].keys() & paths[n].keys()
             if min((paths[i][k] + paths[n][k] for k in shared), default=99) > 4:
                 unrelated += 1
-    assert unrelated / len(drawn) < 0.45
+    assert unrelated / len(drawn) < 0.30
