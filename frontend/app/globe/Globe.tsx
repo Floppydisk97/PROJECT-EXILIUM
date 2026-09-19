@@ -15,13 +15,21 @@ import {
   buildCliffs, buildGlyphs, buildRivers, buildTerrain, SEA, TERRAIN_FRAG, TERRAIN_LIGHT,
   TERRAIN_VERT, tileAt, tileRadius, tileRing,
 } from "./terrain";
+import { keepKnocking } from "../lib/patience";
 
 type Status = "loading" | "waking" | "ready" | "ungenerated" | "error";
 
 // The API sleeps on the free plan and needs the better part of a minute to come back. The
 // proxy already waits out one cold start; a phone waking a cold stack can still need more
 // than one round, so the client keeps asking rather than calling it an outage.
-const FETCH_ATTEMPTS = 3;
+//
+// Counted in wall-clock time, not in attempts. When this counted attempts, a proxy that
+// answered 503 in a fifth of a second turned "three tries with a two-minute timeout" into
+// seven seconds of real patience -- and the timeout, which only bites a request that hangs,
+// never came into it. See lib/patience.ts.
+const WAKE_BUDGET_MS = 180_000;
+const FIRST_GAP_MS = 2_000;
+const MAX_GAP_MS = 5_000;
 const FETCH_TIMEOUT_MS = 120_000;
 const WAKE_NOTICE_MS = 8_000;
 
@@ -69,22 +77,28 @@ export default function Globe() {
       // Tell the visitor we are waiting on a sleeping server rather than leaving them on a
       // bare "loading" that looks stuck.
       const wakeNotice = setTimeout(() => { if (!disposed) setStatus("waking"); }, WAKE_NOTICE_MS);
-      let map: WorldMap | null = null;
-      let missing = false;
-      for (let attempt = 0; attempt < FETCH_ATTEMPTS && !disposed; attempt++) {
-        try {
-          const res = await fetch("/api/map", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-          if (res.status === 404) { missing = true; break; }
-          if (res.ok) { map = (await res.json()) as WorldMap; break; }
-        } catch {
-          // Timed out or the network blinked: fall through and try again.
-        }
-        if (attempt < FETCH_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000));
-      }
+      // The outcome comes back from the knocking rather than being written into a variable
+      // beside it: "the world is not there" and "the world would not answer" are different
+      // endings and the type checker should be the one keeping them apart.
+      const knocked = await keepKnocking<WorldMap | "missing" | "gone">(
+        { budgetMs: WAKE_BUDGET_MS, gapMs: FIRST_GAP_MS, maxGapMs: MAX_GAP_MS },
+        async () => {
+          if (disposed) return { done: true, value: "gone" };
+          try {
+            const res = await fetch("/api/map", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+            if (res.status === 404) return { done: true, value: "missing" };
+            if (res.ok) return { done: true, value: (await res.json()) as WorldMap };
+          } catch {
+            // Timed out or the network blinked: fall through and try again.
+          }
+          return { done: false };
+        },
+      );
       clearTimeout(wakeNotice);
-      if (disposed) return;
-      if (missing) { setStatus("ungenerated"); return; }
-      if (!map) { setStatus("error"); return; }
+      if (disposed || knocked.value === "gone") return;
+      if (knocked.value === "missing") { setStatus("ungenerated"); return; }
+      if (!knocked.value) { setStatus("error"); return; }
+      const map = knocked.value;
       if (!mountRef.current) return;
 
       const mount = mountRef.current;
@@ -466,14 +480,14 @@ export default function Globe() {
           {status === "loading" && <p>Caricamento del pianeta…</p>}
           {status === "waking" && (
             <p>Risveglio del server…<br />
-              <small>Sul piano gratuito la prima apertura può richiedere fino a un minuto.</small>
+              <small>Sul piano gratuito la prima apertura del giorno richiede circa un minuto.</small>
             </p>
           )}
           {status === "ungenerated" && <p>Il mondo non è ancora stato generato.</p>}
           {status === "error" && (
             <p>
               Server non raggiungibile.<br />
-              <small>Si era addormentato e non si è ancora ripreso.</small><br />
+              <small>Abbiamo aspettato tre minuti e non ha risposto.</small><br />
               <button type="button" className="globe-retry"
                       onClick={() => { setStatus("loading"); setReloadKey((k) => k + 1); }}>
                 Riprova

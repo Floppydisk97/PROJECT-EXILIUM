@@ -63,10 +63,16 @@ def start_background_build() -> str:
 
     # `--now` is what tells the child to do the work: without it `mapcli` stands down under
     # MAP_BUILD=background, which is exactly what makes the start command return at once.
+    #
+    # The child inherits this process's stdout and stderr so that whether the world was built
+    # ends up in the service log. The first version sent both to DEVNULL, and the cost of that
+    # showed up the same day: asked whether the planet had been generated, the only honest
+    # answer was that a process had been started and then silenced. `start_new_session` is what
+    # detaches it; muting it was never part of the job.
     try:
         subprocess.Popen(
             [sys.executable, "-m", "app.mapcli", "--now"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            stdin=subprocess.DEVNULL, start_new_session=True,
         )
     except Exception as error:                      # noqa: BLE001
         print(f"[mapbuild] could not start the generator: {error!r}", flush=True)
