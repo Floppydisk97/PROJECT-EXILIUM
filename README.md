@@ -140,8 +140,12 @@ $env:HOSTNAME = '127.0.0.1'
 npm start
 ```
 
-Il frontend chiama il backend dal server Next.js, attraverso `API_INTERNAL_URL`
-(default `http://127.0.0.1:8000`). Non contiene token e non effettua calcoli economici.
+Il visore non chiama il backend: e' un sito statico e il pianeta viaggia con lui, in
+`frontend/public/map`. Quel file lo scrive `python -m app.mapexport` (dalla directory
+`backend`) e va rigenerato solo quando cambia il mondo, cioe' quando arriva una migrazione
+che azzera la mappa. `npm start` serve la cartella `out` costruita da `npm run build`.
+Il backend resta l'autorita' su citta', ordini e ledger: quella parte vuole un token e non
+la tocca nessuna pagina pubblica.
 I manifest Python diretti sono `requirements*.txt`; i file `requirements*.lock.txt`
 fissano anche dipendenze transitive. `package-lock.json` viene usato con `npm ci`.
 

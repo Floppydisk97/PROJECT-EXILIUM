@@ -15,23 +15,12 @@ import {
   buildCliffs, buildGlyphs, buildRivers, buildTerrain, SEA, TERRAIN_FRAG, TERRAIN_LIGHT,
   TERRAIN_VERT, tileAt, tileRadius, tileRing,
 } from "./terrain";
-import { keepKnocking } from "../lib/patience";
+import { loadPlanet, PlanetUnavailable } from "../lib/planet";
 
-type Status = "loading" | "waking" | "ready" | "ungenerated" | "error";
-
-// The API sleeps on the free plan and needs the better part of a minute to come back. The
-// proxy already waits out one cold start; a phone waking a cold stack can still need more
-// than one round, so the client keeps asking rather than calling it an outage.
-//
-// Counted in wall-clock time, not in attempts. When this counted attempts, a proxy that
-// answered 503 in a fifth of a second turned "three tries with a two-minute timeout" into
-// seven seconds of real patience -- and the timeout, which only bites a request that hangs,
-// never came into it. See lib/patience.ts.
-const WAKE_BUDGET_MS = 180_000;
-const FIRST_GAP_MS = 2_000;
-const MAX_GAP_MS = 5_000;
-const FETCH_TIMEOUT_MS = 120_000;
-const WAKE_NOTICE_MS = 8_000;
+// The planet is a file now, so the states that described a server are gone with it. There is
+// no waking, and no "not generated yet": the asset either ships with the site or the site is
+// broken. What remains is a four-megabyte download, which on a phone is worth showing.
+type Status = "loading" | "ready" | "error";
 
 // Shells around the planet, in radii. The ground itself and the water it meets are the
 // terrain module's business; these are the sky.
@@ -68,37 +57,31 @@ export default function Globe() {
   const highlightRef = useRef<((tile: Tile | null) => void) | null>(null);
   const resetViewRef = useRef<(() => void) | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const [failure, setFailure] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
     const controllers: { dispose: () => void }[] = [];
 
     (async () => {
-      // Tell the visitor we are waiting on a sleeping server rather than leaving them on a
-      // bare "loading" that looks stuck.
-      const wakeNotice = setTimeout(() => { if (!disposed) setStatus("waking"); }, WAKE_NOTICE_MS);
-      // The outcome comes back from the knocking rather than being written into a variable
-      // beside it: "the world is not there" and "the world would not answer" are different
-      // endings and the type checker should be the one keeping them apart.
-      const knocked = await keepKnocking<WorldMap | "missing" | "gone">(
-        { budgetMs: WAKE_BUDGET_MS, gapMs: FIRST_GAP_MS, maxGapMs: MAX_GAP_MS },
-        async () => {
-          if (disposed) return { done: true, value: "gone" };
-          try {
-            const res = await fetch("/api/map", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-            if (res.status === 404) return { done: true, value: "missing" };
-            if (res.ok) return { done: true, value: (await res.json()) as WorldMap };
-          } catch {
-            // Timed out or the network blinked: fall through and try again.
-          }
-          return { done: false };
-        },
-      );
-      clearTimeout(wakeNotice);
-      if (disposed || knocked.value === "gone") return;
-      if (knocked.value === "missing") { setStatus("ungenerated"); return; }
-      if (!knocked.value) { setStatus("error"); return; }
-      const map = knocked.value;
+      const abort = new AbortController();
+      controllers.push({ dispose: () => abort.abort() });
+      let map: WorldMap;
+      try {
+        map = await loadPlanet(
+          (received, total) => {
+            if (!disposed) setProgress(Math.min(1, received / Math.max(1, total)));
+          },
+          abort.signal,
+        );
+      } catch (reason) {
+        if (disposed) return;
+        setFailure(reason instanceof PlanetUnavailable ? reason.message : null);
+        setStatus("error");
+        return;
+      }
+      if (disposed) return;
       if (!mountRef.current) return;
 
       const mount = mountRef.current;
@@ -477,19 +460,20 @@ export default function Globe() {
 
       {status !== "ready" && (
         <div className="globe-overlay" role="status">
-          {status === "loading" && <p>Caricamento del pianeta…</p>}
-          {status === "waking" && (
-            <p>Risveglio del server…<br />
-              <small>Sul piano gratuito la prima apertura del giorno richiede circa un minuto.</small>
+          {status === "loading" && (
+            <p>Caricamento del pianeta…<br />
+              <small>{Math.round(progress * 100)} per cento di 4 MB</small>
             </p>
           )}
-          {status === "ungenerated" && <p>Il mondo non è ancora stato generato.</p>}
           {status === "error" && (
             <p>
-              Server non raggiungibile.<br />
-              <small>Abbiamo aspettato tre minuti e non ha risposto.</small><br />
+              Pianeta non caricato.<br />
+              <small>{failure ?? "La connessione si è interrotta."}</small><br />
               <button type="button" className="globe-retry"
-                      onClick={() => { setStatus("loading"); setReloadKey((k) => k + 1); }}>
+                      onClick={() => {
+                        setFailure(null); setProgress(0);
+                        setStatus("loading"); setReloadKey((k) => k + 1);
+                      }}>
                 Riprova
               </button>
             </p>

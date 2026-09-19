@@ -7,6 +7,9 @@ pytest-cache-files-*/
 *.pyc
 node_modules/
 .next/
+# L'export statico: si ricostruisce da `npm run build`. Il pianeta che ci finisce dentro
+# e' una copia di frontend/public/map, che invece e' versionato.
+frontend/out/
 *.tsbuildinfo
 artifacts/
 
