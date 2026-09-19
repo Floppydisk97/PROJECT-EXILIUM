@@ -192,10 +192,13 @@ pianeta, un tratto di fiume era il drenaggio di una decina di caselle — un fos
 disegnati 5.529 e quasi ognuno aveva un secondo corso parallelo accanto (0,94 vicini non
 collegati per tratto), cioè il tratteggio che compare appena si zooma.
 
-La soglia è quindi espressa **rispetto alla griglia su cui è misurata**, un tratto disegnato
-ogni duemila caselle di pianeta (`river_min_flow`), e viaggia nei metadati come le altre
-costanti condivise. Sul pianeta di produzione fa 97: 946 tratti, 92 sistemi fluviali, 0,17
-paralleli per tratto.
+La soglia è quindi espressa **rispetto alla griglia su cui è misurata** — e rispetto alla
+**terra** su quella griglia, non al pianeta: l'oceano non contribuisce a nessun bacino.
+Contare l'intera sfera andava bene finché la frazione di terra non si muoveva, ed è stato
+sbagliato nel momento in cui si è mossa: portandola dal 27 al 31%, il 15% di caselle in più
+ha superato una soglia rimasta ferma e i corsi paralleli sono tornati. Un tratto ogni 538
+caselle di **terra** (`river_min_flow`), che viaggia nei metadati come le altre costanti
+condivise. Sul pianeta di produzione fa 133: 1.319 tratti e 0,19 paralleli per tratto.
 
 Resta un difetto noto e non corretto: il percorso passa per i centri delle caselle, quindi su
 una griglia esagonale svolta a scatti di 60°. Con un decimo dei tratti si nota molto meno di
@@ -323,6 +326,35 @@ come celle di Voronoi sulla sfera, con i bordi affondati — invece che da un ca
 sperando che tagli nel punto giusto. Finché il mondo è uno solo e il suo seed è fissato la
 differenza non si vede; diventerebbe un problema il giorno in cui i mondi fossero generati
 su richiesta, perché a quel punto un giocatore su tre si ritroverebbe un supercontinente.
+
+### Dove sta la terra
+
+Tre decisioni separate, che si sono rivelate legate.
+
+**Quanta.** `SEA_PERCENTILE` è un percentile, quindi decide la frazione di terra qualunque
+cosa faccia il resto del campo: 0,69 significa 31% di terre emerse, punto.
+
+**Dove non sta.** `_polar_pull` toglie quota al campo continentale fra 51 e 82 gradi, su uno
+smoothstep perché la costa si assottigli invece di finire su una riga dritta. Nessuna terra
+oltre il circolo polare, massimo 65 gradi. Non dice nulla sul clima — la temperatura ha già
+il suo profilo di latitudine; dice dove sta la terra, non quanto fa freddo.
+
+**Come è connessa — e qui sta la trappola.** Abbassare il livello del mare per avere più
+terra **salda i continenti**: la massa maggiore era passata dal 28% al 58% e il mondo era
+diventato un blocco unico. I bacini oceanici (`RIFT_STRENGTH`) sono l'unico meccanismo che
+decide cosa resta attaccato a cosa, quindi vanno alzati insieme al livello del mare per
+ritagliare ciò che l'acqua non copre più. **Le due manopole non sono indipendenti e girarne
+una sola dà un pianeta diverso da quello che si voleva.**
+
+### Le isole arrivavano a collane di perline
+
+Gli archi di isole ponevano i loro elementi a `index/(n-1)`: spaziatura *esattamente*
+uniforme, con un sussulto solo perpendicolare di mezzo grado contro archi venti volte più
+lunghi. Con dieci archi passava per catena; a cinquantaquattro il pianeta era infilzato di
+linee punteggiate dritte. È la stessa famiglia di difetti delle coste a fasce: **una
+regolarità che nessuno aveva scelto, invisibile finché il campione era piccolo.** Ora la
+posizione lungo l'arco è sparpagliata fino a mezzo passo, la deriva laterale è in proporzione
+all'arco, e ogni arco ha da tre a sette isole.
 
 ### Quanto può essere grande il pianeta
 

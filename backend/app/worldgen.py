@@ -39,7 +39,7 @@ from collections import deque
 from dataclasses import dataclass
 
 WORLD_NAME = "Hesperia"
-GENERATOR_VERSION = 7
+GENERATOR_VERSION = 8
 
 # The seed the game actually runs on. It lives here rather than in the deploy command, so
 # the world cannot be one thing in the code and another in production.
@@ -79,19 +79,20 @@ RELIEF_GAIN = 0.075
 # there, nearly every reach had a second one running alongside it, which is the hatching
 # that shows up as soon as you zoom in.
 #
-# The threshold is therefore stated against the grid it is measured on: one drawn reach per
-# this many tiles of planet. The floor keeps a deliberately coarse test world wet.
-RIVER_TILES_PER_REACH = 2000
+# The threshold is therefore stated against the grid it is measured on -- and against the
+# LAND on that grid, not the planet: the ocean contributes nothing to a catchment. Counting
+# the whole sphere was right while the land fraction never moved, and wrong the moment it
+# did. Raising the land from 27 to 31 per cent put fifteen per cent more tiles over an
+# unchanged bar and the parallel channels came straight back, which is how this was found.
+#
+# One drawn reach per this many tiles of LAND. The floor keeps a deliberately coarse test
+# world wet.
+LAND_TILES_PER_REACH = 538
 
 
 def river_min_flow(tile_count: int) -> int:
-    """The flow a reach must carry to be a river on a planet of this many tiles."""
-    return max(8, round(tile_count / RIVER_TILES_PER_REACH))
-
-
-# The production planet's value, which is what the map service and the client use. Kept as a
-# constant so a reader can see the number without evaluating a formula.
-RIVER_MIN_FLOW = river_min_flow(10 * PRODUCTION_FREQUENCY**2 + 2)
+    """The flow a reach must carry to count as a river on a planet of this many tiles."""
+    return max(8, round(tile_count * (1.0 - SEA_PERCENTILE) / LAND_TILES_PER_REACH))
 # Metres of standing water before a tile counts as lake rather than damp ground. Small
 # enough that tarns survive, large enough that a rounding artefact is not a lake.
 LAKE_MIN_DEPTH = 8
@@ -108,7 +109,7 @@ LAKE_MIN_DEPTH = 8
 # mechanism instead of three.
 BASIN_COUNT = 90
 BASIN_RADIUS_MIN = 0.010
-BASIN_RADIUS_MAX = 0.052
+BASIN_RADIUS_MAX = 0.038
 BASIN_DEPTH_MIN = 350.0
 BASIN_DEPTH_MAX = 1400.0
 
@@ -116,8 +117,8 @@ BASIN_DEPTH_MAX = 1400.0
 # same draw. A single skewed distribution either makes every lake too big or never reaches
 # this size at all; two populations say plainly how many of each the planet gets.
 INLAND_SEA_COUNT = 3
-INLAND_SEA_RADIUS_MIN = 0.072
-INLAND_SEA_RADIUS_MAX = 0.100
+INLAND_SEA_RADIUS_MIN = 0.066
+INLAND_SEA_RADIUS_MAX = 0.090
 INLAND_SEA_DEPTH = 1900.0
 BASIN_PLACEMENT_TRIES = 200
 # A bowl of constant radius is a circle, and a planet of circular lakes reads as clip art.
@@ -144,8 +145,11 @@ COAST_BAND = 0.10
 # Island arcs are compact, seeded radial uplifts. Each chain follows a great-circle segment
 # and each centre owns its radius and falloff; unlike a ridged wave, the field has no
 # parallel, periodically repeated zero contours.
-ISLAND_ARC_COUNT = 10
-ISLANDS_PER_ARC = 6
+ISLAND_ARC_COUNT = 54
+ISLANDS_PER_ARC = 7
+ISLANDS_PER_ARC_MIN = 3   # an arc is a scatter, not a fixed-length string of beads
+ARC_SCATTER = 0.55        # how far along the arc an island may slide, in gaps
+ARC_DRIFT = 0.14          # sideways wander, as a fraction of the arc's own length
 ISLAND_RADIUS_MIN = 0.012
 ISLAND_RADIUS_MAX = 0.025
 ISLAND_STRENGTH_MIN = 0.585
@@ -160,7 +164,7 @@ SPECKLE_STRENGTH = 0.18
 # frequency makes things worse rather than better, because more land near the waterline
 # percolates more readily, not less. Measured at f=48, seed Hesperia-01, this takes the
 # largest landmass from 75% of all land down to 40%, leaving three continents.
-RIFT_STRENGTH = 0.85
+RIFT_STRENGTH = 1.30
 RIFT_FREQUENCY = 4.0
 RIFT_SHARPNESS = 2
 
@@ -168,9 +172,33 @@ RIFT_SHARPNESS = 2
 # *single* mass holding 88-99% of the land, so this stays where it is.
 CONTINENT_FREQUENCY = 2.2
 
+# Continents are pulled off the poles. Without this the continental field is indifferent to
+# latitude, so land runs right under the ice caps and a third of it is drawn as a white
+# sheet nobody can settle. The pull is subtracted from the field between these two sines of
+# latitude, on a smoothstep so the coast thins out instead of ending on a straight line.
+#
+# It says nothing about climate -- temperature already has its own latitude profile. This is
+# about where the land is, not how cold it is.
+POLAR_FREE = 0.78        # |sin(lat)| below which nothing is taken away: about 51 degrees
+POLAR_FULL = 0.99        # ... and by which the pull is at full strength: about 82
+POLAR_PULL = 1.35        # how far the field is pushed down at full strength
+
+
+def _polar_pull(point) -> float:
+    reach = (abs(point[2]) - POLAR_FREE) / (POLAR_FULL - POLAR_FREE)
+    if reach <= 0.0:
+        return 0.0
+    reach = min(1.0, reach)
+    return POLAR_PULL * reach * reach * (3.0 - 2.0 * reach)   # smoothstep
+
 # Fraction of the planet under water. Fixes how much land exists, never how it is connected.
 # At f=139 this leaves ~46000 land tiles, nine times the 5000-player target.
-SEA_PERCENTILE = 0.73
+SEA_PERCENTILE = 0.69
+
+# The production planet's river threshold, which is what the map service and the client use.
+# Kept as a constant so a reader can see the number without evaluating a formula; it lives
+# here rather than beside the formula because it needs the land fraction above.
+RIVER_MIN_FLOW = river_min_flow(10 * PRODUCTION_FREQUENCY**2 + 2)
 
 # Biome ids are stable identifiers; the frontend maps them to colours and labels.
 BIOMES = (
@@ -353,7 +381,15 @@ def _slerp(a, b, fraction: float):
 
 
 def _island_centers(rng: random.Random):
-    """Deterministic compact island centres arranged on jittered great-circle segments."""
+    """Deterministic compact island centres, scattered along great-circle segments.
+
+    The scatter is the point. An arc used to place its islands at index/(count-1) -- exactly
+    even spacing -- with a perpendicular wobble of half a degree against an arc twenty times
+    that long. At ten arcs it passed for a chain; at thirty-four the planet was strung with
+    beads, straight dotted lines no sea ever drew. So the position ALONG the arc is jittered
+    by up to half a gap, the sideways wobble is scaled to the arc instead of fixed, and the
+    number of islands varies per arc -- some chains are a long scatter, some are three rocks.
+    """
     centers = []
     for _ in range(ISLAND_ARC_COUNT):
         start = _normalize((rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1)))
@@ -362,12 +398,14 @@ def _island_centers(rng: random.Random):
         length = rng.uniform(0.20, 0.36)
         end = _normalize(tuple(math.cos(length) * start[i] + math.sin(length) * tangent[i]
                                for i in range(3)))
-        for index in range(ISLANDS_PER_ARC):
-            fraction = index / (ISLANDS_PER_ARC - 1)
+        count = rng.randint(ISLANDS_PER_ARC_MIN, ISLANDS_PER_ARC)
+        for index in range(count):
+            gap = 1.0 / max(1, count - 1)
+            fraction = min(1.0, max(0.0, index * gap + rng.uniform(-ARC_SCATTER, ARC_SCATTER) * gap))
             point = _slerp(start, end, fraction)
             along = _normalize(_cross(_cross(point, tangent), point))
             jitter_axis = _normalize(_cross(point, along))
-            jitter = rng.uniform(-0.010, 0.010)
+            jitter = rng.gauss(0, ARC_DRIFT) * length
             point = _normalize(tuple(math.cos(jitter) * point[i]
                                      + math.sin(jitter) * jitter_axis[i] for i in range(3)))
             radius = rng.uniform(ISLAND_RADIUS_MIN, ISLAND_RADIUS_MAX)
@@ -823,17 +861,24 @@ def generate(seed: str, frequency: int = 12) -> World:
     island_field = _SeededIslandField(_island_centers(arc_rng))
     rift_noise = _IsotropicBandNoise(shape_rng, octaves=3, base_freq=RIFT_FREQUENCY)
 
-    # Pass one: the continents, read through the domain warp so their outline is irregular,
-    # plus arcs of islands out in open water and a light speckle that breaks up the coasts.
-    base_elev = []
-    for v in verts:
-        rift = (1.0 - abs(rift_noise.at(v))) ** RIFT_SHARPNESS
-        base_elev.append(
-            continents.at(_domain_warp(coast_warp, v, WARP_STRENGTH))
-            + SPECKLE_STRENGTH * island_noise.at(v)
-            + island_field.at(v)
-            - RIFT_STRENGTH * rift
-        )
+    def _base_field(point):
+        """The continental field at a point: warped continents, arcs of islands out in open
+        water, a light speckle that breaks up the coasts, the ocean rifts that cut the land
+        apart, and the polar pull that keeps it off the caps.
+
+        One definition, used both to build the planet and to ask questions about it later
+        (where a basin may be dug). It used to be written twice, which is two things that
+        must agree and no way to notice when they stop.
+        """
+        rift = (1.0 - abs(rift_noise.at(point))) ** RIFT_SHARPNESS
+        return (continents.at(_domain_warp(coast_warp, point, WARP_STRENGTH))
+                + SPECKLE_STRENGTH * island_noise.at(point)
+                + island_field.at(point)
+                - RIFT_STRENGTH * rift
+                - _polar_pull(point))
+
+    # Pass one: the continental field, sampled at every tile centre.
+    base_elev = [_base_field(v) for v in verts]
 
     # Pass two: detail that bites only near the waterline. It needs a waterline to measure
     # against, hence the provisional one here; the real sea level is taken again afterwards
@@ -852,13 +897,6 @@ def generate(seed: str, frequency: int = 12) -> World:
     # divided by too small a span: continents came out as mountain ranges, more than half the
     # land as bare rock and snow, and the deserts vanished under the lapse rate.
     span = max(1e-6, max(raw_elev) - sea_level)
-
-    def _base_field(point):
-        rift = (1.0 - abs(rift_noise.at(point))) ** RIFT_SHARPNESS
-        return (continents.at(_domain_warp(coast_warp, point, WARP_STRENGTH))
-                + SPECKLE_STRENGTH * island_noise.at(point)
-                + island_field.at(point)
-                - RIFT_STRENGTH * rift)
 
     # Comfortably above the waterline, not merely above it: a basin dug on a beach drains
     # straight out to sea and leaves nothing behind.
