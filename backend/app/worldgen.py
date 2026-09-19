@@ -39,14 +39,30 @@ from collections import deque
 from dataclasses import dataclass
 
 WORLD_NAME = "Hesperia"
-GENERATOR_VERSION = 6
+GENERATOR_VERSION = 7
 
-# Production size. Sea level sits at SEA_PERCENTILE, so ~24% of tiles are land; one player
-# settles one land tile. f=139 -> 193212 tiles, ~46000 land: nine times the 5000-player
-# target, and fine enough that a coastline reads as a coastline up close.
-# Generation measures ~10 s and ~328 MB peak, which is what sets the ceiling here: the whole
-# sphere is built in memory at once, so a small instance cannot go much past this.
-PRODUCTION_FREQUENCY = 139
+# The seed the game actually runs on. It lives here rather than in the deploy command, so
+# the world cannot be one thing in the code and another in production.
+PRODUCTION_SEED = "Erebo-01"
+
+# Production size, and the reason it is not larger.
+#
+# The whole sphere is built in memory at once, so the peak is linear in tiles at about
+# 1,55 kB each, and it is the free instance's 512 MB that sets the ceiling -- not taste.
+# Measured on this seed, generation only:
+#
+#     f=139    193 212 caselle    9 s      303 MB
+#     f=152    231 042 caselle   11 s      358 MB   <- qui
+#     f=160    256 002 caselle   10 s      395 MB   (il massimo che il free regge)
+#     f=200    400 002 caselle   18 s      609 MB   (gia' oltre l'istanza)
+#     f=440  1 936 002 caselle   92 s    2 898 MB   (il "x10": sei volte l'istanza)
+#
+# Three other walls sit behind that one, and a bigger instance alone clears none of them:
+# the free database holds 1 GB and a x10 world is ~950 MB of tiles by itself; the map
+# payload would go from 10,6 MB to ~105 MB; and the client would have to hand the GPU half
+# a gigabyte of geometry, which no phone will do. A genuinely large world means serving the
+# region in view instead of the whole planet -- an architecture, not a constant.
+PRODUCTION_FREQUENCY = 152
 MIN_PLAYER_CAPACITY = 5000
 
 # Relief exaggeration, shared with the client so terrain normals computed here match the

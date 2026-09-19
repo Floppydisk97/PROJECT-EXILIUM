@@ -42,7 +42,7 @@ Generare il pianeta autoritativo `Hesperia` (una sola volta; sfera geodetica di 
 generata da seed, poi immutabile):
 
 ```powershell
-docker compose exec api python -m app.mapcli "Hesperia-01"
+docker compose exec api python -m app.mapcli
 ```
 
 `--frequency N` (2..160) regola la suddivisione geodetica: i tile sono `10*N^2 + 2`. Il

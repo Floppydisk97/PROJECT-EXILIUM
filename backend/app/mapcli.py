@@ -1,6 +1,9 @@
 """Local administration: generate the authoritative planet once. Never exposed as HTTP.
 
-    docker compose exec api python -m app.mapcli "Hesperia-seed"
+    docker compose exec api python -m app.mapcli
+
+The seed defaults to worldgen.PRODUCTION_SEED: the deploy command used to carry it as a
+literal, which is two places for one fact and no way to notice when they disagree.
 """
 import argparse
 import json
@@ -12,7 +15,8 @@ from app.mapservice import generate_and_store
 
 def main():
     parser = argparse.ArgumentParser(description="Generate the singleton world map (one-shot)")
-    parser.add_argument("seed", help="Deterministic generation seed for the planet")
+    parser.add_argument("seed", nargs="?", default=worldgen.PRODUCTION_SEED,
+                        help="Deterministic generation seed; defaults to the shipped world")
     parser.add_argument("--frequency", type=int, default=worldgen.PRODUCTION_FREQUENCY,
                         help="Geodesic subdivision (2-160); the default seats far more than 5000 players")
     args = parser.parse_args()
