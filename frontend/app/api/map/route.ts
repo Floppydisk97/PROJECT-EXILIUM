@@ -30,14 +30,19 @@ async function fetchUpstream(): Promise<Upstream> {
       });
       if (upstream.status === 404) return { kind: "missing" };
       if (upstream.ok) return { kind: "ok", raw: await upstream.text() };
-    } catch {
-      // Timed out, or the connection was refused: either way the instance is still coming up.
+    } catch (reason) {
+      // Timed out, or the connection was refused: usually the instance is still coming up.
+      // Logged rather than swallowed. When the API stopped waking at all, this catch was
+      // the only code that knew why and it said nothing; the failure looked identical to a
+      // slow cold start, and finding the difference took a morning instead of a glance.
+      console.warn(`[map] upstream attempt ${attempt + 1}/${ATTEMPTS} failed:`, reason);
     }
     if (attempt < ATTEMPTS - 1) {
       await new Promise((resolve) => setTimeout(resolve, backoff));
       backoff *= 2;
     }
   }
+  console.error(`[map] giving up on ${apiBase()} after ${ATTEMPTS} attempts`);
   return { kind: "unavailable" };
 }
 
