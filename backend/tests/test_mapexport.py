@@ -10,6 +10,7 @@ checked rather than assumed, and checked on the whole model rather than on a sum
 import gzip
 import json
 import math
+from pathlib import Path
 
 from app import mapexport, worldgen
 from app.db import transaction
@@ -106,3 +107,25 @@ def test_the_payload_is_not_named_gz(tmp_path):
 def _store(seed: str):
     with transaction() as conn:
         generate_and_store(conn, seed, FREQUENCY)
+
+
+def test_the_shipped_asset_describes_the_world_the_code_builds():
+    """The viewer's planet is a committed file, so it can silently fall behind.
+
+    A migration that resets the map changes the seed, the size or the generator, and the
+    database gets the new world on the next deploy. The file does not: it only changes when
+    someone remembers to run `python -m app.mapexport`. Forget, and the page shows one planet
+    while the game runs another -- with nothing anywhere saying so.
+
+    This is that "somebody remembers", written down. It fails on the change that causes the
+    drift, not on the visit that discovers it.
+    """
+    manifest = json.loads(
+        (Path(__file__).parents[2] / "frontend/public/map/manifest.json").read_text()
+    )
+    assert manifest["seed"] == worldgen.PRODUCTION_SEED
+    assert manifest["frequency"] == worldgen.PRODUCTION_FREQUENCY
+    assert manifest["generator_version"] == worldgen.GENERATOR_VERSION
+    assert manifest["name"] == worldgen.WORLD_NAME
+    assert manifest["tile_count"] == 10 * worldgen.PRODUCTION_FREQUENCY**2 + 2
+    assert (Path(__file__).parents[2] / "frontend/public/map" / manifest["file"]).exists()
