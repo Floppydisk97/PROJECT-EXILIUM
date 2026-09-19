@@ -280,6 +280,50 @@ renderer, verificabili senza una GPU. È una separazione voluta, non estetica �
 checker vede array di numeri e uno screenshot mostra solo il fotogramma che qualcuno ha
 guardato, quindi senza test di unità un errore aritmetico qui non ha nulla che lo fermi.
 
+## Il pianeta e' un file
+
+Il visore chiedeva all'API due cose sole: la mappa, immutabile e generata una volta, e una
+pillola di stato che era decorazione. Citta', ordini e ledger vogliono un token e la pagina
+pubblica non li ha mai toccati. Quindi tutto il capitolo qui sotto -- risvegli, 502, 429, ore
+di istanza, pazienza a orologio -- serviva a consegnare **quattro megabyte che non cambiano
+mai**.
+
+E non bastava nemmeno: un'istanza free che smette di risvegliarsi su richiesta e' un difetto
+noto di Render, e nessuna quantita' di pazienza nel client lo aggira. L'API, in una giornata,
+non si e' svegliata dal traffico neanche una volta: ogni volta che e' ripartita l'aveva accesa
+un deploy.
+
+Ora la mappa e' un asset statico. Non puo' essere irraggiungibile, non puo' essere lenta a
+svegliarsi, non consuma ore-istanza e non costa niente da servire. E' anche la forma che vuole
+il gioco scaricabile: un client il mondo se lo porta come dato, non lo chiede alla rete.
+
+    manifest.json   poche centinaia di byte, sempre riletto: dice come si chiama il pianeta
+    planet-<hash>   4,0 MB gzippati, il nome porta l'impronta del contenuto
+
+Il nome col digest e' quello che fa sparire la questione della cache invece di gestirla: il
+payload si puo' tenere per sempre e un mondo nuovo ha semplicemente un nome nuovo. Il file
+NON si chiama `.gz` di proposito -- un host statico metterebbe `Content-Encoding: gzip` per
+indovinello, il browser lo scompatterebbe di nascosto e il client fallirebbe su byte gia'
+spacchettati. Uno solo scompatta.
+
+DUE STRADE PER UN MODELLO SOLO. `mapservice.read_map` raggiunge il sottoinsieme disegnato con
+SQL, di proposito: alla dimensione di produzione il planner va guidato, e c'e' un commento
+lungo che lo spiega. Quella strada vuole un database col mondo dentro. `mapexport` ha solo un
+seme, quindi lo raggiunge in Python. Due strade per una risposta sola e' esattamente come
+questo progetto si e' gia' fatto male -- il campo continentale era scritto due volte, identico,
+finche' le due copie non hanno smesso di concordare. La differenza e' che stavolta l'accordo
+e' un test: si genera un mondo, lo si salva, e i due modelli devono venire **identici**, come
+dati e come byte.
+
+Il test sui byte ha ripagato subito. I due modelli erano uguali come dati e diversi come
+byte: arrotondare una coordinata negativa minuscola da' `-0.0`, che confronta uguale a `0.0`
+e quindi non lo nota nessuno, ma si serializza `"-0.0"` mentre PostgreSQL lo restituisce
+`0.0`. Dieci in un mondo da 1442 caselle. E i corner sono messi in comune per valore esatto,
+quindi le due strade avrebbero anche potuto raggrupparli diversamente.
+
+Cosa resta all'API: tutto il gioco. Citta', ordini, ledger, tick. La geografia se n'e'
+semplicemente andata per conto suo.
+
 ## Aspettare un'istanza che dorme
 
 Sul piano gratuito di Render un servizio inattivo si spegne dopo quindici minuti e ci mette

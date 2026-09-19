@@ -34,7 +34,14 @@ _payload: dict | None = None
 def _round(v, digits=4):
     # Four decimals on a unit sphere is ~1/250th of a tile at production frequency: far
     # under a pixel at any sane zoom, and it keeps the payload small enough for a phone.
-    return [round(c, digits) for c in v]
+    #
+    # `+ 0.0` turns -0.0 into 0.0, which is not pedantry. Rounding a tiny negative coordinate
+    # gives -0.0; it compares equal to 0.0, so no comparison notices, but it SERIALIZES as
+    # "-0.0" and PostgreSQL hands it back as 0.0. The map built from the database and the map
+    # built from the seed were therefore equal as data and different as bytes -- and corners
+    # are pooled by exact value, so the two could also have pooled differently. Ten of these
+    # appeared in a 1442-tile world.
+    return [round(c, digits) + 0.0 for c in v]
 
 
 def _tile_rows(world):
@@ -126,8 +133,8 @@ def _river_columns(conn, tile_count: int) -> dict:
     return {"a": a, "b": b, "flow": flow, "ae": ae, "be": be}
 
 
-def read_map(conn) -> dict:
-    """The render model, in columns.
+def build_model(meta: dict, rows: list, total: int, rivers: dict) -> dict:
+    """The render model, in columns -- the shape, with the source already chosen.
 
     Two things keep this affordable at production size. Every tile's polygon corner is a
     face centroid shared by three tiles, so the corners live in one pool and a tile only
@@ -136,47 +143,12 @@ def read_map(conn) -> dict:
     the geography itself. Together they cut the payload to a third of the naive encoding.
 
     Latitude and longitude are not sent: the client derives them from the centre vector.
-    """
-    meta = conn.execute(
-        "SELECT name, seed, frequency, sea_level, generated_at FROM world_map WHERE id = 1"
-    ).fetchone()
-    if meta is None:
-        raise DomainError(404, "World map not generated")
-    total = int(conn.execute(
-        "SELECT count(*) AS n FROM world_tiles WHERE map_id = 1"
-    ).fetchone()["n"])
-    # Land, the sea ice that makes the polar caps read as caps rather than open water, and
-    # one ring of sea around every coast: shaded by its real depth, that ring is the shelf
-    # that stops continents looking like plates dropped on flat blue.
-    #
-    # Deliberately three plain statements instead of one query with the shelf as a subquery:
-    # at production size the planner turns `id IN (SELECT ...)` over 193k rows into something
-    # that runs for minutes, while a sequential scan plus a primary-key lookup on an explicit
-    # id array stays in the seconds and does not depend on how fresh the statistics are.
-    shelf_ids = [
-        row["id"] for row in conn.execute(
-            """SELECT DISTINCT unnest(neighbors) AS id
-               FROM world_tiles WHERE map_id = 1 AND elevation >= 0"""
-        ).fetchall()
-    ]
-    # The terrain normals (nx, ny, nz) are deliberately not selected. They were computed for
-    # the hillshade of an extruded terrain; the ground is one flat shell now, so nothing
-    # reads them, and at three numbers per tile they were 13 per cent of the response (15 per
-    # cent gzipped, which is what actually travels). They stay in the table: recomputing them
-    # means regenerating the world, and the client could want them again.
-    select = """SELECT t.id, t.cx, t.cy, t.cz, t.elevation, t.temperature, t.rainfall,
-                       t.biome, t.river_flow, t.landmass_size,
-                       COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon
-                FROM world_tiles t WHERE t.map_id = 1 AND """
-    rows = conn.execute(
-        select + "(t.elevation >= 0 OR t.biome = 'sea_ice')"
-    ).fetchall()
-    rows += conn.execute(
-        select + "t.elevation < 0 AND t.biome = 'ocean' AND t.id = ANY(%s)",
-        (shelf_ids,),
-    ).fetchall()
-    rows.sort(key=lambda row: row["id"])
 
+    `rows` must already be the drawn subset, sorted by id: the database reaches it with SQL
+    and a freshly generated world reaches it in Python, because those two run under very
+    different constraints. What must not differ is the answer, and
+    `test_mapexport.py` holds them to being identical.
+    """
     biome_index = {name: i for i, name in enumerate(worldgen.BIOMES)}
     corner_index: dict[tuple[float, float, float], int] = {}
     corners: list[float] = []
@@ -225,7 +197,7 @@ def read_map(conn) -> dict:
         "river_min_flow": worldgen.river_min_flow(total),
         "biome_names": list(worldgen.BIOMES),
         "corners": corners,
-        "rivers": _river_columns(conn, total),
+        "rivers": rivers,
         "tiles": {
             "id": ids, "center": center, "elevation": elevation,
             "temperature": temperature, "rainfall": rainfall, "biome": biome,
@@ -233,6 +205,51 @@ def read_map(conn) -> dict:
             "neighbor_count": neighbor_count, "ring": ring, "ring_offset": ring_offset,
         },
     }
+
+
+def read_map(conn) -> dict:
+    """The render model, read from the authoritative database."""
+    meta = conn.execute(
+        "SELECT name, seed, frequency, sea_level, generated_at FROM world_map WHERE id = 1"
+    ).fetchone()
+    if meta is None:
+        raise DomainError(404, "World map not generated")
+    total = int(conn.execute(
+        "SELECT count(*) AS n FROM world_tiles WHERE map_id = 1"
+    ).fetchone()["n"])
+    # Land, the sea ice that makes the polar caps read as caps rather than open water, and
+    # one ring of sea around every coast: shaded by its real depth, that ring is the shelf
+    # that stops continents looking like plates dropped on flat blue.
+    #
+    # Deliberately three plain statements instead of one query with the shelf as a subquery:
+    # at production size the planner turns `id IN (SELECT ...)` over 193k rows into something
+    # that runs for minutes, while a sequential scan plus a primary-key lookup on an explicit
+    # id array stays in the seconds and does not depend on how fresh the statistics are.
+    shelf_ids = [
+        row["id"] for row in conn.execute(
+            """SELECT DISTINCT unnest(neighbors) AS id
+               FROM world_tiles WHERE map_id = 1 AND elevation >= 0"""
+        ).fetchall()
+    ]
+    # The terrain normals (nx, ny, nz) are deliberately not selected. They were computed for
+    # the hillshade of an extruded terrain; the ground is one flat shell now, so nothing
+    # reads them, and at three numbers per tile they were 13 per cent of the response (15 per
+    # cent gzipped, which is what actually travels). They stay in the table: recomputing them
+    # means regenerating the world, and the client could want them again.
+    select = """SELECT t.id, t.cx, t.cy, t.cz, t.elevation, t.temperature, t.rainfall,
+                       t.biome, t.river_flow, t.landmass_size,
+                       COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon
+                FROM world_tiles t WHERE t.map_id = 1 AND """
+    rows = conn.execute(
+        select + "(t.elevation >= 0 OR t.biome = 'sea_ice')"
+    ).fetchall()
+    rows += conn.execute(
+        select + "t.elevation < 0 AND t.biome = 'ocean' AND t.id = ANY(%s)",
+        (shelf_ids,),
+    ).fetchall()
+    rows.sort(key=lambda row: row["id"])
+
+    return build_model(meta, rows, total, _river_columns(conn, total))
 
 
 def forget_payload() -> None:

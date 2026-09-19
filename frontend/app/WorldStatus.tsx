@@ -1,29 +1,31 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { PlanetManifest } from "./lib/planet";
 
-type World = {
-  policy: "balanced" | "industrial";
-  last_tick: string;
-  next_tick_at: string;
-  server_time: string;
-};
-
-/** The tick and policy pill. Deliberately a client component: fetching this during the
- *  server render held the whole page for as long as the API took to answer, which on a
- *  free instance waking from sleep is most of a minute -- the shell, the globe's own
- *  loading notice and all. Decoration must never gate the page it decorates. */
+/** What world you are looking at.
+ *
+ *  This used to show the live tick and policy, fetched from the API. On a static site that
+ *  would be the one thread still tied to a sleeping free instance -- and, being cross-origin,
+ *  it would need CORS on the authoritative server for a pill that would almost never manage
+ *  to render. Half a dependency is worse than none: it brings back the whole class of failure
+ *  this change exists to remove, in exchange for decoration.
+ *
+ *  So the pill now names the world from the manifest, which ships with the page and is always
+ *  true. The live tick belongs in the game client, which will talk to the API properly --
+ *  authenticated, cross-origin by design, and about cities rather than about scenery.
+ */
 export default function WorldStatus() {
-  const [world, setWorld] = useState<World | null>(null);
+  const [planet, setPlanet] = useState<PlanetManifest | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch("/api/world");
+        const response = await fetch("map/manifest.json", { cache: "no-cache" });
         if (!response.ok) return;
-        const state = (await response.json()) as World;
-        if (!cancelled) setWorld(state);
+        const manifest = (await response.json()) as PlanetManifest;
+        if (!cancelled) setPlanet(manifest);
       } catch {
         // No pill, no problem: the globe is the page.
       }
@@ -31,10 +33,11 @@ export default function WorldStatus() {
     return () => { cancelled = true; };
   }, []);
 
-  if (!world) return null;
+  if (!planet) return null;
   return (
     <div className="status-pill">
-      Tick <b>{world.last_tick}</b> · Politica <b>{world.policy}</b>
+      <b>{planet.name}</b> · seme <b>{planet.seed}</b> ·{" "}
+      {planet.tile_count.toLocaleString("it-IT")} caselle
     </div>
   );
 }

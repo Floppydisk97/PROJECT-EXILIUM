@@ -64,34 +64,30 @@ services:
   #         name: exilium-db
   #         property: connectionString
 
-  # Frontend Next.js: renderizza il globo. Chiama l'API server-side via API_INTERNAL_URL.
+  # Il visore: un SITO STATICO, non un servizio.
+  #
+  # Il pianeta e' immutabile -- generato una volta, cambiato solo da una migrazione -- quindi
+  # non e' mai stato una chiamata di rete per necessita'. Esserlo diventato ha messo
+  # un'istanza free addormentata sul percorso critico del semplice guardare il mondo: una
+  # giornata intera di 502, 429 e risvegli a freddo per consegnare quattro megabyte che non
+  # cambiano mai. E un'istanza free che non si risveglia (difetto noto di Render) non la si
+  # aggira con nessuna quantita' di pazienza nel client: l'abbiamo provato.
+  #
+  # Come asset statico non puo' essere irraggiungibile, non puo' essere lento a svegliarsi e
+  # non consuma ore-istanza. E' anche la forma che serve al gioco scaricabile, che il mondo
+  # se lo porta come dato invece di chiederlo alla rete.
+  #
+  # Il file viene scritto da `python -m app.mapexport` e versionato in frontend/public/map,
+  # quindi la build qui e' solo npm: nessun database e nessun Python al momento del build.
+  #
+  # NB: un servizio web esistente non diventa un sito statico modificando questo file --
+  # render.yaml descrive come una risorsa va creata e non tocca quelle che gia' esistono.
   - type: web
-    runtime: node
+    runtime: static
     name: exilium-web
-    plan: free
     rootDir: frontend
-    healthCheckPath: /
     buildCommand: npm ci && npm run build
-    startCommand: npm start
+    staticPublishPath: out
     envVars:
       - key: NODE_VERSION
         value: "22"
-      - key: HOSTNAME
-        value: "0.0.0.0"
-      # L'URL PUBBLICO, non quello di rete privata, e non e' una svista.
-      #
-      # Su piano free un'istanza inattiva viene spenta e si risveglia quando il router
-      # pubblico di Render riceve una richiesta. Una chiamata sulla rete privata il router
-      # non lo attraversa: l'API restava a dormire, il proxy riprovava per novanta secondi
-      # senza svegliare nessuno, e il client mostrava "Server non raggiungibile". Misurato
-      # dopo la prima notte vera: exilium-web sveglio in quattro secondi, exilium-api con
-      # zero righe di log, cioe' mai partita.
-      #
-      # Non si vedeva prima perche' ogni verifica era stata fatta subito dopo un deploy,
-      # con entrambi i servizi gia' svegli.
-      #
-      # Costo: la chiamata esce dalla rete privata e rientra dal router, quindi qualche
-      # decina di millisecondi in piu' a mappa gia' generata. Da rimettere su `fromService`
-      # il giorno in cui l'API passa a un piano che non dorme.
-      - key: API_INTERNAL_URL
-        value: https://exilium-api.onrender.com
