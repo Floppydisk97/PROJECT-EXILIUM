@@ -46,8 +46,10 @@ def test_climate_is_physically_ordered():
     assert 0.5 < ocean < 0.85  # a water world, not fully flooded
 
 
-SEEDS = ["Hesperia-01", "Hesperia-02", "Hesperia-03", "Hesperia-04"]
-SHIPPED_SEED = "Hesperia-01"   # the one world this game actually has
+SEEDS = ["Erebo-01", "Hesperia-01", "Hesperia-03", "Hesperia-04"]
+# Not a literal: the shipped seed is a production constant, and a test that restates it
+# goes stale the moment the world changes -- which is exactly how it changed here.
+SHIPPED_SEED = worldgen.PRODUCTION_SEED
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -146,14 +148,15 @@ def test_rivers_flow_downhill_into_the_sea_or_a_lake():
             state[tile_id] = 1
 
 
-def test_the_world_has_lakes_of_many_sizes_and_at_least_one_inland_sea():
+@pytest.mark.parametrize("frequency", [60, worldgen.PRODUCTION_FREQUENCY])
+def test_the_world_has_lakes_of_many_sizes_and_at_least_one_inland_sea(frequency):
     """Standing water is a spectrum, not a rarity.
 
     Before depressions were filled the rule could only find single-tile pits, and the
     production world had thirty lake tiles in total. These bounds are what stop that
     silently coming back.
     """
-    world = worldgen.generate("Hesperia-01", frequency=60)
+    world = worldgen.generate(SHIPPED_SEED, frequency=frequency)
     lake = [t for t in world.tiles if t.biome == "lake"]
     assert lake, "a planet with rain and relief must hold standing water"
 
@@ -176,8 +179,15 @@ def test_the_world_has_lakes_of_many_sizes_and_at_least_one_inland_sea():
         bodies.append(len(body))
 
     assert len(bodies) >= 15                       # many, not a handful
-    assert max(bodies) >= 40                       # and at least one big enough to matter
     assert sum(1 for size in bodies if size <= 4) >= 3   # down to tarns
+
+    # And at least one body big enough to read as an inland sea rather than a pond. The
+    # bound is resolution-aware for the same reason the islet count is: a coarse mesh
+    # cannot resolve a basin, so the same planet honestly shows a smaller largest lake at
+    # f=60 -- 36 tiles against 388 at production tiling. Asserting the production number
+    # everywhere would only be asserting that the test mesh is fine, and asserting the
+    # coarse number everywhere would let the shipped world lose its inland seas unnoticed.
+    assert max(bodies) >= (200 if frequency == worldgen.PRODUCTION_FREQUENCY else 25)
 
     # A lake's surface is flat: every tile of one body shares an elevation. Stored at the
     # bed instead, a lake would be drawn as a lumpy blue hillside.
@@ -210,7 +220,7 @@ def test_terrain_normals_are_unit_vectors_pointing_outward():
 
 
 def test_the_production_world_has_deserts_mountains_and_polar_caps():
-    world = worldgen.generate("Hesperia-01", frequency=40)
+    world = worldgen.generate(SHIPPED_SEED, frequency=40)
     counts: dict[str, int] = {}
     for t in world.tiles:
         counts[t.biome] = counts.get(t.biome, 0) + 1
@@ -237,7 +247,7 @@ def test_the_production_world_is_not_one_supercontinent():
     """The land must be broken into continents with sea between them, and be dotted with
     islands. Nothing about a smooth elevation field guarantees this -- at this sea level it
     percolates into a single mass unless the ocean basins cut it -- so it is asserted."""
-    world = worldgen.generate("Hesperia-01", frequency=48)
+    world = worldgen.generate(SHIPPED_SEED, frequency=48)
     land = [t for t in world.tiles if t.elevation >= 0]
     counts: dict[int, int] = {}
     for t in land:

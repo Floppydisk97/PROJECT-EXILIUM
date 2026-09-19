@@ -24,7 +24,7 @@ services:
     buildCommand: pip install -r requirements.lock.txt
     startCommand: >-
       alembic upgrade head &&
-      (python -m app.mapcli "Hesperia-01" || echo "map already generated; skipping") &&
+      (python -m app.mapcli || echo "map already generated; skipping") &&
       exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION

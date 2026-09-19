@@ -310,16 +310,40 @@ il pianeta. Il difetto è emerso solo quando metà delle terre emerse è diventa
 era latente da tre versioni del generatore. Ogni contributo nuovo va aggiunto sapendo che la
 normalizzazione lo assorbe.
 
-**La divisione in continenti non è garantita dall'algoritmo.** Con le costanti attuali il
-seed `Hesperia-01` dà tre continenti e la massa maggiore tiene il 40% delle terre emerse,
-ed è un risultato stabile: tutto il vicinato dei due parametri che lo governano dà lo stesso
-esito, quindi non è un equilibrio in bilico. Ma provati altri seed, alcuni tornano a un
-supercontinente con l'85%. I bacini oceanici rendono la divisione probabile, non certa. Un
+**La divisione in continenti non è garantita dall'algoritmo, ed è il seed a deciderla molto
+più di qualsiasi parametro.** Misurato su quattordici seed alla stessa identica
+configurazione, la massa maggiore va dal **26%** (`Orion-01`) all'**82%** (`Cassia-01`) delle
+terre emerse, e la terra utilizzabile dal 10% al 22%. Lo stesso generatore, le stesse
+costanti: cambia solo da dove parte il rumore. Il mondo spedito, `Erebo-01`, sta all'estremo
+frammentato — 15 continenti, 62 masse, la maggiore al 28% — ed è stato **scelto guardando i
+candidati renderizzati**, non calcolato. I bacini oceanici rendono la divisione probabile,
+non certa. Un
 generatore che la garantisse dovrebbe partire da una struttura esplicita — placche tettoniche
 come celle di Voronoi sulla sfera, con i bordi affondati — invece che da un campo di rumore
 sperando che tagli nel punto giusto. Finché il mondo è uno solo e il suo seed è fissato la
 differenza non si vede; diventerebbe un problema il giorno in cui i mondi fossero generati
-su richiesta. Il payload e il tempo di costruzione
+su richiesta, perché a quel punto un giocatore su tre si ritroverebbe un supercontinente.
+
+### Quanto può essere grande il pianeta
+
+L'intera sfera viene costruita in memoria in una volta sola, quindi il picco cresce
+linearmente a circa **1,55 kB per casella**, e il tetto non lo decide il gusto ma l'istanza
+da 512 MB del piano free. Misurato sul seed spedito, sola generazione:
+
+| caselle | tempo | picco RAM |
+|---|---|---|
+| 193.212 | 9 s | 303 MB |
+| **231.042** | **11 s** | **358 MB** ← quella spedita |
+| 256.002 | 10 s | 395 MB — il massimo che il free regge |
+| 400.002 | 18 s | 609 MB — già oltre l'istanza |
+| 1.936.002 | 92 s | 2.898 MB — il «per dieci»: sei volte l'istanza |
+
+Dietro quel muro ce ne sono altri tre, e **pagare un'istanza più grande non ne abbatte
+nessuno da solo**: il database free tiene 1 GB e un mondo per dieci sarebbe ~950 MB di sole
+caselle; il payload della mappa passerebbe da 10,6 a ~105 MB; e il client dovrebbe passare
+alla GPU mezzo gigabyte di geometria, cosa che nessun telefono fa. Un mondo davvero grande si
+serve **per regioni inquadrate** invece che intero, con livelli di dettaglio: è
+un'architettura, non una costante da alzare. Il payload e il tempo di costruzione
 lato client crescono linearmente con le caselle, quindi ogni aumento della tassellatura è un
 compromesso con il primo caricamento, soprattutto su mobile. La mappa non ha ancora alcun
 legame con le città: quando esisterà, una migrazione che azzera le caselle non sarà più
