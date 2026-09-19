@@ -1,5 +1,7 @@
+import json
 import threading
 import time
+from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -10,11 +12,29 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from app import mapservice
+from app import mapbuild, mapservice
 from app.db import transaction
 from app.service import DomainError, owned_city, read_city, submit_order, token_hash
 
-app = FastAPI(title="Project Exilium", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Bind the port first, build the planet after.
+
+    Generating the world is minutes of CPU on a small instance. Doing it before the server
+    exists means the port stays closed for those minutes, and Render gives up on a service
+    that never binds -- which is what happened. Here the server comes up immediately and,
+    only if the map is missing, hands the build to a separate process. Until that finishes
+    `/world/map` answers 404 and the client already says so in as many words.
+
+    Does nothing unless MAP_BUILD=background, so a deployment still generating from its
+    start command is untouched.
+    """
+    print(json.dumps({"mapbuild": mapbuild.start_background_build()}), flush=True)
+    yield
+
+
+app = FastAPI(title="Project Exilium", version="0.1.0", lifespan=lifespan)
 # The world map is several MB of JSON; compress it (and any other large payload).
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 bearer = HTTPBearer(auto_error=False)

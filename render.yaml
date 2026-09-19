@@ -29,6 +29,17 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.6"
+      # Il pianeta non si costruisce piu' dentro il comando di avvio.
+      #
+      # Generarlo sono minuti di CPU, e farlo prima di `exec uvicorn` tiene la porta chiusa
+      # per tutto quel tempo. Render smette di aspettare un servizio che non apre nessuna
+      # porta, e a 0,15 di core e' una scommessa che abbiamo perso: 13 s con un burst di
+      # CPU, 6 minuti e mezzo senza, oltre 27 minuti al terzo tentativo.
+      #
+      # Con questa variabile mapcli si ferma subito, l'API apre la porta e costruisce il
+      # mondo dopo, in un processo separato. Togliendola si torna esattamente a prima.
+      - key: MAP_BUILD
+        value: background
       - key: DATABASE_URL
         fromDatabase:
           name: exilium-db
