@@ -89,6 +89,23 @@ def test_it_only_ever_starts_once(monkeypatch):
     assert "--now" in spawned[0][0]
 
 
+def test_the_build_is_not_silenced(monkeypatch):
+    """The first version sent the child's stdout and stderr to DEVNULL. It cost exactly what
+    you would expect: asked whether the planet had been generated, the logs could say that a
+    process had been started and nothing else, and the answer had to come from restarting the
+    service to see what it said about a map it already had. Detaching the child is
+    `start_new_session`; muting it was never part of the job."""
+    spawned = []
+    monkeypatch.setattr(mapbuild, "BACKGROUND", True)
+    monkeypatch.setattr(mapbuild, "map_is_missing", lambda conn: True)
+    monkeypatch.setattr("app.db.transaction", _fake_transaction)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(k) or SimpleNamespace())
+    assert mapbuild.start_background_build() == "started"
+    assert spawned[0].get("stdout") is None, "the build's output must reach the service log"
+    assert spawned[0].get("stderr") is None, "a failed build must be able to say so"
+    assert spawned[0]["start_new_session"] is True
+
+
 def test_a_failure_to_build_never_takes_the_server_down(monkeypatch):
     """The server's job is to answer, including to answer that there is no map yet. A world
     that cannot be built must not also cost us the only process able to say so."""

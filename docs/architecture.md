@@ -280,6 +280,60 @@ renderer, verificabili senza una GPU. È una separazione voluta, non estetica �
 checker vede array di numeri e uno screenshot mostra solo il fotogramma che qualcuno ha
 guardato, quindi senza test di unità un errore aritmetico qui non ha nulla che lo fermi.
 
+## Aspettare un'istanza che dorme
+
+Sul piano gratuito di Render un servizio inattivo si spegne dopo quindici minuti e ci mette
+quasi un minuto a tornare. Non e' un guasto, e' il piano: va aspettato. Il punto e' *come* si
+conta l'attesa.
+
+La prima versione la contava in **tentativi**, e dimensionava la pazienza con un timeout per
+tentativo: quattro colpi da venticinque secondi, cioe' -- diceva il commento -- un minuto e
+mezzo. Quel ragionamento regge solo se un tentativo fallito e' un tentativo *lento*. Non lo
+e'. Davanti a un servizio addormentato il router di Render risponde 5xx **subito**, quindi
+ogni colpo costava due secondi invece di venticinque e i quattro colpi finivano in diciotto
+secondi. Il timeout non entrava mai in gioco, perche' morde solo una richiesta che resta
+appesa. Lo stesso errore, identico, stava anche nel client: tre tentativi con un timeout da
+due minuti diventavano sette secondi di pazienza reale.
+
+    pazienza dichiarata      pazienza reale     risveglio necessario
+    proxy   90 s                  18 s
+    client  360 s                  7 s
+    ---------------------------------------------------------------
+    totale                    circa 45 s              circa 50 s
+
+Quarantacinque contro cinquanta. Il sito diceva "server non raggiungibile" a un server che
+stava benissimo e sarebbe arrivato cinque secondi dopo, e il pulsante "Riprova" ricominciava
+una corsa persa in partenza. Da fuori era indistinguibile da un guasto vero.
+
+Ora la pazienza e' **a orologio** (`app/lib/patience.ts`): per quanto in fretta l'altro capo
+dica di no, si continua a bussare finche' il tempo promesso non e' passato davvero. Il
+divario fra un colpo e l'altro cresce fino a un tetto, cosi' un'attesa lunga non e' anche un
+martellamento. Il budget del proxy sta sotto il limite di cento secondi che Render impone
+alle proprie richieste: aspettare piu' della piattaforma significa solo farsi tagliare a
+meta' attesa e riportare il guasto che si stava cercando di evitare.
+
+Secondo difetto, ed e' quello che ha reso la diagnosi lunga: **una risposta ne' 200 ne' 404
+non veniva registrata affatto.** Il log stava solo nel ramo `catch`, e il `fetch` non
+sollevava mai eccezione -- riceveva 5xx regolarissimi. Nei log restava quindi il solo
+"giving up", che e' esattamente l'informazione inutile: dice che abbiamo rinunciato, non
+perche'. Un'API irraggiungibile e una semplicemente lenta lasciavano tracce identiche. Ora
+ogni stato inatteso viene scritto.
+
+Della stessa famiglia, e scoperto lo stesso giorno: il processo che costruisce il pianeta
+aveva `stdout` e `stderr` su `DEVNULL`. Alla domanda "il mondo e' stato generato?" i log
+sapevano rispondere solo che un processo era stato avviato, e la risposta e' dovuta arrivare
+riavviando il servizio per sentirgli dire `map already present`. A staccare il figlio serve
+`start_new_session`; ammutolirlo non era parte del lavoro.
+
+La morale comune ai tre: **un limite va espresso nell'unita' in cui verra' speso.** Una
+pazienza misurata in tentativi non dice niente su quanto si aspettera', perche' il costo di
+un tentativo lo decide l'altro capo, non noi.
+
+Resta vero che tutto questo aspetta un risveglio, non lo elimina: la prima apertura della
+giornata costa circa un minuto. Toglierlo davvero vuol dire il piano a pagamento. Tenere
+sveglio il servizio con ping periodici *non* e' un'alternativa: le ore-istanza gratuite sono
+750 al mese per workspace e due servizi sempre accesi ne consumano circa 1440.
+
 ## Limiti deliberati
 
 Le operazioni economiche non prendono più un lock globale esclusivo: usano `world FOR
