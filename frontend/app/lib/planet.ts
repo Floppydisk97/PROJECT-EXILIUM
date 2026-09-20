@@ -34,8 +34,8 @@ export async function loadPlanet(
   onProgress?: (received: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<WorldMap> {
-  const manifest = await fetchJson<PlanetManifest>("map/manifest.json", signal);
-  const response = await fetch(`map/${manifest.file}`, { cache: "force-cache", signal });
+  const manifest = await fetchJson<PlanetManifest>("/map/manifest.json", signal);
+  const response = await fetch(`/map/${manifest.file}`, { cache: "force-cache", signal });
   if (!response.ok || !response.body) {
     throw new PlanetUnavailable(`Il pianeta non si è caricato (${response.status}).`);
   }
