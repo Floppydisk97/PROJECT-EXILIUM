@@ -19,7 +19,7 @@ export const SUB = 2;
 export const PROP_ZOOM = 7;
 
 /** Paint the ground into an offscreen buffer, once. It never changes, so panning and zooming
- *  are one `drawImage` rather than sixteen thousand fills. */
+ *  are one `drawImage` rather than half a million fills. */
 export function paintTerrain(ground: ColonyGround, seed: number): HTMLCanvasElement {
   const size = ground.size;
   const canvas = document.createElement("canvas");

@@ -109,10 +109,14 @@ def test_water_is_refused(database):
     assert error.value.detail == "not_dry_land"
 
 
-def test_the_ground_is_not_stored_and_comes_back_the_same_every_time(database):
-    """The heart of it. Sixteen thousand cells a colony would be eighty million rows at the
-    size this planet is built for; what is kept is a thirty-two character seed. Which is only
-    sound if regenerating really does give the same place back."""
+def test_the_ground_is_not_stored_and_the_seed_is_what_travels(database):
+    """The heart of it. 590.000 cells a colony would be three billion rows at the size this
+    planet is built for; what is kept is a thirty-two character seed -- and what is SENT is
+    that same seed, not the map it grows.
+
+    Sending the map was nine megabytes and three seconds of CPU per request, for cells the
+    receiver can grow in four tenths of a second from what is returned here.
+    """
     world()
     p = player()
     with transaction() as conn:
@@ -121,7 +125,11 @@ def test_the_ground_is_not_stored_and_comes_back_the_same_every_time(database):
         first = city_ground(conn, p["city_id"], p["player_id"])
         second = city_ground(conn, p["city_id"], p["player_id"])
     assert first == second
-    assert len(first["cells"]["ground"]) == first["size"] ** 2
+    assert "cells" not in first
+    # Everything the ground needs to be grown, and nothing that has to be carried.
+    assert set(first) == {"city_id", "tile_id", "seed", "size", "cell_metres",
+                          "site", "ground_names"}
+    assert len(first["seed"]) == 32
     with transaction() as conn:
         # Nothing about those cells went anywhere near a table.
         tables = conn.execute(
@@ -129,6 +137,19 @@ def test_the_ground_is_not_stored_and_comes_back_the_same_every_time(database):
             " WHERE table_schema = current_schema() AND table_name LIKE '%cell%'"
         ).fetchone()["n"]
     assert tables == 0
+
+
+def test_the_same_seed_gives_the_same_place_back(database):
+    """Which is the only reason storing a seed instead of a map is sound. It used to be
+    checked through the endpoint, back when the endpoint shipped the cells; the property
+    belongs to the generator, so it is asked of the generator."""
+    site = citygen.Site("temperate_forest", 220, 12.0, 1100, 900, False)
+    first = citygen.generate("abc", site, SMALL)
+    second = citygen.generate("abc", site, SMALL)
+    assert first.ground == second.ground and first.height == second.height
+    assert first.fertility == second.fertility and first.vegetation == second.vegetation
+    # ... and a different seed is a different place, or the seed would not be doing anything.
+    assert citygen.generate("abd", site, SMALL).ground != first.ground
 
 
 def test_the_tile_decides_the_ground_not_the_colony(database):

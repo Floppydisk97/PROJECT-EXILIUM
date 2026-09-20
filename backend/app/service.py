@@ -312,29 +312,35 @@ def world_seed(conn) -> str:
 
 
 def city_ground(conn, city_id, owner_id) -> dict:
-    """The colony's own map, regenerated from its seed.
+    """What the colony's ground GROWS FROM -- the seed, and what the planet says about the
+    site. Not the cells.
 
-    Nothing about it is stored: sixteen thousand cells a colony would be eighty million rows
-    at the size this planet is built for, and the whole thing is a pure function that takes
-    six hundredths of a second. What is stored is the seed that rolled it.
+    It used to send the cells, and at 128 a side that was merely wasteful. At 768 it is a way
+    for one authenticated caller to take the server down: 590.000 cells is 9 MB of JSON and
+    nearly three seconds of CPU, held inside a transaction, on an instance that has a tenth of
+    one CPU and a hundred-second ceiling. The rate limit allows a hundred and twenty of those
+    a minute from a single address.
+
+    And it bought nothing. The cells are a pure function of exactly what is returned here, and
+    the client computes them in four tenths of a second -- faster than the server can, and
+    without the round trip. So this sends the seed and lets the ground grow where it is looked
+    at.
+
+    The server keeps its own generator (`citygen.py`) because it must be able to say where a
+    thing may be built. That is a small question asked about one cell; it is not a reason to
+    ship the whole map.
     """
     city = owned_city(conn, city_id, owner_id)
     if city["tile_id"] is None:
         raise DomainError(409, "not_landed")
     site, _tile = _site_of(conn, city["tile_id"])
-    ground = citygen.generate(city["map_seed"], site)
     return {
-        "city_id": city["id"], "tile_id": city["tile_id"], "seed": ground.seed,
-        "size": ground.size, "cell_metres": ground.cell_metres,
+        "city_id": city["id"], "tile_id": city["tile_id"], "seed": city["map_seed"],
+        "size": citygen.SIZE, "cell_metres": citygen.CELL_METRES,
         "site": {
             "biome": site.biome, "elevation": site.elevation,
             "temperature": site.temperature, "rainfall": site.rainfall,
             "river_flow": site.river_flow, "coastal": site.coastal,
         },
-        "ground_names": list(ground.ground_names),
-        "buildable": ground.buildable,
-        "cells": {
-            "ground": list(ground.ground), "height": list(ground.height),
-            "fertility": list(ground.fertility), "vegetation": list(ground.vegetation),
-        },
+        "ground_names": list(citygen.GROUNDS),
     }

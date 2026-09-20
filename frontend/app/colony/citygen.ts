@@ -113,6 +113,11 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   const altitudeRoughness = 0.6 + Math.min(2.0, Math.max(0, site.elevation) / 2200.0);
   const amplitude = 320.0 * rule.roughness * altitudeRoughness;
 
+  // Where bare rock starts. A flat 0.62 of the relief handed EVERY biome the same 16 per cent
+  // of naked stone -- a rainforest with continents of grey in it. What covers rock is
+  // vegetation, and the biome already says how much it has.
+  const bareAbove = amplitude * (0.62 + 0.30 * rule.cover);
+
   const hasRiver = site.river_flow > 0;
   const riverAxis = new Prng(`${seed}:river`).uniform(0, Math.PI);
   const riverWidth = 3.0 + 9.0 * smoothstep(Math.log10(Math.max(1, site.river_flow)) / 3.0);
@@ -175,7 +180,7 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
 
       let name = rule.ground;
       if (frozen) name = "ice";
-      else if (metres > amplitude * 0.62 && rule.ground !== "sand") name = "rock";
+      else if (metres > bareAbove && rule.ground !== "sand") name = "rock";
       else if (metres < -amplitude * 0.30 && wetness > 0.55) name = "marsh";
       else if (rule.ground === "soil" && grain.at(u, v) > 0.55) name = "gravel";
       if ((name === "sand" || name === "gravel") && bank > -ALLUVIUM_REACH && !frozen) {

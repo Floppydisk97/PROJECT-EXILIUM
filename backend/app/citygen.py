@@ -10,7 +10,7 @@ belong to a persistent shared world: two players would see different places and 
 yesterday would be somewhere else today. So the roll happens exactly once, at landing, and
 what is kept is the SEED. Everything below is a pure function of that seed plus what the
 planet says about the site, which means the map is reproducible for ever, identical for
-everyone, and costs one short string per colony instead of sixteen thousand rows.
+everyone, and costs one short string per colony instead of six hundred thousand rows.
 
 THE BIOME IS NOT DECORATION. Every knob a site turns lives in BIOME_RULES, as data: a desert
 is dry, bright and bare, a rainforest is dense and wet, a tundra is stony and thin. Rainfall,
@@ -172,7 +172,14 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     grain = PlaneNoise(_rng(seed, "grain"), 3, 9.0)
 
     altitude_roughness = 0.6 + min(2.0, max(0.0, site.elevation) / 2200.0)
-    amplitude = 320.0 * rule.roughness * altitude_roughness      # centimetres of relief
+    amplitude = 320.0 * rule.roughness * altitude_roughness
+
+    # Where bare rock starts. It used to be a flat 0.62 of the relief, which is a fraction of
+    # the map and so handed EVERY biome the same 16 per cent of naked stone: a rainforest with
+    # continents of bare grey in it. What covers rock is vegetation, and the biome already says
+    # how much it has, so the cover raises the line -- `bare_rock` (cover 0.02) keeps its stone
+    # almost everywhere, a rainforest (0.95) shows it only on the real crests.
+    bare_above = amplitude * (0.62 + 0.30 * rule.cover)
 
     # Where the water goes. A river on the planet becomes a river here; a coastal tile gets a
     # shore along one edge, its direction rolled from the seed so two coasts differ.
@@ -253,7 +260,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             name = rule.ground
             if frozen:
                 name = "ice"
-            elif metres > amplitude * 0.62 and rule.ground != "sand":
+            elif metres > bare_above and rule.ground != "sand":
                 name = "rock"
             elif metres < -amplitude * 0.30 and wetness > 0.55:
                 name = "marsh"

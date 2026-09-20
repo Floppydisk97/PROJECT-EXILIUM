@@ -212,8 +212,10 @@ def land_colony(city_id: UUID, landing: Landing, owner: Owner):
 
 @app.get("/cities/{city_id}/ground")
 def colony_ground(city_id: UUID, owner: Owner):
-    """The colony's local map, regenerated from its seed. Not stored: a pure function of the
-    seed and of what the planet says about the site."""
+    """The seed the colony's ground grows from, and what the planet says about the site.
+
+    Not the cells: they are a pure function of these few numbers, and whoever asked can grow
+    them faster than this instance can serialise them."""
     with transaction() as conn:
         return city_ground(conn, city_id, owner)
 

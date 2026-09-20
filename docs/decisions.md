@@ -136,10 +136,12 @@ backend e messe accanto alla pagina — mostrava sempre le stesse sei: proprio l
 stava scegliendo era l'unica che non si poteva guardare.
 
 **Alternative considerate.**
-1. *Un endpoint `GET /tiles/{id}/ground`.* Una sola definizione, nessun rischio di divergenza.
-   Scartata per ora: rimette un servizio sveglio nel percorso del semplice guardare, che è
-   esattamente quello che si è appena tolto. Resta la strada naturale quando ci sarà un client
-   di gioco vero con una sessione già aperta.
+1. *Un endpoint che spedisce le celle.* Una sola definizione, nessun rischio di divergenza.
+   Scartata due volte. La prima perché rimette un servizio sveglio nel percorso del semplice
+   guardare, che è esattamente quello che si è appena tolto. La seconda perché è stata
+   misurata: con la mappa a 768 celle di lato sono 9 MB di JSON e 2,8 s di CPU per richiesta,
+   dentro una transazione, su un'istanza che di CPU ne ha un decimo — mentre il destinatario
+   le stesse celle se le fa in 0,4 s. `GET /cities/{id}/ground` ora manda il seme e il sito.
 2. *Generare sul client e basta, togliendo la copia Python.* Scartata: il server deve poter
    validare dove una costruzione può stare, e non può chiederlo al client.
 3. *Reimplementare in JavaScript il generatore di Python* (Mersenne Twister e `gauss`).
@@ -151,8 +153,11 @@ Due cose lo tengono a bada, e vanno mantenute entrambe.
 - *Portabilità per costruzione*: `prng.py` / `prng.ts` sono mulberry32 su interi a 32 bit, seme
   FNV-1a, direzioni per campionamento sulla sfera (niente logaritmi, dove due linguaggi possono
   differire sull'ultimo bit).
-- *Equivalenza come test*: `colony/reference.json` è scritto da Python e `citygen.test.ts`
-  confronta cella per cella. Cambiare una costante da una parte sola fa cadere la suite.
+- *Equivalenza come test*: `python -m app.colonyref` scrive `colony/reference.json` e
+  `citygen.test.ts` confronta cella per cella. Cambiare una costante da una parte sola fa
+  cadere la suite — verificato mutandone una. Il file porta anche i semi derivati da Python,
+  perché il seme è ciò che le due copie hanno in comune: se divergesse, ogni confronto cella
+  per cella continuerebbe a passare mentre il client mostra il sito sbagliato.
 
 Resta un rischio non coperto: il generatore è **pubblico**. Chi legge il bundle può calcolare
 il terreno di ogni casella del pianeta prima di chiunque altro. Oggi è irrilevante — il gioco

@@ -331,6 +331,14 @@ Niente API, niente asset per colonia, niente nulla di sveglio da nessuna parte: 
 gia' un file statico, e la colonia e' una funzione pura di quel file. Il server resta l'autorita'
 su tutto cio' che viene DECISO -- atterrare, costruire, votare; questo e' per GUARDARE.
 
+E lo stesso vale per l'API: `GET /cities/{id}/ground` non spedisce piu' le celle. Con la mappa
+a 768 erano 9 MB di JSON e quasi tre secondi di CPU dentro una transazione, su un'istanza che
+di CPU ne ha un decimo -- centoventi richieste al minuto dallo stesso indirizzo bastavano a
+spegnerla. Ora manda il SEME e il sito: chi ha chiesto fa crescere il terreno in quattro
+decimi di secondo, piu' in fretta di quanto il server riesca a serializzarlo. Il server tiene
+il proprio generatore perche' deve poter dire dove si puo' costruire -- che e' una domanda
+piccola su una cella, non un motivo per spedire tutta la mappa.
+
 Il prezzo e' una definizione in due lingue, che di solito e' come si scrive un bug silenzioso:
 due generatori che divergono di un valore e il client mostra un posto che sul server non
 esiste. Due cose lo impediscono.
@@ -340,10 +348,18 @@ Twister da reimplementare in JavaScript: `app/prng.py` e `colony/prng.ts` sono m
 interi a 32 bit, con il seme da FNV-1a e le direzioni prese per campionamento sulla sfera --
 scelto perche' non usa logaritmi, dove due linguaggi possono differire sull'ultimo bit.
 
-**E l'equivalenza e' un test.** Python scrive `colony/reference.json` -- cinque siti veri,
-64x64 celle ciascuno -- e `citygen.test.ts` confronta CELLA PER CELLA terreno, quota,
-fertilita' e vegetazione. Cambiare una costante da una parte sola fa cadere la suite: e' lo
-stesso arnese che tiene insieme le due strade verso il pianeta.
+**E l'equivalenza e' un test.** `python -m app.colonyref` scrive `colony/reference.json`
+-- cinque siti scelti per i loro RAMI (un fiume, un deserto attraversato da un grande fiume,
+una costa con delta, tutto gelato, pietra nuda in quota), 64x64 celle ciascuno -- e
+`citygen.test.ts` confronta CELLA PER CELLA terreno, quota, fertilita' e vegetazione.
+Cambiare una costante da una parte sola fa cadere la suite: verificato mutando `0,30` in
+`0,31` nel solo TypeScript, due test cadono.
+
+Il file contiene anche i SEMI che Python deriva. Il seme e' cio' che le due copie hanno in
+comune -- il client lo ricava dal mondo e dalla casella, il server conserva quello che ha
+ricavato LUI -- e se divergessero il client disegnerebbe un posto che la mappa autoritativa
+non ha, mentre ogni confronto cella per cella continuerebbe a passare. Era verificato solo
+contro se' stesso.
 
 ## Atterrare: la casella smette di essere scenografia
 
@@ -406,7 +422,7 @@ stesso deserto. Su tre caselle vere di un pianeta vero:
 
 Spazio o cibo. E' questo che rende la scelta del sito una decisione invece di una formalita'.
 
-### Tre cose che si sono viste solo guardando le immagini
+### Quattro cose che si sono viste solo guardando le immagini
 
 **Qualunque valore positivo diventava acqua.** La soglia di ristagno era fissa (40 cm), quindi
 anche un deserto con piovosita' tre centesimi allagava ogni conca. Ora la soglia e' una frazione
@@ -421,7 +437,20 @@ piu' le conche, ma solo nei climi che le riempiono davvero.
 dimezzato dal moltiplicatore della sabbia applicato DOPO, proprio dove contava di piu'. Ora la
 riva diventa limo: il solo motivo per atterrare in un deserto vale quello che la regola dice.
 
-Nessuna delle tre si vedeva leggendo il codice, e tutte e tre si sono viste al primo sguardo
+**La roccia nuda non guardava il bioma.** La soglia era una frazione fissa del rilievo
+(`0,62`), quindi OGNI bioma riceveva lo stesso 16,3% di pietra scoperta: una foresta pluviale
+con continenti grigi dentro. Cio' che copre la roccia e' la vegetazione, e il bioma dichiara
+gia' quanta ne ha, quindi ora e' la copertura ad alzare la linea.
+
+    prima: identico ovunque    dopo: foresta pluviale  3,0%   (copertura 0,95)
+                                     foresta temperata 4,3%   (copertura 0,80)
+                                     tundra           13,9%   (copertura 0,12)
+                                     roccia nuda      98,6%   (copertura 0,02)
+
+A 128 celle era un puntino e non si notava. A 768 era meta' mappa: ingrandire non ha creato il
+difetto, lo ha reso impossibile da ignorare.
+
+Nessuna delle quattro si vedeva leggendo il codice, e tutte si sono viste al primo sguardo
 alle immagini di `app/cityshots.py` -- che scrive PNG a mano con zlib, perche' un generatore
 che non si puo' guardare e' un generatore su cui si sta tirando a indovinare.
 

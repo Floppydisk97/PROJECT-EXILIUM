@@ -5,8 +5,8 @@
 // Python side writes `reference.json` -- five sites, every cell -- and this regenerates them
 // and compares. A drift of a single cell fails the build.
 //
-// Regenerate the reference with the snippet in `docs/architecture.md` when the rules change,
-// and expect this to fail first if only one side was changed. That failure is the point.
+// Regenerate it with `python -m app.colonyref` when a rule changes, and expect this to fail
+// first if only one side was changed. That failure is the point.
 import { describe, expect, it } from "vitest";
 import reference from "./reference.json";
 import { generate, seedFor } from "./citygen";
@@ -56,5 +56,16 @@ describe("the seed", () => {
     expect(await seedFor("Erebo-01", 1235)).not.toBe(first);
     expect(await seedFor("Altrove", 1234)).not.toBe(first);
     expect(first).toHaveLength(32);
+  });
+
+  it("is the SAME seed the server derived, not merely a stable one", async () => {
+    // The gap this closes: the checks above hold whatever this file computes, as long as it
+    // computes it consistently. But the seed is what the two copies have in common -- the
+    // client derives it, the server stores what IT derived -- so if they ever disagree the
+    // client draws a place the authoritative map does not have, and every cell-for-cell
+    // comparison below would still pass while showing the wrong site entirely.
+    for (const { world, tile, seed } of reference.seeds) {
+      expect(await seedFor(world, tile)).toBe(seed);
+    }
   });
 });
