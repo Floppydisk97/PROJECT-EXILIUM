@@ -513,11 +513,11 @@ def test_two_colonies_on_different_ground_do_not_earn_the_same(database, monkeyp
                                (who["city_id"],)).fetchone()
             before = int(row["balance_milli"])
             service.advance(conn, row, now)
-            after = conn.execute("SELECT balance_milli, site_yield FROM cities WHERE id = %s",
+            after = conn.execute("SELECT balance_milli, site_food FROM cities WHERE id = %s",
                                  (who["city_id"],)).fetchone()
         earned[names[who["city_id"]]] = (int(after["balance_milli"]) - before,
-                                         after["site_yield"])
+                                         after["site_food"])
 
-    (rich_alloy, rich_yield), (poor_alloy, poor_yield) = earned["Fertile"], earned["Arida"]
-    assert rich_yield > poor_yield, earned
+    (rich_alloy, rich_food), (poor_alloy, poor_food) = earned["Fertile"], earned["Arida"]
+    assert rich_food > poor_food, earned
     assert rich_alloy > poor_alloy, earned

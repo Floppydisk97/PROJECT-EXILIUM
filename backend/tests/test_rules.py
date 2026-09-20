@@ -119,11 +119,11 @@ def test_the_site_cannot_change_what_splitting_an_interval_means():
     settling it a day at a time have to agree, to the milli."""
     start = NOW
     week = start + timedelta(days=7)
-    for site_yield in (0, 1, 37, 88, 100):
-        whole = production_amount(start, week, BALANCED, 5, site_yield)
+    for site_food in (0, 1, 37, 88, 100):
+        whole = production_amount(start, week, BALANCED, 5, site_food)
         piecewise = sum(
             production_amount(start + timedelta(days=d), start + timedelta(days=d + 1),
-                              BALANCED, 5, site_yield)
+                              BALANCED, 5, site_food)
             for d in range(7)
         )
-        assert whole == piecewise, site_yield
+        assert whole == piecewise, site_food

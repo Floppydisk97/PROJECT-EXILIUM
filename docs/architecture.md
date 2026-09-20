@@ -476,9 +476,23 @@ tensione: la foresta pluviale batte il deserto sia in fertilita' sia in spazio.
 
 ### Tre numeri che tirano in direzioni diverse
 
-    resa    fertilita' della terra EDIFICABILE   ->  alza il tasso di produzione
-    fatica  verde da sgomberare piu' palude      ->  allunga ogni avanzamento
-    spazio  celle edificabili                    ->  quanto cresci prima di stringerti
+    cibo     fertilita' della terra EDIFICABILE  ->  alza il tasso di produzione
+    legname  verde in piedi, palude esclusa       ->  cio' che lo sgombero restituisce
+    pietra   quota di roccia e ghiaia             ->  cio' che c'e' sotto
+    fatica   verde da sgomberare PIU' la palude   ->  allunga ogni avanzamento
+    spazio   celle edificabili                    ->  quanto cresci prima di stringerti
+
+Legname e fatica sono due numeri e non uno: una palude va prosciugata prima di costruirci --
+quindi costa -- ma di legname non ne ha. Sarebbero stati lo stesso numero solo per caso.
+
+E la distribuzione non e' decorazione: e' cio' che fara' servire una colonia a un'altra.
+
+    foresta pluviale   cibo  86   legname  55   pietra   4
+    macchia arida      cibo  20   legname   6   pietra  99
+    tundra             cibo  41   legname  27   pietra  15
+    deserto            cibo   2   legname   0   pietra   0
+
+Nessuno puo' fare tutto in casa.
 
 La resa si misura sulla terra su cui si puo' costruire, non sulla media della mappa: annacquata
 dall'acqua, una palude legge come mediocre -- e non e' mediocre, e' ottima terra su cui non ci

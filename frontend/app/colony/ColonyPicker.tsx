@@ -94,10 +94,16 @@ export default function ColonyPicker({ tileId }: { tileId: number | null }) {
           {/* Cio' che il sito VALE, non solo com'e' fatto. Sono gli stessi tre numeri che il
               server scrive sulla riga della colonia quando si atterra -- mostrarli prima e'
               l'unica cosa che rende la scelta del sito una scelta invece di una formalita'. */}
-          <span title="Fertilità della terra su cui si può costruire: alza la produzione">
-            resa <b>{ground.economy.yield_}</b>
+          <span title="Fertilità della terra su cui si può costruire">
+            cibo <b>{ground.economy.food}</b>
           </span>
-          <span title="Vegetazione e palude da sgomberare: allunga ogni avanzamento">
+          <span title="Vegetazione in piedi: legname, una volta sgomberata">
+            legname <b>{ground.economy.timber}</b>
+          </span>
+          <span title="Quota di roccia e ghiaia sulla mappa">
+            pietra <b>{ground.economy.stone}</b>
+          </span>
+          <span title="Verde e palude da sgomberare: allunga ogni avanzamento">
             fatica <b>{ground.economy.effort}</b>
           </span>
           <span title="Celle edificabili: quanto cresce la colonia prima di stringersi">

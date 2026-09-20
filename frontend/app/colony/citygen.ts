@@ -101,7 +101,13 @@ export async function seedFor(worldSeed: string, tileId: number): Promise<string
  *  Computed here as well as on the server so a site can be WEIGHED before it is taken. The
  *  server writes its own copy down at landing and never asks this one; this is what turns
  *  "scendi sul terreno" from a picture into a decision. */
-export type SiteEconomy = { yield_: number; effort: number; room: number };
+export type SiteEconomy = {
+  food: number;      // fertility of the buildable land
+  timber: number;    // standing growth alone -- a bog has none
+  stone: number;     // share of the map that is rock or gravel
+  effort: number;    // growth AND marsh to clear
+  room: number;      // buildable cells
+};
 
 export type Generated = {
   seed: string; size: number; cell_metres: number; site: Site;
@@ -158,6 +164,7 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   let usableFertility = 0;
   let greenery = 0;
   let marshCells = 0;
+  let stoneCells = 0;
 
   for (let y = 0; y < size; y++) {
     const v = (y / (size - 1)) * 2 - 1;
@@ -229,15 +236,20 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
       }
       greenery += vegetation;
       if (index === iMarsh) marshCells++;
+      if (index === iRock || index === iGravel) stoneCells++;
     }
   }
 
   // The three numbers the economy keeps instead of the map. Mirrors `CityMap.economy`:
   // yield is the fertility of the BUILDABLE land -- averaged over everything, a swamp full
   // of water reads as middling, which confuses "excellent ground" with "ground you can use".
+  const cells_total = size * size;
+  const greenAverage = Math.trunc(greenery / cells_total);
   const economy: SiteEconomy = {
-    yield_: buildable ? Math.trunc(usableFertility / buildable) : 0,
-    effort: Math.trunc(greenery / (size * size)) + Math.trunc((100 * marshCells) / (size * size)),
+    food: buildable ? Math.trunc(usableFertility / buildable) : 0,
+    timber: greenAverage,
+    stone: Math.trunc((100 * stoneCells) / cells_total),
+    effort: greenAverage + Math.trunc((100 * marshCells) / cells_total),
     room: buildable,
   };
 

@@ -222,20 +222,20 @@ def test_landing_writes_down_what_the_ground_is_worth(database):
     p = player()
     with transaction() as conn:
         landed = land(conn, p["city_id"], p["player_id"], a_land_tile())
-    assert {"site_yield", "site_effort", "site_room"} <= set(landed)
+    assert {"site_food", "site_timber", "site_stone", "site_effort", "site_room"} <= set(landed)
     with transaction() as conn:
         row = conn.execute(
-            "SELECT site_yield, site_effort, site_room FROM cities WHERE id = %s",
+            "SELECT site_food, site_timber, site_stone, site_room FROM cities WHERE id = %s",
             (p["city_id"],),
         ).fetchone()
-    assert row["site_yield"] == landed["site_yield"]
+    assert row["site_food"] == landed["site_food"]
     assert row["site_room"] > 0
     # And the numbers are the map's own, not a guess: regrowing from the stored seed agrees.
     with transaction() as conn:
         seed = conn.execute("SELECT map_seed FROM cities WHERE id = %s",
                             (p["city_id"],)).fetchone()["map_seed"]
         site, _tile = _site_of(conn, a_land_tile())
-    assert citygen.generate(seed, site).economy.yield_ == row["site_yield"]
+    assert citygen.generate(seed, site).economy.food == row["site_food"]
 
 
 def test_a_colony_in_orbit_earns_exactly_what_it_earned_before_the_ground_mattered(database):
@@ -247,8 +247,8 @@ def test_a_colony_in_orbit_earns_exactly_what_it_earned_before_the_ground_matter
         row = conn.execute("SELECT * FROM cities WHERE id = %s", (p["city_id"],)).fetchone()
     assert row["site_room"] is None
     state = city_state(row)
-    assert state.site_yield == 0 and state.site_effort == 0 and state.site_room is None
-    assert production_rate("balanced", 7, state.site_yield) == POLICY_RATES["balanced"] + 7 * 5
+    assert state.site_food == 0 and state.site_effort == 0 and state.site_room is None
+    assert production_rate("balanced", 7, state.site_food) == POLICY_RATES["balanced"] + 7 * 5
 
 
 def test_a_site_with_nothing_to_build_on_is_refused(database):

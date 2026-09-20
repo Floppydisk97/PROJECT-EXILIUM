@@ -82,7 +82,9 @@ def city_state(row) -> CityState:
         settled_at=row["settled_at"],
         # What the colony kept of its ground. Null until it lands -- and null is not zero
         # room, it is no ground to be crowded against, which is what an orbiting colony has.
-        site_yield=row["site_yield"] or 0,
+        site_food=row["site_food"] or 0,
+        site_timber=row["site_timber"] or 0,
+        site_stone=row["site_stone"] or 0,
         site_effort=row["site_effort"] or 0,
         site_room=row["site_room"],
     )
@@ -315,15 +317,18 @@ def land(conn, city_id, owner_id, tile_id: int) -> dict:
     try:
         conn.execute(
             """UPDATE cities SET tile_id = %s, landed_at = %s, map_seed = %s,
-                                 site_yield = %s, site_effort = %s, site_room = %s
+                                 site_food = %s, site_timber = %s, site_stone = %s,
+                                 site_effort = %s, site_room = %s
                WHERE id = %s""",
-            (tile_id, now, seed, economy.yield_, economy.effort, economy.room, city_id),
+            (tile_id, now, seed, economy.food, economy.timber, economy.stone,
+             economy.effort, economy.room, city_id),
         )
     except psycopg.errors.UniqueViolation:
         raise DomainError(409, "tile_taken")
     return {"tile_id": tile_id, "landed_at": now, "biome": site.biome,
             "coastal": site.coastal, "river_flow": site.river_flow,
-            "site_yield": economy.yield_, "site_effort": economy.effort,
+            "site_food": economy.food, "site_timber": economy.timber,
+            "site_stone": economy.stone, "site_effort": economy.effort,
             "site_room": economy.room}
 
 

@@ -45,14 +45,14 @@ EFFORT_WEIGHT = 4       # an upgrade lasts (100 + EFFORT_WEIGHT * effort) / 100 
 ROOM_PER_LEVEL = 150    # buildable cells a level takes before the colony starts to crowd
 
 
-def production_rate(policy: str, level: int, site_yield: int = 0) -> int:
+def production_rate(policy: str, level: int, site_food: int = 0) -> int:
     """Milli-alloy per second. One integer for the whole slice it is used over.
 
     The rounding happens HERE, once, and not per second: the rate has to be the same integer
     however an interval is split, or settling a week in one go would differ from settling it
     in seven days -- and production accruing from timestamps depends on those being equal.
     """
-    return ((POLICY_RATES[policy] + level * LEVEL_RATE) * (YIELD_BASE + site_yield)) // YIELD_BASE
+    return ((POLICY_RATES[policy] + level * LEVEL_RATE) * (YIELD_BASE + site_food)) // YIELD_BASE
 
 
 def crowding(level: int, room: int | None) -> int:

@@ -39,6 +39,7 @@ ALLUVIUM_REACH = 150.0      # how far from water the ground itself becomes silt
 # The ground a cell is made of. Order is the wire format, so append rather than insert.
 GROUNDS = ("deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice")
 DRY = frozenset(GROUNDS.index(name) for name in ("sand", "soil", "gravel", "rock"))
+STONE = frozenset(GROUNDS.index(name) for name in ("rock", "gravel"))
 
 # What a biome does to the ground it is made of. Data, not behaviour -- the same rule as
 # `sim/config.py`, so tuning a world is reading one table instead of chasing literals.
@@ -122,20 +123,34 @@ class CityMap:
         # is not middling, it is excellent ground you cannot put a city on, and those are two
         # different facts that the economy has to keep apart.
         usable = [f for g, f in zip(self.ground, self.fertility) if g in DRY]
-        site_yield = sum(usable) // len(usable) if usable else 0
+        food = sum(usable) // len(usable) if usable else 0
         # Effort is what has to be cleared before anything can be built: standing growth, and
         # marsh, which has to be drained. It is what stops rich ground from being simply
         # better -- a rainforest pays more per level and takes far longer to reach the next.
         marsh = sum(1 for g in self.ground if g == GROUNDS.index("marsh"))
-        effort = sum(self.vegetation) // cells + 100 * marsh // cells
-        return SiteEconomy(yield_=site_yield, effort=effort, room=self.buildable)
+        greenery = sum(self.vegetation) // cells
+        effort = greenery + 100 * marsh // cells
+        # Timber is the standing growth ALONE. Effort adds the marsh to it, because a bog has
+        # to be drained before anything can be built on it -- but a bog has no timber in it,
+        # and the two would be the same number only by accident.
+        stone = 100 * sum(1 for g in self.ground if g in STONE) // cells
+        return SiteEconomy(food=food, timber=greenery, stone=stone,
+                           effort=effort, room=self.buildable)
 
 
 @dataclass(frozen=True)
 class SiteEconomy:
-    """The three numbers a landed colony keeps instead of its map."""
-    yield_: int     # 0-100: fertility of the buildable land -- drives the production rate
-    effort: int     # 0-200: growth and marsh to clear -- drives how long an upgrade takes
+    """What a landed colony keeps instead of its map.
+
+    Three of these say what the ground GIVES and two what it COSTS, and no site is good at
+    everything: a rainforest is food and timber with no stone under it, a gravel shrubland is
+    stone with almost nothing to eat, and a desert is neither. That distribution is not
+    decoration -- it is what will make one colony need another.
+    """
+    food: int       # 0-100: fertility of the buildable land
+    timber: int     # 0-100: standing growth, the marsh excluded -- a bog has no timber
+    stone: int      # 0-100: share of the map that is rock or gravel
+    effort: int     # 0-200: growth AND marsh to clear -- drives how long an upgrade takes
     room: int       # buildable cells -- how far the colony grows before it starts to crowd
 
 

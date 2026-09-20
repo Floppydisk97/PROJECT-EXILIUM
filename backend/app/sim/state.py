@@ -36,7 +36,9 @@ class CityState:
     level: int
     balance_milli: int
     settled_at: datetime
-    site_yield: int = 0            # 0 -> the rate is untouched
+    site_food: int = 0             # 0 -> the rate is untouched
+    site_timber: int = 0           # what the standing growth is worth once cleared
+    site_stone: int = 0            # what is under the colony
     site_effort: int = 0           # 0 -> an upgrade takes its bare duration
     site_room: int | None = None   # None -> nothing to crowd against
 
@@ -130,7 +132,8 @@ def snapshot(policy: str, cities: tuple[CityState, ...] | list[CityState]) -> di
                 "level": city.level,
                 "balance_milli": city.balance_milli,
                 "settled_at": city.settled_at.isoformat(),
-                "site": {"yield": city.site_yield, "effort": city.site_effort,
+                "site": {"food": city.site_food, "timber": city.site_timber,
+                         "stone": city.site_stone, "effort": city.site_effort,
                          "room": city.site_room},
             }
             for city in cities

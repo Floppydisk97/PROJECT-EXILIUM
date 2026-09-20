@@ -26,7 +26,7 @@ from app.service import _site_of
 def pending(conn) -> list:
     return conn.execute(
         """SELECT id, name, tile_id, map_seed FROM cities
-           WHERE tile_id IS NOT NULL AND site_yield IS NULL
+           WHERE tile_id IS NOT NULL AND site_food IS NULL
            ORDER BY landed_at"""
     ).fetchall()
 
@@ -39,8 +39,10 @@ def measure(conn, row) -> citygen.SiteEconomy:
 
 def store(conn, city_id, economy) -> None:
     conn.execute(
-        "UPDATE cities SET site_yield = %s, site_effort = %s, site_room = %s WHERE id = %s",
-        (economy.yield_, economy.effort, economy.room, city_id),
+        """UPDATE cities SET site_food = %s, site_timber = %s, site_stone = %s,
+                             site_effort = %s, site_room = %s
+           WHERE id = %s""",
+        (economy.food, economy.timber, economy.stone, economy.effort, economy.room, city_id),
     )
 
 
@@ -66,7 +68,8 @@ def main() -> int:
             biome, economy = measure(conn, row)
             if args.yes:
                 store(conn, row["id"], economy)
-        print(f"  {row['name']:20} {biome:22} resa {economy.yield_:3d}"
+        print(f"  {row['name']:20} {biome:22} cibo {economy.food:3d}"
+              f"  legname {economy.timber:3d}  pietra {economy.stone:3d}"
               f"  fatica {economy.effort:3d}  spazio {economy.room}")
     return 0
 
