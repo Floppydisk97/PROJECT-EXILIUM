@@ -1,13 +1,10 @@
 """The clock the simulation reads.
 
-A tick a day makes the game impossible to playtest: a move is judged twenty-four hours
-later. The fix is not a shorter tick. Production is not made by the tick -- `POLICY_RATES` is
-milli-alloy per SECOND and `settle_city` works it out from the difference between two
-timestamps, while the tick only walks the cursor up to the boundary. Cutting TICK_INTERVAL
-from a day to ten seconds would buy 8640 ceremonies a day with a ten-thousandth of the
-substance each, and the game would run at exactly the same speed.
-
-What has to be compressed is the clock, not the cadence:
+Production is a rate per SECOND -- `POLICY_RATES` is milli-alloy per second and the rules work
+it out from the difference between two timestamps. So the only way to make a world run faster
+is to make its seconds go by faster. (This module predates the removal of the tick, which is
+where it came from: a tick a day made the game impossible to playtest, and shortening the tick
+would not have helped, because the tick never made the production in the first place.)
 
     world_time = anchor_world + (real_time - anchor_real) * speed
 

@@ -1,75 +1,90 @@
+"""The sweeper.
+
+It used to be the tick: the one process that moved the whole world forward, holding every
+city still while it did. That job is gone. Production accrues from timestamps and commitments
+complete the moment somebody reads the city, so a world nobody is looking at is already
+correct -- it simply has not been written down yet.
+
+What is left is worth doing anyway. A city whose upgrade finished should stop saying it is
+busy even while its owner is asleep, and other players looking at a shared world should see
+what it really is rather than what it was. So this walks the cities that have something due
+and advances them, ONE AT A TIME, under a lock on that city alone. Two cities never wait for
+each other, and nothing waits for all of them.
+"""
 import argparse
 import logging
 import signal
 import threading
 
+from app import db
 from app.db import transaction
-from app.service import run_tick
-from app.sim.config import TICK_INTERVAL
+from app.service import advance
 
-logger = logging.getLogger("exilium.tick")
+logger = logging.getLogger("exilium.sweep")
 
-# How often to look, as a fraction of a world day. Four looks per day keeps the window in
-# which the world is overdue short compared with the day itself.
-LOOKS_PER_DAY = 4
-IDLE_MIN, IDLE_MAX = 0.05, 5.0
-
-
-def idle_wait(conn) -> float:
-    """How long to sleep when there was nothing to do, sized to the world's own clock.
-
-    A fixed five seconds is right for a world where a day lasts a day: the window between
-    midnight and the worker noticing is a blink, and nobody meets it. Under a compressed clock
-    it is the opposite -- at 43200x a world day passes in two seconds, so a five-second nap
-    leaves the world overdue almost always, and `require_current` then refuses every economic
-    operation. Found by playing a compressed world rather than by reading the code.
-
-    At speed 1 this returns IDLE_MAX, which is exactly what it always did.
-    """
-    speed = float(conn.execute("SELECT time_speed FROM world WHERE id = 1").fetchone()["time_speed"])
-    return min(IDLE_MAX, max(IDLE_MIN, TICK_INTERVAL.total_seconds() / speed / LOOKS_PER_DAY))
+# Nothing is ever urgent here -- a city is correct when read whether or not this ran. The
+# sweep exists so the written-down world does not drift far behind the real one.
+IDLE = 5.0
+BATCH = 64
 
 
-def catch_up(limit=32):
-    count = 0
-    for _ in range(limit):
+def due_cities(conn, limit=BATCH):
+    """Cities holding a commitment that has come due, oldest first."""
+    return conn.execute(
+        """SELECT c.* FROM cities c
+           JOIN orders o ON o.city_id = c.id AND o.status = 'pending'
+           WHERE o.completes_at <= %s
+           ORDER BY o.completes_at
+           LIMIT %s""",
+        (db.database_now(conn), limit),
+    ).fetchall()
+
+
+def sweep(limit=BATCH):
+    """Advance every city with something due. One transaction per city on purpose: a failure
+    on one must not roll back the others, and a long batch must not hold a lock on the first
+    city while it works on the last."""
+    with transaction() as conn:
+        pending = [row["id"] for row in due_cities(conn, limit)]
+    swept = 0
+    for city_id in pending:
         with transaction() as conn:
-            result = run_tick(conn)
-        if result is None:
-            break
-        count += 1
-        logger.info("tick_committed number=%s due_at=%s", result["number"], result["due_at"])
-    return count
+            row = conn.execute(
+                "SELECT * FROM cities WHERE id = %s FOR UPDATE", (city_id,)
+            ).fetchone()
+            if row is None:
+                continue
+            result = advance(conn, row, db.database_now(conn))
+        if result.completions:
+            swept += 1
+            logger.info("completed city=%s level=%s", city_id, result.city.level)
+    return swept
 
 
-def _idle_wait() -> float:
-    try:
-        with transaction() as conn:
-            return idle_wait(conn)
-    except Exception:                                   # noqa: BLE001
-        # A database that will not answer is already being retried by the loop; falling back
-        # to the slow cadence is better than a tight spin against a failing connection.
-        return IDLE_MAX
+def catch_up(limit=BATCH):
+    """Kept under its old name because the CLI and the tests ask for it by it."""
+    return sweep(limit)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true", help="Recover up to 32 ticks and exit")
+    parser.add_argument("--once", action="store_true", help="Sweep once and exit")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     if args.once:
-        catch_up()
+        sweep()
         return
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
     while not stop.is_set():
         try:
-            count = catch_up()
+            count = sweep()
         except Exception:
-            logger.exception("tick_failed; transaction rolled back, retrying")
+            logger.exception("sweep_failed; transaction rolled back, retrying")
             count = 0
-        stop.wait(0.1 if count == 32 else _idle_wait())
+        # A full batch means there is more waiting, so come straight back for it.
+        stop.wait(0.1 if count >= BATCH else IDLE)
 
 
 if __name__ == "__main__":

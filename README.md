@@ -164,8 +164,9 @@ python -m app.gameclock 1 --yes    # torna al tempo vero
 guadagna per secondo reale. **Un mondo condiviso gira a 1** — la velocità viaggia in `/world`
 proprio perché un mondo che non ci gira possa dirlo invece di sembrare rotto.
 
-Il worker va tenuto acceso: regola da sé il proprio ritmo sulla velocità del mondo, e senza di
-lui un mondo veloce resta subito "in arretrato" e rifiuta ogni operazione economica.
+Il worker non serve alla correttezza: una città è aggiornata nel momento in cui la si legge.
+Fa lo spazzino, perché in un mondo condiviso una città che ha finito smetta di dirsi occupata
+anche mentre il suo proprietario dorme.
 
 ## Operatività iniziale
 
