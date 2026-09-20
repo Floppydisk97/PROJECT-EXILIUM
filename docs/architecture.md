@@ -537,6 +537,72 @@ E il visore li mostra PRIMA dell'atterraggio, perche' e' l'unica cosa che rende 
 sito una scelta. Il gemello TypeScript li calcola e il riferimento li verifica: se le due
 copie divergessero, il sito che hai pesato e quello che hai preso non sarebbero lo stesso.
 
+## Il magazzino e il cibo
+
+Quattro risorse invece di una, e due regole nuove che decidono la forma del gioco.
+
+### Il cibo e' il tetto, non il carburante
+
+La terra rende quello che rende -- il cibo NON cresce col livello -- mentre il consumo cresce
+con le bocche. Da qui viene il tetto vero di una colonia, e non e' una manopola in piu': e' la
+stessa fertilita' gia' misurata che decide un'altra cosa.
+
+    cibo del sito    2  ->  30 milli/s  ->  livello massimo   4     (deserto)
+                    41  -> 127 milli/s  ->  livello massimo  16     (tundra)
+                    86  -> 240 milli/s  ->  livello massimo  32     (pluviale)
+
+E avanzare oltre cio' che il sito sfama viene **rifiutato**, non permesso e poi punito. Una
+colonia cresciuta troppo morirebbe di fame senza ritorno, e atterrare e' definitivo: un
+vicolo cieco in piu' non serviva a nessuno. E' lo stesso principio del sito senza celle
+edificabili -- terra difficile e' una scelta, nessuna via d'uscita e' una trappola.
+
+Il tetto si calcola sulla politica PIU' SFAVOREVOLE, quindi una maggioranza non puo' affamare
+una colonia che aveva fatto i conti giusti: il voto sposta quanto vai forte, non se sopravvivi.
+
+### Magazzino pieno significa fermo
+
+E' la tensione di Anno, scelta consapevolmente. La sua meta' innocua e' che non si perde cio'
+che si ha: si smette di guadagnare. La meta' pericolosa e' che questo mondo cammina mentre
+dormi, quindi fermarsi a sorpresa sarebbe una punizione per chi ha un lavoro.
+
+Per questo `time_to_full` esiste dal primo giorno: **il momento in cui un magazzino si ferma
+si calcola**, quindi si puo' dire prima. Stallo prevedibile e' strategia; stallo a sorpresa e'
+una faccenda da sbrigare.
+
+### Niente integratore a eventi, per ora
+
+Una catena con scorte e dipendenze non e' integrabile in forma chiusa: se il minerale e'
+finito mercoledi', la fonderia si e' fermata mercoledi', e non lo sai senza ripercorrere la
+settimana. Qui pero' ogni tasso e' non negativo -- il cibo lo e' perche' crescere troppo viene
+rifiutato -- quindi un magazzino pieno RESTA pieno, e il totale e' ancora
+
+    guadagno = min(tasso x secondi, tetto - scorta)
+
+esatto, applicato dentro ogni periodo di politica invece che alla fine. Il macchinario a
+eventi serve quando un processo comincera' a CONSUMARE. Non si costruisce prima di averne
+bisogno; `time_to_full` e' gia' il pezzo che servira' allora.
+
+### Cosa costa un livello
+
+Pietra e legname, e i numeri sono scelti perche' i siti si servano a vicenda:
+
+    macchia arida    pietra 0,4h   legname 4,2h
+    foresta pluviale pietra 4,2h   legname 0,8h
+
+Sono l'immagine speculare l'una dell'altra. E' li' che nascera' il commercio.
+
+Anche la terra piu' spoglia da' un minimo: un deserto non ha ne' roccia ne' alberi, e senza
+quel minimo non potrebbe costruire mai nulla in attesa di un commercio che ancora non esiste.
+
+### La lega non si conia piu'
+
+Tornera' come primo PRODOTTO della prima catena, che e' il posto in cui avrebbe dovuto stare
+dall'inizio. Cio' che e' stato guadagnato resta spendibile: le regole cambiano, non si
+confisca.
+
+E la politica ora sposta le risorse invece della lega -- senza, il voto, che e' l'unica cosa
+condivisa fra tutti i giocatori, sarebbe diventato decorativo.
+
 ## Via il tick: il mondo e' continuo
 
 Il tick era il momento in cui le cose accadevano: gli ordini si accodavano a mezzanotte, ogni

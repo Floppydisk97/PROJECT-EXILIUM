@@ -22,9 +22,13 @@ from app.db import database_now, transaction
 from app.main import app
 from app.mapservice import generate_and_store, read_map
 from app.service import (
-    DomainError, balance, cast_vote, current_policy, land, provision, read_city, start_upgrade,
+    DomainError, balance, cast_vote, current_policy, land, provision, read_city,
+    start_upgrade, stock,
 )
-from app.sim.config import RULESET, upgrade_cost, upgrade_duration
+from app.sim.config import (
+    RESOURCES, RULESET, STARTING_STOCK, harvest_rate, store_cap, upgrade_cost,
+    upgrade_duration,
+)
 from app.worker import sweep
 
 
@@ -93,8 +97,11 @@ def test_an_upgrade_spends_now_and_arrives_later(database, monkeypatch):
         commitment = start_upgrade(conn, p["city_id"], p["player_id"], uuid4())
     assert commitment["completes_at"] == now + upgrade_duration(0)
     with transaction() as conn:
-        # Paid, but not yet arrived.
-        assert balance(conn, p["city_id"]) == 100_000 - upgrade_cost(0)
+        # Paid, but not yet arrived. Paid in MATERIALS: what a level costs is stone and
+        # timber, and both leave the stores the moment the work starts.
+        held = stock(conn, p["city_id"])
+        for resource, amount in upgrade_cost(0).items():
+            assert held[resource] == STARTING_STOCK[resource] - amount
         assert conn.execute("SELECT level FROM cities").fetchone()["level"] == 0
         view = read_city(conn, p["city_id"], p["player_id"])
     assert view["busy_until"] == commitment["completes_at"] and view["busy_with"] == "upgrade"
@@ -133,7 +140,9 @@ def test_a_retried_commitment_spends_only_once(database, monkeypatch):
         first = start_upgrade(conn, p["city_id"], p["player_id"], key)
     with transaction() as conn:
         second = start_upgrade(conn, p["city_id"], p["player_id"], key)
-        assert balance(conn, p["city_id"]) == 100_000 - upgrade_cost(0)
+        held = stock(conn, p["city_id"])
+        for resource, amount in upgrade_cost(0).items():
+            assert held[resource] == STARTING_STOCK[resource] - amount
     assert second["id"] == first["id"]
 
 
@@ -181,11 +190,13 @@ def test_a_policy_change_does_not_repay_the_past(database, monkeypatch):
         assert current_policy(conn) == "industrial"
     with transaction() as conn:
         view = read_city(conn, p["city_id"], p["player_id"])
-    earned = int(view["alloy_milli"]) - 100_000
-    # Sixty seconds at 10/s is 600; sixty at 20/s would be 1200. The truth is in between,
-    # because the switch happened partway: anything outside that band means the timeline was
-    # ignored in one direction or the other.
-    assert 600 <= earned < 1200, earned
+    earned = int(view["stock_milli"]["stone"]) - STARTING_STOCK["stone"]
+    # Sessanta secondi al tasso bilanciato sono il minimo, sessanta a quello industriale il
+    # massimo: la verita' sta in mezzo, perche' il cambio e' avvenuto a meta'. Fuori da quella
+    # fascia significa che la linea temporale e' stata ignorata in una delle due direzioni.
+    slow = 60 * harvest_rate("stone", 0, 0, "balanced")
+    fast = 60 * harvest_rate("stone", 0, 0, "industrial")
+    assert slow <= earned < fast, (earned, slow, fast)
 
 
 def test_the_majority_is_continuous_and_a_tie_keeps_the_incumbent(database):
@@ -251,12 +262,18 @@ def test_an_unaffordable_upgrade_has_no_partial_effects(database, monkeypatch):
     freeze_clock(monkeypatch)
     p = player()
     with transaction() as conn:
-        service.entry(conn, p["city_id"], -100000, "upgrade", "fixture-spend", database_now(conn))
+        # Svuota la pietra: il legname resta, quindi un avanzamento a meta' sarebbe possibile
+        # solo se qualcuno spendesse cio' che c'e' prima di accorgersi che manca il resto.
+        service.entry(conn, p["city_id"], -STARTING_STOCK["stone"], "upgrade",
+                      "fixture-spend", database_now(conn), "stone")
     with pytest.raises(DomainError) as error, transaction() as conn:
         start_upgrade(conn, p["city_id"], p["player_id"], uuid4())
-    assert error.value.detail == "insufficient_alloy"
+    assert error.value.detail == "insufficient_stone"
     with transaction() as conn:
-        assert balance(conn, p["city_id"]) == 0
+        held = stock(conn, p["city_id"])
+        assert held["stone"] == 0
+        # E il legname NON e' stato toccato: un rifiuto non lascia meta' conto pagato.
+        assert held["timber"] == STARTING_STOCK["timber"]
         assert conn.execute("SELECT count(*) AS n FROM orders").fetchone()["n"] == 0
 
 
@@ -286,7 +303,14 @@ def test_api_authorization_validation_idempotency_and_ledger(database):
 
         state = client.get(path, headers=headers).json()
         ledger = client.get(path + "/ledger", headers=headers).json()
-        assert int(state["alloy_milli"]) == sum(int(row["amount"]) for row in ledger)
+        # Il magazzino che l'API mostra e' esattamente la somma del ledger, risorsa per
+        # risorsa: e' l'invariante di sempre, vista da fuori invece che dal database.
+        from collections import Counter
+        summed = Counter()
+        for row in ledger:
+            summed[row["resource"]] += int(row["amount"])
+        for resource, total in summed.items():
+            assert int(state["stock_milli"][resource]) == total, resource
         assert state["busy_with"] == "upgrade"
         assert client.get(path + "/ledger?limit=201", headers=headers).status_code == 422
         assert client.get(path + "/commitments", headers=headers).json()[0]["id"] == first.json()["id"]
@@ -305,11 +329,17 @@ def test_simultaneous_reads_never_duplicate_production(database, monkeypatch):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         views = list(pool.map(read, range(4)))
-    assert {view["alloy_milli"] for view in views} == {"100370"}
+    # Tutti e quattro vedono lo stesso magazzino...
+    assert len({tuple(sorted(view["stock_milli"].items())) for view in views}) == 1
     with transaction() as conn:
-        assert conn.execute(
-            "SELECT count(*) AS n FROM resource_ledger WHERE reason='production'"
-        ).fetchone()["n"] == 1
+        # ... e la produzione e' stata scritta UNA volta per risorsa, non quattro.
+        by_resource = conn.execute(
+            "SELECT resource, count(*) AS n FROM resource_ledger"
+            " WHERE reason='production' GROUP BY resource"
+        ).fetchall()
+        assert {row["resource"]: int(row["n"]) for row in by_resource} == {
+            resource: 1 for resource in RESOURCES
+        }
 
 
 def test_distinct_cities_settle_concurrently_without_any_global_lock(database, monkeypatch):
@@ -331,8 +361,10 @@ def test_distinct_cities_settle_concurrently_without_any_global_lock(database, m
                 "SELECT count(*) AS n FROM resource_ledger WHERE city_id=%s AND reason='production'",
                 (p["city_id"],),
             ).fetchone()["n"]
-            assert n == 1                       # 60s at rate 10 -> one entry, no duplicates
-            assert balance(conn, p["city_id"]) == 100000 + 600
+            # Una riga per risorsa, non sei letture che scrivono sei volte.
+            assert n == len(RESOURCES)
+            held = stock(conn, p["city_id"])
+            assert held["stone"] == STARTING_STOCK["stone"] + 60 * harvest_rate("stone", 0, 0)
 
 
 def test_materialized_balance_equals_ledger_sum(database, monkeypatch):
@@ -345,34 +377,44 @@ def test_materialized_balance_equals_ledger_sum(database, monkeypatch):
     sweep()
     with transaction() as conn:
         read_city(conn, second["city_id"], second["player_id"])
-        cities = conn.execute("SELECT id, balance_milli FROM cities ORDER BY id").fetchall()
-        for city in cities:
-            ledger_sum = int(conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) AS s FROM resource_ledger WHERE city_id = %s",
-                (city["id"],),
-            ).fetchone()["s"])
-            assert int(city["balance_milli"]) == ledger_sum
-            assert balance(conn, city["id"]) == ledger_sum
-            assert ledger_sum > 0
+        # L'invariante che regge tutto, ora per RISORSA: ogni cursore materializzato e'
+        # esattamente la somma del ledger di quella risorsa. Il ledger resta l'unica fonte
+        # di verita' e resta immutabile; le scorte sono un cursore ricostruibile.
+        rows = conn.execute(
+            """SELECT s.city_id, s.resource, s.amount_milli,
+                      (SELECT COALESCE(SUM(amount), 0) FROM resource_ledger l
+                        WHERE l.city_id = s.city_id AND l.resource = s.resource) AS ledger_sum
+                 FROM city_stock s ORDER BY s.city_id, s.resource"""
+        ).fetchall()
+        assert rows, "nessuna scorta da verificare"
+        for row in rows:
+            assert int(row["amount_milli"]) == int(row["ledger_sum"]), dict(row)
+        # ... e non e' vera per vuoto: qualcosa e' stato prodotto e qualcosa speso.
+        assert any(int(row["amount_milli"]) > 0 for row in rows)
 def test_ledger_enforces_no_overdraft_and_duplicate_event(database):
     p = player()
+    # Lo scoperto e' rifiutato PER RISORSA: avere legname non autorizza a spendere pietra.
     with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
-        service.entry(conn, p["city_id"], -100001, "upgrade", "bad-debit", database_now(conn))
+        service.entry(conn, p["city_id"], -STARTING_STOCK["stone"] - 1, "upgrade",
+                      "bad-debit", database_now(conn), "stone")
     with pytest.raises(psycopg.errors.UniqueViolation), transaction() as conn:
-        service.entry(conn, p["city_id"], 1, "genesis", f"genesis:{p['city_id']}", database_now(conn))
+        service.entry(conn, p["city_id"], 1, "genesis", f"genesis:{p['city_id']}:stone",
+                      database_now(conn), "stone")
 
 
 def test_materialized_balance_rejects_overdraft_without_scanning_ledger(database):
     p = player()
     with transaction() as conn:
-        service.entry(conn, p["city_id"], -100000, "upgrade", "spend-all", database_now(conn))
-        assert balance(conn, p["city_id"]) == 0
+        service.entry(conn, p["city_id"], -STARTING_STOCK["timber"], "upgrade",
+                      "spend-all", database_now(conn), "timber")
+        assert stock(conn, p["city_id"])["timber"] == 0
     with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
-        service.entry(conn, p["city_id"], -1, "upgrade", "overdraft", database_now(conn))
+        service.entry(conn, p["city_id"], -1, "upgrade", "overdraft", database_now(conn), "timber")
     with transaction() as conn:
         assert int(conn.execute(
-            "SELECT balance_milli FROM cities WHERE id = %s", (p["city_id"],)
-        ).fetchone()["balance_milli"]) == 0
+            "SELECT amount_milli FROM city_stock WHERE city_id = %s AND resource = 'timber'",
+            (p["city_id"],),
+        ).fetchone()["amount_milli"]) == 0
 
 
 def test_world_map_generates_persists_and_is_immutable(database):
@@ -511,13 +553,41 @@ def test_two_colonies_on_different_ground_do_not_earn_the_same(database, monkeyp
         with transaction() as conn:
             row = conn.execute("SELECT * FROM cities WHERE id = %s",
                                (who["city_id"],)).fetchone()
-            before = int(row["balance_milli"])
+            before = stock(conn, who["city_id"])["food"]
             service.advance(conn, row, now)
-            after = conn.execute("SELECT balance_milli, site_food FROM cities WHERE id = %s",
-                                 (who["city_id"],)).fetchone()
-        earned[names[who["city_id"]]] = (int(after["balance_milli"]) - before,
-                                         after["site_food"])
+            after = stock(conn, who["city_id"])["food"]
+        earned[names[who["city_id"]]] = (after - before, row["site_food"])
 
-    (rich_alloy, rich_food), (poor_alloy, poor_food) = earned["Fertile"], earned["Arida"]
+    (rich_grown, rich_food), (poor_grown, poor_food) = earned["Fertile"], earned["Arida"]
     assert rich_food > poor_food, earned
-    assert rich_alloy > poor_alloy, earned
+    # La terra grassa NUTRE di piu': e' il cibo a portare il tetto della colonia, quindi e'
+    # qui che la scelta del sito si sente prima che altrove.
+    assert rich_grown > poor_grown, earned
+
+
+def test_a_colony_says_when_it_will_stop_earning(database, monkeypatch):
+    """La meta' che rende vivibile lo stallo alla Anno in un mondo che cammina mentre dormi.
+
+    Fermarsi e' la tensione voluta; fermarsi a sorpresa e' una punizione per chi ha un lavoro.
+    Quindi il momento va detto PRIMA, e va detto dall'API -- non solo calcolabile in teoria.
+    """
+    p = player()
+    freeze_clock(monkeypatch)
+    with transaction() as conn:
+        view = read_city(conn, p["city_id"], p["player_id"])
+
+    forecast = view["stalls_in_seconds"]
+    assert set(forecast) == set(RESOURCES)
+    assert all(seconds is None or seconds > 0 for seconds in forecast.values())
+
+    # E la previsione e' quella vera: portando avanti l'orologio di quel tanto, il magazzino
+    # e' pieno e la colonia ha davvero smesso di guadagnare.
+    when = forecast["stone"]
+    assert when is not None
+    with transaction() as conn:
+        clock = db.database_now(conn)
+    monkeypatch.setattr(db, "database_now", lambda conn: clock + timedelta(seconds=when + 60))
+    with transaction() as conn:
+        later = read_city(conn, p["city_id"], p["player_id"])
+    assert int(later["stock_milli"]["stone"]) == store_cap(later["level"])
+    assert later["stalls_in_seconds"]["stone"] is None

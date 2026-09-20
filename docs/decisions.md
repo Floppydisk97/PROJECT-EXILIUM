@@ -213,3 +213,45 @@ l'anno. Nessun sito è la risposta a tutti gli orizzonti.
 
 **Da rivedere se.** Arriva la seconda risorsa: a quel punto resa e fatica diventano due voci di
 un conto più grande, e il tetto morbido potrebbe non servire più.
+
+---
+
+## ADR-007 — Il cibo è un tetto, il magazzino pieno è uno stallo
+
+**Decisione.** Quattro risorse (lega, cibo, legname, pietra) con un magazzino per risorsa e un
+ledger per risorsa. Il cibo si consuma per livello e **limita il livello raggiungibile**;
+avanzare oltre ciò che il sito sfama è **rifiutato**. Ogni magazzino ha un tetto, e un
+magazzino pieno smette di guadagnare. Un livello costa pietra e legname. La lega non si conia
+più: tornerà come primo prodotto della prima catena.
+
+**Motivazione.** L'obiettivo dichiarato sono catene di produzione in stile Anno, dove le isole
+hanno risorse diverse e il commercio è necessario. Questo è il gradino su cui poggia tutto: il
+ledger e il magazzino diventano multi-risorsa, e la geografia comincia a dire *cosa* hai.
+
+Lo stallo a magazzino pieno è stato **scelto dall'utente contro il mio consiglio**: io avevo
+proposto «la colonia non si ferma mai», perché questo mondo cammina mentre il giocatore dorme
+e uno stallo a sorpresa punisce chi non può collegarsi spesso. La scelta è stata mantenuta e
+resa vivibile in un altro modo — vedi sotto.
+
+**Alternative considerate.**
+1. *Non fermarsi mai* (eccesso perso o convertito). Più clemente, meno teso. Scartata
+   dall'utente.
+2. *Rallentare senza spegnersi.* Via di mezzo, più difficile da spiegare e da bilanciare.
+3. *La fame che uccide* invece del rifiuto: una colonia cresciuta troppo perde livelli.
+   Scartata: atterrare è irreversibile, e un vicolo cieco in più non serviva a nessuno.
+
+**Rischi e criticità.**
+- **Lo stallo resta una scommessa di design.** La mitigazione è che è *prevedibile*:
+  `time_to_full` calcola il momento esatto, quindi il giocatore pianifica invece di scoprire.
+  Se giocandoci sembrerà una tassa invece che una tensione, è una costante in `sim/config.py`.
+- **I biomi poveri dipendono dal commercio che non esiste ancora.** Mitigato da un minimo
+  garantito di raccolto (`HARVEST_FLOOR`) e da scorte iniziali: nessun sito è bloccato, alcuni
+  sono solo lenti. Quando arriverà il commercio il minimo potrà scendere.
+- **Il cibo riempie il proprio magazzino in poche ore** e poi resta lì: oggi non ha altro
+  sbocco che il mantenimento. Diventerà un ingrediente con le catene; fino ad allora è un
+  numero che sta fermo, ed è onesto dirlo.
+- **Una definizione dell'economia in un solo posto** — `sim/config.py` — ma ora con più
+  manopole che interagiscono. I numeri sono di partenza, non bilanciati.
+
+**Da rivedere se.** Arrivano le catene: lì i tassi diventano negativi e dipendenti fra loro, la
+forma chiusa salta e serve l'integrazione a eventi. `time_to_full` è già il pezzo che servirà.

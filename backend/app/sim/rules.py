@@ -16,7 +16,8 @@ from dataclasses import replace
 from datetime import datetime
 
 from app.sim.config import (
-    MAX_LEVEL, production_rate, upgrade_cost, upgrade_duration,
+    MAX_LEVEL, RESOURCES, food_income, food_upkeep, harvest_rate, production_rate,
+    store_cap, supported_level, upgrade_cost, upgrade_duration,
 )
 from app.sim.state import (
     Advance, CityState, Commitment, Completion, LedgerEntry, PolicyPeriod, Settlement,
@@ -91,26 +92,77 @@ def majority_policy(current: str, votes: dict[str, int]) -> str:
     return "balanced" if balanced > industrial else "industrial"
 
 
+def resource_rate(resource: str, policy: str, city: CityState) -> int:
+    """Milli-unita' al secondo di una risorsa, per questa citta' sotto questa politica.
+
+    UN intero per l'intera fetta su cui viene usato. E' la stessa regola che ha permesso di
+    togliere il tick: se il tasso non e' costante dentro la fetta, spezzare un intervallo
+    smette di dare lo stesso totale, e la produzione non puo' piu' maturare dai timestamp.
+    """
+    if resource == "food":
+        # La terra da' quello che da'; le bocche si moltiplicano col livello. Da qui il tetto
+        # vero della colonia, ed e' garantito positivo da `supported_level`.
+        return food_income(city.site_food, policy) - food_upkeep(city.level)
+    site = {"timber": city.site_timber, "stone": city.site_stone}[resource]
+    return harvest_rate(resource, city.level, site, policy)
+
+
 def settle_city(
     city: CityState, until: datetime, periods: list[PolicyPeriod]
 ) -> Settlement | None:
-    """Mature this city's production up to `until`. None when the cursor is already there.
+    """Mature this city's stores up to `until`. None when the cursor is already there.
 
-    The amount is computed before that check on purpose: an invalid timestamp has to be
-    rejected whether or not there is anything to settle, or a bad clock would pass silently in
-    exactly the case where nothing looks wrong.
+    Every store is CAPPED, and a full one stops earning -- nothing is lost, the gaining
+    stops. The clamp is applied inside each policy period rather than at the end, because a
+    store that filled up on Tuesday must not go on earning at Wednesday's different rate.
+
+    No event timeline is needed for this: every rate here is non-negative (food's is, because
+    over-growing is refused rather than punished), so a store that is full stays full. The
+    moment chains begin to CONSUME, that stops being true and this becomes an integration
+    over events -- which is exactly why `time_to_full` already exists.
     """
-    amount = production_amount(city.settled_at, until, periods, city.level, city.site_food)
+    _whole_seconds(city.settled_at, until)
+    if until < city.settled_at:
+        raise ValueError("Invalid production interval")
     if until == city.settled_at:
         return None
-    entry = None
-    if amount:
-        key = f"production:{city.id}:{city.settled_at.isoformat()}:{until.isoformat()}"
-        entry = LedgerEntry(city.id, amount, "production", key, until)
-    return Settlement(
-        city=replace(city, settled_at=until, balance_milli=city.balance_milli + amount),
-        entry=entry,
+
+    cap = store_cap(city.level)
+    stock = dict(city.stock)
+    gained = {resource: 0 for resource in RESOURCES}
+
+    covered = 0
+    for period in periods:
+        slice_start = max(city.settled_at, period.from_at)
+        slice_end = until if period.to_at is None else min(until, period.to_at)
+        if slice_end <= slice_start:
+            continue
+        elapsed = slice_end - slice_start
+        seconds = elapsed.days * 86400 + elapsed.seconds
+        covered += seconds
+        for resource in RESOURCES:
+            held = stock.get(resource, 0)
+            room_left = cap - held
+            if room_left <= 0:
+                continue
+            amount = min(resource_rate(resource, period.policy, city) * seconds, room_left)
+            if amount <= 0:
+                continue
+            stock[resource] = held + amount
+            gained[resource] += amount
+
+    whole = until - city.settled_at
+    if covered != whole.days * 86400 + whole.seconds:
+        raise ValueError("Policy timeline does not cover the production interval")
+
+    entries = tuple(
+        LedgerEntry(city.id, amount, "production",
+                    f"production:{city.id}:{resource}:"
+                    f"{city.settled_at.isoformat()}:{until.isoformat()}",
+                    until, resource)
+        for resource, amount in sorted(gained.items()) if amount
     )
+    return Settlement(city=replace(city, settled_at=until, stock=stock), entries=entries)
 
 
 def advance_city(
@@ -150,22 +202,33 @@ def advance_city(
 
 def begin_upgrade(
     city: CityState, busy: bool, now: datetime
-) -> tuple[LedgerEntry, datetime] | str:
+) -> tuple[tuple[LedgerEntry, ...], datetime] | str:
     """Start an upgrade, or say in one word why not.
 
-    The alloy leaves now: committing IS spending, so a city cannot queue four upgrades out of
-    one balance and it cannot take the alloy back out from under a commitment already running.
-    What the city buys is a moment in the future, and until then it is busy -- which is the
-    whole of the new economy's scarcity. There is no queue to be limited, because the limit is
-    that a city does one thing at a time.
+    The materials leave now: committing IS spending, so a city cannot queue four upgrades out
+    of one store and cannot take the stone back out from under a commitment already running.
+    What it buys is a moment in the future, and until then it is busy.
+
+    The food check is a REFUSAL and not a punishment. A colony that grew past what its ground
+    feeds would starve with no way back, and landing is irreversible -- so the level that
+    cannot be fed is the level that cannot be started. It is measured against the least
+    favourable policy, because the majority votes on how fast everyone goes, not on who
+    survives.
     """
     _whole_seconds(now)
     if busy:
         return "already_busy"
     if city.level >= MAX_LEVEL:
         return "maximum_level"
+    if city.level + 1 > supported_level(city.site_food):
+        return "not_enough_food"
     cost = upgrade_cost(city.level, city.site_room)
-    if city.balance_milli < cost:
-        return "insufficient_alloy"
-    entry = LedgerEntry(city.id, -cost, "upgrade", f"upgrade:{city.id}:{now.isoformat()}", now)
-    return entry, now + upgrade_duration(city.level, city.site_effort, city.site_room)
+    for resource, amount in sorted(cost.items()):
+        if city.stock.get(resource, 0) < amount:
+            return f"insufficient_{resource}"
+    entries = tuple(
+        LedgerEntry(city.id, -amount, "upgrade",
+                    f"upgrade:{city.id}:{resource}:{now.isoformat()}", now, resource)
+        for resource, amount in sorted(cost.items())
+    )
+    return entries, now + upgrade_duration(city.level, city.site_effort, city.site_room)

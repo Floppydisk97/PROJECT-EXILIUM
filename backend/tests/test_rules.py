@@ -4,7 +4,7 @@ import pytest
 
 from app.sim.config import (
     LEVEL_RATE, POLICY_RATES, ROOM_PER_LEVEL, UPGRADE_DURATION,
-    production_rate, upgrade_cost, upgrade_duration,
+    harvest_rate, production_rate, store_cap, time_to_full, upgrade_cost, upgrade_duration,
 )
 from app.sim.rules import majority_policy, production_amount
 from app.sim.state import PolicyPeriod
@@ -93,16 +93,23 @@ def test_the_ceiling_is_soft_because_landing_is_final():
     free = cramped // ROOM_PER_LEVEL
     assert free == 4
 
+    def dearer(level, room):
+        """Quanto costa di piu' che sul terreno largo -- lo stesso fattore su ogni risorsa."""
+        tight, loose = upgrade_cost(level, room), upgrade_cost(level)
+        factors = {tight[r] // loose[r] for r in loose}
+        assert len(factors) == 1, (tight, loose)
+        return factors.pop()
+
     # Inside its room, a cramped colony is an ordinary colony.
     assert upgrade_cost(0, cramped) == upgrade_cost(0)
     assert upgrade_duration(2, 0, cramped) == upgrade_duration(2)
 
     # Past it, both cost and time climb -- and keep climbing, rather than stopping.
-    assert upgrade_cost(free, cramped) == upgrade_cost(free) * 2
-    assert upgrade_cost(free + 3, cramped) == upgrade_cost(free + 3) * 5
+    assert dearer(free, cramped) == 2
+    assert dearer(free + 3, cramped) == 5
     assert upgrade_duration(free + 3, 0, cramped) == upgrade_duration(free + 3) * 5
     # Dear, but never impossible.
-    assert upgrade_cost(free + 50, cramped) < 10 ** 12
+    assert max(upgrade_cost(free + 50, cramped).values()) < 10 ** 12
 
 
 def test_a_stretched_upgrade_still_lands_on_a_whole_second():
@@ -127,3 +134,28 @@ def test_the_site_cannot_change_what_splitting_an_interval_means():
             for d in range(7)
         )
         assert whole == piecewise, site_food
+
+
+def test_a_full_store_is_predictable_before_it_happens():
+    """La meta' che rende accettabile lo stallo alla Anno in un mondo che cammina mentre dormi.
+
+    Fermarsi e' la tensione voluta; fermarsi A SORPRESA e' una faccenda da sbrigare. Il
+    momento in cui un magazzino smettera' di guadagnare si calcola, quindi si puo' dire prima.
+    """
+    cap = store_cap(0)
+    assert time_to_full(stock=0, cap=cap, rate=100) == cap / 100
+    # A meta' strada manca la meta' del tempo.
+    assert time_to_full(cap // 2, cap, 100) == (cap - cap // 2) / 100
+    # Gia' pieno, o fermo: non si fermera' mai piu' di cosi'.
+    assert time_to_full(cap, cap, 100) is None
+    assert time_to_full(0, cap, 0) is None
+
+
+def test_every_site_can_still_build_something():
+    """Un deserto non ha ne' roccia ne' alberi. Senza un minimo garantito non potrebbe
+    costruire MAI nulla, e sarebbe un vicolo cieco in attesa di un commercio che ancora non
+    esiste -- lo stesso errore del sito senza celle edificabili, in un'altra forma."""
+    for resource in ("timber", "stone"):
+        assert harvest_rate(resource, level=0, site=0) > 0
+    # ... ma la terra che ce l'ha resta molto meglio: il minimo e' una rete, non un livellamento.
+    assert harvest_rate("stone", 0, 99) > harvest_rate("stone", 0, 0) * 5

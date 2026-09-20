@@ -24,8 +24,11 @@ from uuid import uuid4
 from app import db
 from app import citygen
 from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade
-from app.sim.config import RULESET, STARTING_ALLOY, upgrade_cost, upgrade_duration
-from app.sim.rules import majority_policy
+from app.sim.config import (
+    ALL_RESOURCES, RESOURCES, RULESET, STARTING_STOCK, store_cap, supported_level,
+    time_to_full, upgrade_cost, upgrade_duration,
+)
+from app.sim.rules import majority_policy, resource_rate
 
 
 class DomainError(Exception):
@@ -51,35 +54,50 @@ def owned_city(conn, city_id, owner_id, lock=False):
     return city
 
 
-def balance(conn, city_id):
-    # O(1) read of the materialized cursor. The ledger trigger keeps it exactly
-    # equal to SUM(resource_ledger.amount); test_materialized_balance_* guards it.
-    return int(conn.execute(
-        "SELECT balance_milli FROM cities WHERE id = %s", (city_id,)
-    ).fetchone()["balance_milli"])
+def stock(conn, city_id) -> dict[str, int]:
+    """Every store this city holds. O(1) reads of the materialized cursors: the ledger
+    trigger keeps each one exactly equal to SUM(resource_ledger.amount) for that resource,
+    which `test_materialized_balance_*` guards."""
+    rows = conn.execute(
+        "SELECT resource, amount_milli FROM city_stock WHERE city_id = %s", (city_id,)
+    ).fetchall()
+    held = {row["resource"]: int(row["amount_milli"]) for row in rows}
+    return {resource: held.get(resource, 0) for resource in ALL_RESOURCES}
 
 
-def entry(conn, city_id, amount, reason, event_key, effective_at):
+def balance(conn, city_id) -> int:
+    """The alloy store alone. Ruleset 2 minted it; nothing mints it now, and it is still
+    spendable -- what was earned is not confiscated because the rules moved on."""
+    return stock(conn, city_id)["alloy"]
+
+
+def entry(conn, city_id, amount, reason, event_key, effective_at, resource="alloy"):
     conn.execute(
-        """INSERT INTO resource_ledger(city_id, amount, reason, event_key, effective_at, ruleset)
-           VALUES (%s, %s, %s, %s, %s, %s)""",
-        (city_id, amount, reason, event_key, effective_at, RULESET),
+        """INSERT INTO resource_ledger(city_id, resource, amount, reason, event_key,
+                                       effective_at, ruleset)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (city_id, resource, amount, reason, event_key, effective_at, RULESET),
     )
 
 
 def write_entry(conn, described):
     entry(conn, described.city_id, described.amount, described.reason,
-          described.event_key, described.effective_at)
+          described.event_key, described.effective_at, described.resource)
 
 
-def city_state(row) -> CityState:
+def city_state(row, held: dict[str, int] | None = None) -> CityState:
     """A database row as the simulation sees it: nothing about ownership or naming, which
-    are the adapter's business, and no column the rules do not actually read."""
+    are the adapter's business, and no column the rules do not actually read.
+
+    The stores come in as an argument rather than as a column, because they live in their own
+    table now -- passing them explicitly is what stops a caller silently settling a city
+    against empty stores.
+    """
     return CityState(
         id=row["id"],
         level=row["level"],
-        balance_milli=int(row["balance_milli"]),
         settled_at=row["settled_at"],
+        stock=held or {},
         # What the colony kept of its ground. Null until it lands -- and null is not zero
         # room, it is no ground to be crowded against, which is what an orbiting colony has.
         site_food=row["site_food"] or 0,
@@ -130,13 +148,13 @@ def advance(conn, city_row, now):
     looks at the city or asks it to do something -- so a world with nobody watching costs
     nothing and a city nobody touches is still correct the moment it is read.
     """
-    city = city_state(city_row)
+    city = city_state(city_row, stock(conn, city_row["id"]))
     result = advance_city(
         city, commitment_of(conn, city_row["id"]), policy_periods(conn, city.settled_at), now
     )
     for settlement in result.settlements:
-        if settlement.entry is not None:
-            write_entry(conn, settlement.entry)
+        for described in settlement.entries:
+            write_entry(conn, described)
     for completion in result.completions:
         conn.execute(
             "UPDATE orders SET status = 'applied', outcome = %s WHERE id = %s",
@@ -160,8 +178,28 @@ def provision(conn, name):
         "INSERT INTO cities(id, owner_id, name, created_at, settled_at) VALUES (%s, %s, %s, %s, %s)",
         (city, owner, name.strip(), now, now),
     )
-    entry(conn, city, STARTING_ALLOY, "genesis", f"genesis:{city}", now)
+    # Le scorte con cui si scende. Una per risorsa: il ledger e' per risorsa, e "genesis"
+    # deve leggersi come tutto il resto invece che essere un caso a parte.
+    for resource, amount in sorted(STARTING_STOCK.items()):
+        entry(conn, city, amount, "genesis", f"genesis:{city}:{resource}", now, resource)
     return {"player_id": owner, "city_id": city, "token": token}
+
+
+def stall_forecast(conn, city_row, now) -> dict[str, int | None]:
+    """Fra quanti secondi ogni magazzino smettera' di guadagnare. None se non si fermera'.
+
+    Calcolato con la politica in vigore, che e' l'onesto: una politica diversa e' un mondo
+    diverso, e prometterlo per una che non e' stata votata sarebbe una previsione di comodo.
+    """
+    held = stock(conn, city_row["id"])
+    cap = store_cap(city_row["level"])
+    policy = current_policy(conn)
+    city = city_state(city_row, held)
+    forecast: dict[str, int | None] = {}
+    for resource in RESOURCES:
+        seconds = time_to_full(held[resource], cap, resource_rate(resource, policy, city))
+        forecast[resource] = None if seconds is None else int(seconds)
+    return forecast
 
 
 def city_view(conn, city_row, now) -> dict:
@@ -169,14 +207,23 @@ def city_view(conn, city_row, now) -> dict:
     level = city_row["level"]
     return {
         "id": city_row["id"], "name": city_row["name"], "level": level,
+        "stock_milli": {name: str(amount) for name, amount in stock(conn, city_row["id"]).items()},
         "alloy_milli": str(balance(conn, city_row["id"])),
         "settled_at": now,
         "policy": current_policy(conn),
         "policy_vote": city_row["policy_vote"],
         # What it would take to start the next upgrade, so a client never has to know the
         # curve: the rules own it and say so.
-        "next_upgrade_cost_milli": str(upgrade_cost(level)),
-        "next_upgrade_seconds": int(upgrade_duration(level).total_seconds()),
+        "next_upgrade_cost_milli": {name: str(amount)
+                                    for name, amount in upgrade_cost(level, city_row["site_room"]).items()},
+        "next_upgrade_seconds": int(upgrade_duration(
+            level, city_row["site_effort"] or 0, city_row["site_room"]).total_seconds()),
+        # Il tetto che la terra impone, e quando ogni magazzino smettera' di guadagnare.
+        # Il secondo numero e' cio' che rende accettabile lo stallo in un mondo che cammina
+        # mentre il giocatore dorme: fermarsi e' la tensione voluta, fermarsi A SORPRESA e'
+        # una faccenda da sbrigare. Detto prima, si pianifica.
+        "supported_level": supported_level(city_row["site_food"] or 0),
+        "stalls_in_seconds": stall_forecast(conn, city_row, now),
         "busy_until": None if busy is None else busy.completes_at,
         "busy_with": None if busy is None else busy.kind,
     }
@@ -207,13 +254,16 @@ def start_upgrade(conn, city_id, owner_id, key):
     decision = begin_upgrade(result.city, commitment_of(conn, city_id) is not None, now)
     if isinstance(decision, str):
         raise DomainError(409, decision)
-    spend, completes_at = decision
-    write_entry(conn, spend)
+    spends, completes_at = decision
+    for described in spends:
+        write_entry(conn, described)
+    # `cost_milli` records what the commitment took, summed across resources. It is a record
+    # of the past, not an input to anything: what it cost is already gone from the stores.
     return conn.execute(
         """INSERT INTO orders(city_id, idempotency_key, kind, choice, submitted_at,
                               completes_at, cost_milli)
            VALUES (%s, %s, 'upgrade', NULL, %s, %s, %s) RETURNING *""",
-        (city_id, key, now, completes_at, -spend.amount),
+        (city_id, key, now, completes_at, sum(-described.amount for described in spends)),
     ).fetchone()
 
 

@@ -14,7 +14,8 @@ Two kinds live here, and the distinction matters:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from collections.abc import Mapping
 from datetime import datetime
 from uuid import UUID
 
@@ -23,8 +24,8 @@ from app.sim.config import RULESET
 
 @dataclass(frozen=True)
 class CityState:
-    """One settlement. `balance_milli` mirrors the ledger sum, which the database keeps
-    materialised; the rules read it so they never have to scan a ledger to know a balance.
+    """One settlement. `stock` mirrors the ledger sums, which the database keeps materialised
+    per resource; the rules read it so they never have to scan a ledger to know a store.
 
     The three site numbers are what the colony kept of its ground -- see `citygen.SiteEconomy`.
     They are fixed at landing and never change: the map is a function of the seed, and the
@@ -34,8 +35,8 @@ class CityState:
     """
     id: UUID
     level: int
-    balance_milli: int
     settled_at: datetime
+    stock: Mapping[str, int] = field(default_factory=dict)
     site_food: int = 0             # 0 -> the rate is untouched
     site_timber: int = 0           # what the standing growth is worth once cleared
     site_stone: int = 0            # what is under the colony
@@ -79,14 +80,16 @@ class LedgerEntry:
     reason: str
     event_key: str
     effective_at: datetime
+    resource: str = "alloy"   # il default e' la risorsa del ruleset 2, che non si conia piu'
 
 
 @dataclass(frozen=True)
 class Settlement:
-    """Production matured up to a moment. `city` is the city after settling; `entry` is None
-    when the elapsed time produced nothing but the cursor still has to move."""
+    """Production matured up to a moment. `city` is the city after settling; `entries` is
+    empty when the elapsed time produced nothing but the cursor still has to move -- which
+    now also happens when every store is full, because a full store stops earning."""
     city: CityState
-    entry: LedgerEntry | None
+    entries: tuple[LedgerEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,7 +115,7 @@ class Advance:
 
     @property
     def entries(self) -> tuple[LedgerEntry, ...]:
-        return tuple(s.entry for s in self.settlements if s.entry is not None)
+        return tuple(entry for s in self.settlements for entry in s.entries)
 
 
 def snapshot(policy: str, cities: tuple[CityState, ...] | list[CityState]) -> dict:
@@ -130,7 +133,7 @@ def snapshot(policy: str, cities: tuple[CityState, ...] | list[CityState]) -> di
             {
                 "id": str(city.id),
                 "level": city.level,
-                "balance_milli": city.balance_milli,
+                "stock": dict(sorted(city.stock.items())),
                 "settled_at": city.settled_at.isoformat(),
                 "site": {"food": city.site_food, "timber": city.site_timber,
                          "stone": city.site_stone, "effort": city.site_effort,
