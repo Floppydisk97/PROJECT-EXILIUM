@@ -30,10 +30,15 @@ export default function ColonyPicker({ tileId }: { tileId: number | null }) {
           }
         });
         if (cancelled) return;
-
+        // The planet file carries land only -- the ocean is nine tenths of the sphere and
+        // nobody lands on it -- so an id that is not in it is not a missing tile, it is water.
         const index = tileId === null ? -1 : map.tiles.id.indexOf(tileId);
         if (index < 0) {
-          setFailure("Quella casella non esiste su questo pianeta.");
+          setFailure(
+            tileId === null
+              ? "Nessuna casella scelta: torna al pianeta e scegline una."
+              : "Su quella casella c'è oceano: nessuna colonia può scendere lì.",
+          );
           return;
         }
         const chosen = tileAt(map, index);
