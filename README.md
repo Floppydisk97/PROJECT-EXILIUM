@@ -149,6 +149,24 @@ la tocca nessuna pagina pubblica.
 I manifest Python diretti sono `requirements*.txt`; i file `requirements*.lock.txt`
 fissano anche dipendenze transitive. `package-lock.json` viene usato con `npm ci`.
 
+## Il tempo, in sviluppo
+
+Un tick al giorno rende impossibile provare il gioco. L'orologio del mondo si comprime, dalla
+directory `backend`:
+
+```
+python -m app.gameclock            # legge velocità e ora del mondo
+python -m app.gameclock 3600 --yes # un'ora di mondo per secondo reale
+python -m app.gameclock 1 --yes    # torna al tempo vero
+```
+
+`--yes` serve solo se il mondo ha già delle città: cambiare l'orologio cambia quanto ciascuna
+guadagna per secondo reale. **Un mondo condiviso gira a 1** — la velocità viaggia in `/world`
+proprio perché un mondo che non ci gira possa dirlo invece di sembrare rotto.
+
+Il worker va tenuto acceso: regola da sé il proprio ritmo sulla velocità del mondo, e senza di
+lui un mondo veloce resta subito "in arretrato" e rifiuta ogni operazione economica.
+
 ## Operatività iniziale
 
 Il worker controlla ogni 5 secondi e recupera fino a 32 tick per ciclo. Per un ciclo

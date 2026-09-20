@@ -4,6 +4,8 @@ from contextlib import contextmanager
 import psycopg
 from psycopg.rows import dict_row
 
+from app.gameclock import NOW_SQL
+
 
 @contextmanager
 def transaction():
@@ -16,4 +18,17 @@ def transaction():
 
 
 def database_now(conn):
-    return conn.execute("SELECT date_trunc('second', clock_timestamp()) AS now").fetchone()["now"]
+    """Now, as the world reckons it -- not as the wall clock does.
+
+    Every rule that spends or earns time reads this one function, which is what makes the
+    world's clock a single knob instead of a search for `clock_timestamp()`. At the shipped
+    speed of 1, with the anchors on one instant, this returns exactly what it always did: the
+    formula in `gameclock.NOW_SQL` reduces to the real clock. See that module for why the
+    speed lives on the world row and why changing it re-anchors.
+
+    Audit columns (`recorded_at`, `completed_at`, `generated_at`) keep their real-time
+    defaults on purpose: they say when a fact was WRITTEN, not when it holds in the world.
+    """
+    return conn.execute(
+        f"SELECT date_trunc('second', {NOW_SQL}) AS now FROM world WHERE id = 1"
+    ).fetchone()["now"]

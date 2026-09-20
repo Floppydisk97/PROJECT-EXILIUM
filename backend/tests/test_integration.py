@@ -49,8 +49,16 @@ def test_migration_rerun_and_world_singleton(database):
     command.upgrade(database, "head")
     with transaction() as conn:
         assert conn.execute("SELECT count(*) AS n FROM world").fetchone()["n"] == 1
+    # Columns named rather than positional. The bare SELECT stopped testing the singleton the
+    # day the world grew a NOT NULL column: the copy left it null and the insert failed on
+    # that instead, which looks like a pass and proves nothing about `CHECK (id = 1)`.
     with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
-        conn.execute("INSERT INTO world SELECT 2, policy, last_tick, next_tick_at FROM world")
+        conn.execute(
+            """INSERT INTO world (id, policy, last_tick, next_tick_at,
+                                  time_speed, time_anchor_real, time_anchor_world)
+               SELECT 2, policy, last_tick, next_tick_at,
+                      time_speed, time_anchor_real, time_anchor_world FROM world"""
+        )
 
 
 def test_tick_exact_boundary_policy_upgrade_and_retry(database, monkeypatch):
