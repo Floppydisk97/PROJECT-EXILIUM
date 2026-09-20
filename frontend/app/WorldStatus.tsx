@@ -22,7 +22,7 @@ export default function WorldStatus() {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch("map/manifest.json", { cache: "no-cache" });
+        const response = await fetch("/map/manifest.json", { cache: "no-cache" });
         if (!response.ok) return;
         const manifest = (await response.json()) as PlanetManifest;
         if (!cancelled) setPlanet(manifest);

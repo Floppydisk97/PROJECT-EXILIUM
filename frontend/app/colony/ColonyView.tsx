@@ -1,0 +1,157 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import type { ColonyGround } from "./ground";
+import { describe, seedNumber } from "./ground";
+import { makeGrain, paintProps, paintTerrain } from "./draw";
+
+const MIN_SCALE = 3;        // pixels per cell, zoomed all the way out
+const MAX_SCALE = 42;
+
+export default function ColonyView({ ground }: { ground: ColonyGround }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [hover, setHover] = useState<string | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d")!;
+    const seed = seedNumber(ground.seed);
+    const terrain = paintTerrain(ground, seed);
+    const grain = context.createPattern(makeGrain(seed), "repeat")!;
+
+    // The camera: pixels per cell, and which cell sits at the top-left. Kept in a ref-like
+    // closure rather than in state, because a pan must not go through React.
+    let scale = 0;
+    let originX = 0;
+    let originY = 0;
+    let frame = 0;
+
+    function fit() {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const width = canvas!.clientWidth;
+      const height = canvas!.clientHeight;
+      canvas!.width = Math.round(width * dpr);
+      canvas!.height = Math.round(height * dpr);
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (scale === 0) {
+        scale = Math.max(MIN_SCALE, Math.min(width, height) / ground.size);
+        originX = ground.size / 2 - width / (2 * scale);
+        originY = ground.size / 2 - height / (2 * scale);
+      }
+      clampOrigin();
+      schedule();
+    }
+
+    function clampOrigin() {
+      const width = canvas!.clientWidth / scale;
+      const height = canvas!.clientHeight / scale;
+      // Never show anything that is not ground: a colony has edges and they are real.
+      originX = Math.max(-0.5, Math.min(ground.size - width + 0.5, originX));
+      originY = Math.max(-0.5, Math.min(ground.size - height + 0.5, originY));
+      if (width >= ground.size) originX = (ground.size - width) / 2;
+      if (height >= ground.size) originY = (ground.size - height) / 2;
+    }
+
+    function schedule() {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; paint(); });
+    }
+
+    function paint() {
+      const width = canvas!.clientWidth;
+      const height = canvas!.clientHeight;
+      // Smoothing on, always. Nearest-neighbour turns the terrain buffer into a mosaic of
+      // squares at any real zoom; the texture comes from the grain laid over the top.
+      context.imageSmoothingEnabled = true;
+      context.fillStyle = "#0b1016";
+      context.fillRect(0, 0, width, height);
+      context.save();
+      context.translate(-originX * scale, -originY * scale);
+      context.drawImage(terrain, 0, 0, ground.size * scale, ground.size * scale);
+      // The fine texture, at screen resolution and therefore the same crispness at every zoom.
+      context.save();
+      context.globalAlpha = 0.16;
+      context.fillStyle = grain;
+      context.fillRect(originX * scale, originY * scale, width, height);
+      context.restore();
+      paintProps(context, ground, seed, {
+        x0: originX, y0: originY,
+        x1: originX + width / scale, y1: originY + height / scale, scale,
+      });
+      context.restore();
+    }
+
+    function cellAt(event: PointerEvent): [number, number] | null {
+      const rect = canvas!.getBoundingClientRect();
+      const x = Math.floor(originX + (event.clientX - rect.left) / scale);
+      const y = Math.floor(originY + (event.clientY - rect.top) / scale);
+      if (x < 0 || y < 0 || x >= ground.size || y >= ground.size) return null;
+      return [x, y];
+    }
+
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    const onDown = (event: PointerEvent) => {
+      dragging = true;
+      lastX = event.clientX; lastY = event.clientY;
+      canvas!.setPointerCapture(event.pointerId);
+    };
+    const onUp = (event: PointerEvent) => {
+      dragging = false;
+      if (canvas!.hasPointerCapture(event.pointerId)) canvas!.releasePointerCapture(event.pointerId);
+    };
+    const onMove = (event: PointerEvent) => {
+      if (dragging) {
+        originX -= (event.clientX - lastX) / scale;
+        originY -= (event.clientY - lastY) / scale;
+        lastX = event.clientX; lastY = event.clientY;
+        clampOrigin();
+        schedule();
+      }
+      const cell = cellAt(event);
+      setHover(cell === null ? null : describe(ground, cell[0], cell[1]));
+    };
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = canvas!.getBoundingClientRect();
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      // Zoom about the cursor, so the cell under the pointer stays under the pointer.
+      const cellX = originX + px / scale;
+      const cellY = originY + py / scale;
+      const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * Math.exp(-event.deltaY * 0.0016)));
+      scale = next;
+      originX = cellX - px / scale;
+      originY = cellY - py / scale;
+      clampOrigin();
+      schedule();
+    };
+
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(canvas);
+    canvas.addEventListener("pointerdown", onDown);
+    canvas.addEventListener("pointerup", onUp);
+    canvas.addEventListener("pointermove", onMove);
+    canvas.addEventListener("pointerleave", () => setHover(null));
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      observer.disconnect();
+      canvas.removeEventListener("pointerdown", onDown);
+      canvas.removeEventListener("pointerup", onUp);
+      canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("wheel", onWheel);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [ground]);
+
+  return (
+    <div className="colony-stage">
+      <canvas ref={canvasRef} className="colony-canvas" />
+      {hover && <div className="colony-inspector">{hover}</div>}
+    </div>
+  );
+}

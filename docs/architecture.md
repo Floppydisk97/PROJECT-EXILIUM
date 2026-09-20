@@ -280,6 +280,51 @@ renderer, verificabili senza una GPU. È una separazione voluta, non estetica �
 checker vede array di numeri e uno screenshot mostra solo il fotogramma che qualcuno ha
 guardato, quindi senza test di unità un errore aritmetico qui non ha nulla che lo fermi.
 
+## Il visore della colonia
+
+Top-down 2D, griglia quadrata, tutto disegnato. La profondita' non c'e': **e' tutta
+nell'ombra sotto un albero e nell'ordine in cui gli alberi vengono dipinti.** Una sprite piu'
+in basso e' piu' vicina, quindi si disegna dopo e copre quella dietro; le ombre cadono tutte
+nella stessa direzione. Sono queste due regole, e nient'altro, a far stare in piedi delle
+figure piatte.
+
+Il terreno e' un buffer disegnato una volta sola, quindi muovere la mappa e' UNA `drawImage`
+invece di sedicimila riempimenti. Le sprite si ridisegnano a ogni fotogramma ma solo quelle
+dentro la finestra.
+
+### Quattro cose sbagliate, viste solo a schermo
+
+**Il terreno era un mosaico.** Un buffer da quattro pixel per cella ingrandito a quaranta da
+quadrati, e a interpolazione attiva da una sbavatura: entrambe leggono come un diagramma, non
+come terra. Ora la grana fine si stende SOPRA, alla risoluzione dello schermo, quindi ha la
+stessa nitidezza a ogni ingrandimento.
+
+**Gli alberi erano palline.** Un cerchio e' una palla; cinque lobi scentrati in due toni, piu'
+un tronco rastremato sotto, sono una chioma.
+
+**Le rocce erano uova.** Un poligono irregolare con una faccia illuminata e' un masso; un'ellisse
+grigia e' un uovo, e un campo di uova identiche e' quello che si vedeva.
+
+**La palette era satura.** Il verde acceso legge come un giocattolo; quello di RimWorld e'
+smorto, e smorto e' diventato.
+
+### Due trappole nei percorsi
+
+I percorsi degli asset erano RELATIVI, quindi `colony/manifest.json` chiesto da `/colonia/`
+diventava `/colonia/colony/manifest.json`. Il visore del pianeta aveva la stessa forma e
+funzionava solo perche' quella pagina sta nella radice -- fortuna, non progetto. Ora sono
+tutti radicati.
+
+E il server statico locale non risolveva gli URL puliti: l'export scrive `colonia.html` e il
+visitatore chiede `/colonia`. Un host statico vero lo fa da se', il nostro no, e la pagina
+dava 404 col file li' accanto.
+
+### Da dove arriva il terreno
+
+Da un file cucinato, oggi, perche' il visore e' statico e non ha un'API davanti. Il renderer
+pero' non lo sa: prende un payload e disegna. Il giorno che il client del gioco chiedera' gli
+stessi byte a `GET /cities/{id}/ground`, del disegno non cambia una riga.
+
 ## Atterrare: la casella smette di essere scenografia
 
 Il pianeta decide una cosa sola: quale esagono. E' la scala a cui il mondo condiviso viene

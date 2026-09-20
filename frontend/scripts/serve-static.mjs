@@ -26,6 +26,16 @@ createServer((request, response) => {
   let file = normalize(join(ROOT, path));
   if (!file.startsWith(ROOT)) return send(response, 403, "Forbidden");
   if (existsSync(file) && statSync(file).isDirectory()) file = join(file, "index.html");
+  // Clean URLs. The export writes `colonia.html`, and a visitor asks for `/colonia` or
+  // `/colonia/` -- which a real static host resolves on its own and this one did not, so the
+  // page 404ed even though the file was right there.
+  if (!existsSync(file)) {
+    for (const candidate of [file.replace(/\/$/, "") + ".html",
+                             join(file, "index.html"),
+                             file.replace(/\/index\.html$/, ".html")]) {
+      if (existsSync(candidate) && statSync(candidate).isFile()) { file = candidate; break; }
+    }
+  }
   if (!existsSync(file)) {
     file = join(ROOT, "404.html");
     if (!existsSync(file)) return send(response, 404, "Not found");
