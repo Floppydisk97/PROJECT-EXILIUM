@@ -40,6 +40,17 @@ services:
       # mondo dopo, in un processo separato. Togliendola si torna esattamente a prima.
       - key: MAP_BUILD
         value: background
+      # Quali pagine possono spendere un token. Il visore e' su un altro host, quindi la
+      # schermata della citta' e' cross-origin PER PROGETTO -- ma il permesso si da' per nome:
+      # il token viaggia in un header, non in un cookie, e un permesso aperto lascerebbe che
+      # qualunque pagina di internet spenda un token di cui sia venuta in possesso.
+      #
+      # Le due variabili sono una COPPIA: questa dice al server quale sito puo' parlargli, e
+      # NEXT_PUBLIC_API_URL piu' sotto dice al sito dove sta il server. Se una delle due non
+      # corrisponde al servizio vero, la schermata della citta' smette di funzionare senza un
+      # errore leggibile -- il browser rifiuta la risposta e basta.
+      - key: ALLOWED_ORIGINS
+        value: https://exilium-web.onrender.com
       - key: DATABASE_URL
         fromDatabase:
           name: exilium-db
@@ -91,3 +102,9 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      # Dove sta il server autoritativo. Cotto nel bundle, perche' un export statico non ha
+      # un server a cui chiedere a runtime: cambiarlo e' una ricostruzione, ed e' giusto cosi'
+      # -- l'indirizzo dell'autorita' non e' una cosa che debba potersi spostare da sola.
+      # In sviluppo si scavalca da console: localStorage.setItem("exilium.api", "http://...").
+      - key: NEXT_PUBLIC_API_URL
+        value: https://project-exilium.onrender.com

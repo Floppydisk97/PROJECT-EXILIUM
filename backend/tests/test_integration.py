@@ -591,3 +591,40 @@ def test_a_colony_says_when_it_will_stop_earning(database, monkeypatch):
         later = read_city(conn, p["city_id"], p["player_id"])
     assert int(later["stock_milli"]["stone"]) == store_cap(later["level"])
     assert later["stalls_in_seconds"]["stone"] is None
+
+
+def test_the_browser_is_told_which_pages_may_spend_a_token(database, monkeypatch):
+    """Il visore e' un sito statico su un altro host, quindi la schermata della citta' e'
+    cross-origin per progetto. Il permesso va dato per NOME, mai a chiunque.
+
+    Con un token in un header `Authorization` -- e non in un cookie -- un permesso aperto non
+    verrebbe rifiutato dal browser: lascerebbe semplicemente che qualsiasi pagina di internet
+    spenda un token di cui sia venuta in possesso. E' un difetto peggiore proprio perche'
+    silenzioso.
+    """
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://visore.test")
+    import importlib
+
+    from app import main as main_module
+    reloaded = importlib.reload(main_module)
+    assert reloaded.ALLOWED_ORIGINS == ["https://visore.test"]
+    assert "*" not in reloaded.ALLOWED_ORIGINS
+
+    with TestClient(reloaded.app) as client:
+        allowed = client.options(
+            "/me/cities",
+            headers={"Origin": "https://visore.test",
+                     "Access-Control-Request-Method": "GET"},
+        )
+        assert allowed.headers.get("access-control-allow-origin") == "https://visore.test"
+
+        # Una pagina qualunque non riceve il permesso.
+        stranger = client.options(
+            "/me/cities",
+            headers={"Origin": "https://altrove.test",
+                     "Access-Control-Request-Method": "GET"},
+        )
+        assert stranger.headers.get("access-control-allow-origin") is None
+
+    monkeypatch.delenv("ALLOWED_ORIGINS")
+    importlib.reload(main_module)

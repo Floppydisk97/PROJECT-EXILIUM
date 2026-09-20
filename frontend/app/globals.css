@@ -141,3 +141,59 @@ html, body {
 .colony-back { color: #9fb0bf; text-decoration: none; font-size: 0.82rem; }
 .colony-back:hover { color: #dbe6ef; }
 .colony-progress { padding: 1.2rem; color: #9fb0bf; }
+
+/* ---- La schermata della citta' ---------------------------------------------------------- */
+.city-page { max-width: 62rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
+.city-head {
+  display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+  padding: 0.7rem 0 0.6rem; border-bottom: 1px solid #1d2733;
+}
+.city-head h1 { font-size: 1.1rem; letter-spacing: 0.04em; margin: 0; }
+.city-level { font-size: 0.86rem; color: #9fb0bf; }
+.city-note { color: #9fb0bf; font-size: 0.86rem; margin: 0.5rem 0; line-height: 1.5; }
+.city-alarm { color: #e2b04a; font-size: 0.86rem; margin: 0.5rem 0; line-height: 1.5; }
+
+.city-stores { display: grid; gap: 0.7rem; grid-template-columns: repeat(3, 1fr); margin: 1rem 0; }
+.city-store { background: #121a23; border: 1px solid #1f2b38; border-radius: 6px; padding: 0.7rem 0.8rem; }
+.city-store-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem;
+  font-size: 0.8rem; color: #9fb0bf;
+}
+.city-store-head b { color: #dbe6ef; font-size: 0.86rem; }
+.city-stalled { color: #e2b04a; }
+.city-amount { font-size: 1.6rem; margin-top: 0.3rem; color: #eaf2f8; font-variant-numeric: tabular-nums; }
+
+.city-actions { display: grid; gap: 0.7rem; grid-template-columns: repeat(2, 1fr); }
+.city-card { background: #121a23; border: 1px solid #1f2b38; border-radius: 6px; padding: 0.9rem; }
+.city-card h2 { font-size: 0.92rem; margin: 0 0 0.4rem; letter-spacing: 0.03em; }
+.city-cost { font-size: 0.86rem; color: #dbe6ef; margin: 0.2rem 0 0.6rem; }
+.city-card button, .city-login button {
+  background: #2b4258; color: #eaf2f8; border: 1px solid #3d5c79; border-radius: 4px;
+  padding: 0.45rem 0.8rem; font: inherit; font-size: 0.86rem; cursor: pointer;
+}
+.city-card button:hover:enabled, .city-login button:hover:enabled { background: #35506b; }
+.city-card button:disabled { opacity: 0.45; cursor: not-allowed; }
+.city-vote { display: flex; gap: 0.4rem; margin: 0.4rem 0; }
+.city-vote button.on { background: #3d6b4f; border-color: #4f8a66; }
+.city-quiet { background: none; border: none; color: #9fb0bf; font: inherit; font-size: 0.82rem; cursor: pointer; }
+.city-quiet:hover { color: #dbe6ef; }
+
+.city-login { display: flex; flex-direction: column; gap: 0.5rem; max-width: 30rem; margin-top: 1.2rem; }
+.city-login label { font-size: 0.82rem; color: #9fb0bf; }
+.city-login input {
+  background: #0d141b; color: #eaf2f8; border: 1px solid #243040; border-radius: 4px;
+  padding: 0.5rem 0.6rem; font: inherit; font-size: 0.86rem;
+}
+.city-login button { align-self: flex-start; }
+
+@media (max-width: 640px) {
+  .city-stores, .city-actions { grid-template-columns: 1fr; }
+}
+
+.home-city {
+  position: absolute; top: 14px; left: 16px;
+  background: var(--panel-bg); border: 1px solid var(--panel-border);
+  border-radius: 999px; padding: 6px 14px; font-size: 12px; color: var(--text);
+  text-decoration: none;
+}
+.home-city:hover { border-color: #3d5c79; }

@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -7,6 +8,7 @@ from uuid import UUID
 
 import psycopg
 from fastapi import Depends, FastAPI, Header, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -40,6 +42,29 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Project Exilium", version="0.1.0", lifespan=lifespan)
 # The world map is several MB of JSON; compress it (and any other large payload).
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# The viewer is a static site on its own host, so the city screen is cross-origin BY DESIGN:
+# the planet ships as a file and only the authoritative state comes from here. That is the
+# shape the downloadable client wants too, so the browser has to be told it is allowed.
+#
+# Named origins, never "*". Credentials travel in an Authorization header rather than a
+# cookie, so a wildcard would not be refused by the browser -- it would simply let any page
+# on the internet spend a token it had got hold of, which is a worse failure for being quiet.
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PUT"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+    max_age=600,
+)
 bearer = HTTPBearer(auto_error=False)
 
 

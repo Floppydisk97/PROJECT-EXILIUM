@@ -8,6 +8,9 @@ export default function Home() {
     <main>
       <Globe />
       <WorldStatus />
+      {/* La sola pagina che parla col server autoritativo. Sta qui perche' una schermata che
+          nessuno trova vale quanto una che non esiste. */}
+      <a className="home-city" href="/citta">La tua colonia →</a>
     </main>
   );
 }

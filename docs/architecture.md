@@ -603,6 +603,55 @@ confisca.
 E la politica ora sposta le risorse invece della lega -- senza, il voto, che e' l'unica cosa
 condivisa fra tutti i giocatori, sarebbe diventato decorativo.
 
+## La schermata della citta'
+
+E' la prima pagina del visore che NON puo' essere statica, e vale la pena dire perche'.
+
+Il pianeta e' un file e il terreno della colonia e' una funzione di quel file: nessuno dei due
+ha bisogno di qualcosa di sveglio. Una CITTA' si': magazzini, livello e cio' che sta facendo
+sono DECISI dal server, e calcolarli qui significherebbe inventarli. Quindi questa e' l'unica
+parte del visore che dipende da un'istanza in piedi -- di proposito, e solo qui.
+
+    globo e terreno   ->  file statici, niente da svegliare
+    la tua colonia    ->  API autenticata, cross-origin per progetto
+
+### Il risveglio non e' un errore
+
+`lib/patience.ts` era stato scritto per il globo e poi tolto quando il globo smise di avere
+un server davanti. Torna qui, dov'e' davvero necessario: la pazienza si conta a OROLOGIO,
+perche' un'istanza addormentata risponde subito con un 5xx e contare i tentativi brucia un
+minuto e mezzo di budget in diciotto secondi.
+
+E un 401 NON si ritenta: un token sbagliato resta sbagliato per quanto si bussi, e novanta
+secondi di attesa non direbbero al giocatore nient'altro che "e' rotto".
+
+### Il permesso si da' per nome
+
+Il token viaggia in un header `Authorization`, non in un cookie. Con un permesso aperto il
+browser non rifiuterebbe nulla: lascerebbe semplicemente che qualsiasi pagina di internet
+spenda un token di cui sia venuta in possesso. E' un difetto peggiore proprio perche'
+silenzioso, quindi `ALLOWED_ORIGINS` elenca origini e non contiene mai un asterisco.
+
+### Due domande, e sono aritmetica
+
+La schermata esiste per rispondere a due cose: **quando mi fermo** e **cosa mi manca**. Sono
+calcoli, e un calcolo sbagliato dentro un componente non si vede -- si legge come un numero
+plausibile. Quindi stanno in `city/format.ts`, fuori dal disegno e sotto test.
+
+    Cibo     105    pieno fra 26 h
+    Legname   40    pieno fra 5 giorni
+    Pietra    40    pieno fra 5 giorni
+
+Il primo numero e' cio' che hai; il secondo e' la meta' che rende accettabile lo stallo in un
+mondo che cammina mentre dormi.
+
+### Una cosa trovata guardandola
+
+La pagina e' pre-renderizzata a build time, dove non esistono ne' `localStorage` ne'
+l'indirizzo del server. Decidere cosa mostrare prima di essere nel browser significa
+disegnare una cosa e poi un'altra: React lo chiama disallineamento di idratazione e si vedeva
+come un errore in console a ogni caricamento. Ora il primo disegno e' vuoto di proposito.
+
 ## Via il tick: il mondo e' continuo
 
 Il tick era il momento in cui le cose accadevano: gli ordini si accodavano a mezzanotte, ogni
