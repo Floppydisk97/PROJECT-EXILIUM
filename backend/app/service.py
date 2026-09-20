@@ -295,7 +295,7 @@ def land(conn, city_id, owner_id, tile_id: int) -> dict:
         raise DomainError(409, "not_dry_land")
 
     now = db.database_now(conn)
-    seed = citygen.seed_for(world_seed(conn), tile_id, city_id)
+    seed = citygen.seed_for(world_seed(conn), tile_id)
     try:
         conn.execute(
             "UPDATE cities SET tile_id = %s, landed_at = %s, map_seed = %s WHERE id = %s",

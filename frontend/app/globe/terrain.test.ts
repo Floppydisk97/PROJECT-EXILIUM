@@ -54,6 +54,7 @@ function world(tiles: TileSpec[], corners: number[], rivers: Partial<WorldMap["r
       rainfall: tiles.map(() => 800),
       biome: tiles.map((t) => biome(t.biome)),
       river_flow: tiles.map((t) => t.river_flow ?? 0),
+      coastal: tiles.map(() => 0),
       landmass_size: tiles.map(() => 2),
       neighbor_count: tiles.map((t) => t.ring.length),
       ring, ring_offset,

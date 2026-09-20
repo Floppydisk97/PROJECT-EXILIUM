@@ -118,3 +118,47 @@ Un porting a Godot dovrà esportare dal database, non leggere un save.
 
 **Da rivedere se.** Nasce una modalità offline o single-player, oppure serve trasferire un
 mondo fra installazioni diverse. In quel momento `snapshot()` è il punto di partenza.
+
+---
+
+## ADR-005 — Il terreno della colonia si genera sul client
+
+**Decisione.** La mappa di una colonia è generata **nel browser**, da `app/colony/citygen.ts`,
+a partire dal file del pianeta e dall'identificativo della casella. Il backend conserva la
+stessa definizione in `app/citygen.py` e resta l'autorità su tutto ciò che viene *deciso*
+(atterraggio, costruzioni, voto); il client la usa per *guardare*.
+
+**Motivazione.** Il visore è un sito statico (ADR sul cold start) e il pianeta è già un file.
+Se anche la colonia è una funzione pura di quel file, l'intera catena «scegli una casella →
+vedi su cosa stai scendendo» funziona senza nulla di sveglio da nessuna parte, e senza
+aspettare il risveglio di un servizio gratuito. La strada precedente — sei mappe cucinate dal
+backend e messe accanto alla pagina — mostrava sempre le stesse sei: proprio la casella che si
+stava scegliendo era l'unica che non si poteva guardare.
+
+**Alternative considerate.**
+1. *Un endpoint `GET /tiles/{id}/ground`.* Una sola definizione, nessun rischio di divergenza.
+   Scartata per ora: rimette un servizio sveglio nel percorso del semplice guardare, che è
+   esattamente quello che si è appena tolto. Resta la strada naturale quando ci sarà un client
+   di gioco vero con una sessione già aperta.
+2. *Generare sul client e basta, togliendo la copia Python.* Scartata: il server deve poter
+   validare dove una costruzione può stare, e non può chiederlo al client.
+3. *Reimplementare in JavaScript il generatore di Python* (Mersenne Twister e `gauss`).
+   Scartata: centinaia di righe da tenere allineate a un dettaglio implementativo di CPython.
+
+**Rischi e criticità.** Una definizione in due lingue è il modo classico di scrivere un bug
+silenzioso: divergono di un valore e il client mostra un posto che sul server non esiste.
+Due cose lo tengono a bada, e vanno mantenute entrambe.
+- *Portabilità per costruzione*: `prng.py` / `prng.ts` sono mulberry32 su interi a 32 bit, seme
+  FNV-1a, direzioni per campionamento sulla sfera (niente logaritmi, dove due linguaggi possono
+  differire sull'ultimo bit).
+- *Equivalenza come test*: `colony/reference.json` è scritto da Python e `citygen.test.ts`
+  confronta cella per cella. Cambiare una costante da una parte sola fa cadere la suite.
+
+Resta un rischio non coperto: il generatore è **pubblico**. Chi legge il bundle può calcolare
+il terreno di ogni casella del pianeta prima di chiunque altro. Oggi è irrilevante — il gioco
+è in sviluppo privato — e a regime va accettato (è informazione derivabile comunque) oppure
+tolto passando all'alternativa 1 per le caselle non ancora rivelate.
+
+**Da rivedere se.** Nasce il client scaricabile con una sessione persistente: lì la latenza non
+c'è più e l'alternativa 1 elimina la duplicazione. Oppure se l'equivalenza cella-per-cella
+comincia a costare più di quanto valga.

@@ -7,9 +7,16 @@ import {
 } from "./ground";
 
 /** Pixels per cell in the terrain buffer. More than one, because a flat square per cell reads
- *  as a spreadsheet: the grain and the blended edges between two grounds are what make it look
- *  like earth, and they need somewhere to live. */
-export const SUB = 4;
+ *  as a spreadsheet: the blended edges between two grounds need somewhere to live. Two rather
+ *  than four, because a colony is 768 cells a side now -- four would be a 3072x3072 buffer,
+ *  9.4 megapixels, past what Safari on a phone will allocate. The fine texture is laid over
+ *  the top at screen resolution anyway, so the buffer only owes us the blending.
+ *
+ *  Below this many pixels per cell nothing standing on the ground is drawn: at a wide zoom a
+ *  viewport covers a hundred thousand cells, and a hundred thousand sprites a frame is a
+ *  slideshow. The terrain already carries the vegetation in its colour. */
+export const SUB = 2;
+export const PROP_ZOOM = 7;
 
 /** Paint the ground into an offscreen buffer, once. It never changes, so panning and zooming
  *  are one `drawImage` rather than sixteen thousand fills. */
@@ -99,6 +106,7 @@ export function paintProps(
   view: { x0: number; y0: number; x1: number; y1: number; scale: number },
 ): number {
   const size = ground.size;
+  if (view.scale < PROP_ZOOM) return 0;
   const x0 = Math.max(0, Math.floor(view.x0) - 1);
   const x1 = Math.min(size - 1, Math.ceil(view.x1) + 1);
   const y0 = Math.max(0, Math.floor(view.y0) - 1);

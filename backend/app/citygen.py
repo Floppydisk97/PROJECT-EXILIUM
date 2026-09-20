@@ -21,13 +21,12 @@ from __future__ import annotations
 
 import hashlib
 import math
-import random
 from dataclasses import dataclass
 
-from app.worldgen import BandNoise
+from app.prng import Prng
 
-SIZE = 128                  # cells per side: a colony's worth of ground, ~16k cells
-CELL_METRES = 8             # so a map is roughly a kilometre across
+SIZE = 768                  # cells per side: ~590k cells, about six kilometres across
+CELL_METRES = 8
 
 # How far a bank stays fertile, and by how much. A river or a shore is the strongest thing a
 # site can have: it is what makes a desert worth landing on at all.
@@ -106,18 +105,53 @@ class CityMap:
         return sum(1 for g in self.ground if g in dry)
 
 
-def seed_for(world_seed: str, tile_id: int, city_id) -> str:
-    """The seed a landing rolls. It mixes the city, so two colonies on the same ground would
-    still get different ground -- and the world seed, so a regenerated planet does not hand
-    out the maps of the old one."""
-    material = f"{world_seed}:{tile_id}:{city_id}".encode()
-    return hashlib.sha256(material).hexdigest()[:32]
+def seed_for(world_seed: str, tile_id: int) -> str:
+    """The seed a tile's ground grows from.
+
+    The TILE decides, not the colony that lands on it. An earlier version mixed the city id,
+    so the ground was rolled at the moment of landing -- which meant nobody could ever know
+    what they were landing on until they had landed. Scouting a site and then taking it is a
+    better game than taking a site and then finding out, and it costs nothing: with one colony
+    to a tile there is no case where two colonies would have wanted different ground from the
+    same place.
+
+    The world seed is in there so a regenerated planet does not hand out the old one's maps.
+    """
+    return hashlib.sha256(f"{world_seed}:{tile_id}".encode()).hexdigest()[:32]
 
 
-def _rng(seed: str, salt: str) -> random.Random:
-    return random.Random(int.from_bytes(
-        hashlib.sha256(f"{seed}:{salt}".encode()).digest()[:8], "big"
-    ))
+def _rng(seed: str, salt: str) -> Prng:
+    return Prng(f"{seed}:{salt}")
+
+
+class PlaneNoise:
+    """Band-limited noise: a sum of directional sinusoids with seeded directions, frequencies
+    and phases. Continuous everywhere, so the plane this samples is valid two-dimensional
+    noise.
+
+    Its own, rather than `worldgen.BandNoise`, for one reason: this one has a twin in
+    TypeScript and the two must agree number for number. That rules out anything built on a
+    language's own generator, so the directions come from `Prng.direction` and the whole thing
+    is spelled out in arithmetic both languages do identically.
+    """
+
+    __slots__ = ("terms", "total")
+
+    def __init__(self, rng: Prng, octaves: int, base_freq: float):
+        self.terms = []
+        amp, freq, total = 1.0, base_freq, 0.0
+        for _ in range(octaves):
+            self.terms.append((rng.direction(), freq, rng.uniform(0.0, 2 * math.pi), amp))
+            total += amp
+            amp *= 0.55
+            freq *= 1.9
+        self.total = total
+
+    def at(self, x: float, y: float) -> float:
+        value = 0.0
+        for (dx, dy, _dz), freq, phase, amp in self.terms:
+            value += amp * math.sin(freq * (dx * x + dy * y) + phase)
+        return value / self.total
 
 
 def _smoothstep(t: float) -> float:
@@ -132,10 +166,10 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     # Relief. A tile high on the planet lands you somewhere steep; a coastal plain is a plain.
     # The planet's elevation is a real input, not flavour: it is why a mountain colony has to
     # be built around its rock and a delta colony does not.
-    relief = BandNoise(_rng(seed, "relief"), 5, 3.2)
-    detail = BandNoise(_rng(seed, "detail"), 3, 11.0)
-    damp = BandNoise(_rng(seed, "damp"), 4, 4.5)
-    grain = BandNoise(_rng(seed, "grain"), 3, 9.0)
+    relief = PlaneNoise(_rng(seed, "relief"), 5, 3.2)
+    detail = PlaneNoise(_rng(seed, "detail"), 3, 11.0)
+    damp = PlaneNoise(_rng(seed, "damp"), 4, 4.5)
+    grain = PlaneNoise(_rng(seed, "grain"), 3, 9.0)
 
     altitude_roughness = 0.6 + min(2.0, max(0.0, site.elevation) / 2200.0)
     amplitude = 320.0 * rule.roughness * altitude_roughness      # centimetres of relief
@@ -167,9 +201,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             # size, and a map rendered at a different resolution is the same place.
             u = (x / (size - 1)) * 2.0 - 1.0
             v = (y / (size - 1)) * 2.0 - 1.0
-            point = (u, v, 0.0)
-
-            h = relief.at(point) + 0.35 * detail.at(point)
+            h = relief.at(u, v) + 0.35 * detail.at(u, v)
             metres = h * amplitude
 
             # Shore: a signed distance from the map's edge in the rolled direction.
@@ -185,7 +217,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             # ruled line. Width comes from the planet's own flow -- a great river is wide here.
             if has_river:
                 across = (u * math.cos(river_axis) + v * math.sin(river_axis)) * 100.0
-                across += 14.0 * damp.at(point)
+                across += 14.0 * damp.at(u, v)
                 river_term = (river_width - abs(across)) * 26.0
                 depth_below = max(depth_below, river_term)
                 bank = max(bank, river_term)
@@ -225,7 +257,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
                 name = "rock"
             elif metres < -amplitude * 0.30 and wetness > 0.55:
                 name = "marsh"
-            elif rule.ground == "soil" and grain.at(point) > 0.55:
+            elif rule.ground == "soil" and grain.at(u, v) > 0.55:
                 name = "gravel"
             if name in ("sand", "gravel") and bank > -ALLUVIUM_REACH and not frozen:
                 # What a river leaves on its banks is silt, not the desert it crossed. Without
@@ -256,7 +288,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             # fertile strip nobody could see and nothing grew on: the biome's `cover` of four
             # hundredths applied right up to the water's edge.
             cover = rule.cover + (RIPARIAN_COVER - rule.cover) * riparian
-            cover *= 0.5 + 0.5 * (0.5 + 0.5 * grain.at(point))
+            cover *= 0.5 + 0.5 * (0.5 + 0.5 * grain.at(u, v))
             cell_vegetation = 0
             if cell_fertility > 0:
                 cell_vegetation = max(0, min(100, int(100 * cover * (cell_fertility / 100.0) ** 0.5)))

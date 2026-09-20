@@ -15,6 +15,7 @@ export type TileColumns = {
   river_flow: number[];
   landmass_size: number[];
   neighbor_count: number[];
+  coastal: number[];       // 1 when open water is next door
   ring: number[];          // corner indices, flat
   ring_offset: number[];   // one more entry than there are tiles
 };
@@ -54,6 +55,7 @@ export type Tile = {
   river_flow: number;
   landmass_size: number;
   neighbor_count: number;
+  coastal: boolean;
 };
 
 export const BIOMES: Record<string, { label: string; color: number }> = {

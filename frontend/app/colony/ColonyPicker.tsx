@@ -1,60 +1,83 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ColonyEntry, ColonyManifest, loadColony, loadManifest } from "../lib/colony";
-import type { ColonyGround } from "./ground";
+import { loadPlanet } from "../lib/planet";
+import type { WorldMap } from "../globe/biomes";
+import { tileAt } from "../globe/terrain";
+import { Generated, Site, generate, seedFor } from "./citygen";
 import ColonyView from "./ColonyView";
 
-/** Six demo sites rather than one, because the claim being made is that the biome decides the
- *  ground -- and a viewer that can only show one colony cannot show that at all. */
-export default function ColonyPicker() {
-  const [manifest, setManifest] = useState<ColonyManifest | null>(null);
-  const [ground, setGround] = useState<ColonyGround | null>(null);
-  const [chosen, setChosen] = useState<string | null>(null);
+/** The ground of one tile, generated here rather than asked of a server.
+ *
+ *  The planet is a file and the colony is a function of it, so the whole chain -- pick a tile,
+ *  see what you would be landing on -- runs with nothing awake anywhere. The SERVER remains
+ *  the authority for anything that gets decided; this is for looking, and `citygen.test.ts`
+ *  holds this copy to the server's cell for cell.
+ */
+export default function ColonyPicker({ tileId }: { tileId: number | null }) {
+  const [stage, setStage] = useState("Lettura del pianeta…");
+  const [ground, setGround] = useState<Generated | null>(null);
+  const [tile, setTile] = useState<ReturnType<typeof tileAt> | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    loadManifest()
-      .then((m) => { if (!cancelled) { setManifest(m); setChosen(m.colonies[0]?.name ?? null); } })
-      .catch((error) => { if (!cancelled) setFailure(String(error.message ?? error)); });
-    return () => { cancelled = true; };
-  }, []);
+    (async () => {
+      try {
+        const map: WorldMap = await loadPlanet((received, total) => {
+          if (!cancelled) {
+            setStage(`Lettura del pianeta… ${Math.round((received / Math.max(1, total)) * 100)}%`);
+          }
+        });
+        if (cancelled) return;
 
-  useEffect(() => {
-    if (!manifest || !chosen) return;
-    const entry = manifest.colonies.find((c) => c.name === chosen);
-    if (!entry) return;
-    let cancelled = false;
-    setGround(null);
-    loadColony(entry)
-      .then((g) => { if (!cancelled) setGround(g); })
-      .catch((error) => { if (!cancelled) setFailure(String(error.message ?? error)); });
-    return () => { cancelled = true; };
-  }, [manifest, chosen]);
+        const index = tileId === null ? -1 : map.tiles.id.indexOf(tileId);
+        if (index < 0) {
+          setFailure("Quella casella non esiste su questo pianeta.");
+          return;
+        }
+        const chosen = tileAt(map, index);
+        if (chosen.elevation < 0 || ["ocean", "lake", "sea_ice"].includes(chosen.biome)) {
+          setFailure("Su quella casella c'è acqua: nessuna colonia può scendere lì.");
+          return;
+        }
+        setTile(chosen);
 
-  const entry: ColonyEntry | undefined = manifest?.colonies.find((c) => c.name === chosen);
+        setStage("Ricognizione del terreno…");
+        const site: Site = {
+          biome: chosen.biome, elevation: chosen.elevation, temperature: chosen.temperature,
+          rainfall: chosen.rainfall, river_flow: chosen.river_flow, coastal: chosen.coastal,
+        };
+        const seed = await seedFor(map.seed, chosen.id);
+        // A frame first, so the message is on screen before the main thread goes away for a
+        // couple of seconds: 590k cells is real work and a silent freeze looks like a crash.
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const made = generate(seed, site);
+        if (!cancelled) setGround(made);
+      } catch (error) {
+        if (!cancelled) setFailure(String((error as Error).message ?? error));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tileId]);
 
   return (
     <main className="colony-page">
       <header className="colony-head">
-        <h1>Sito di atterraggio</h1>
-        <nav className="colony-tabs">
-          {manifest?.colonies.map((c) => (
-            <button key={c.name} type="button"
-                    className={c.name === chosen ? "on" : undefined}
-                    onClick={() => setChosen(c.name)}>
-              {c.label}
-            </button>
-          ))}
-        </nav>
+        <a className="colony-back" href="/">← Pianeta</a>
+        <h1>{tile ? `Casella ${tile.id}` : "Sito di atterraggio"}</h1>
+        {tile && (
+          <span className="colony-coords">
+            {tile.lat.toFixed(2)}°, {tile.lon.toFixed(2)}°
+          </span>
+        )}
       </header>
 
       {failure && <p className="colony-note">{failure}</p>}
-      {!failure && !ground && <p className="colony-note">Ricognizione del terreno…</p>}
+      {!failure && !ground && <p className="colony-progress">{stage}</p>}
       {ground && <ColonyView ground={ground} />}
 
-      {ground && entry && (
+      {ground && (
         <footer className="colony-facts">
           <span><b>{ground.site.biome.replace(/_/g, " ")}</b></span>
           <span>{ground.site.elevation} m</span>
@@ -63,7 +86,11 @@ export default function ColonyPicker() {
           {ground.site.river_flow > 0 && <span>fiume {ground.site.river_flow}</span>}
           {ground.site.coastal && <span>costa</span>}
           <span className="colony-spacer" />
-          <span><b>{ground.buildable.toLocaleString("it-IT")}</b> celle edificabili su {(ground.size ** 2).toLocaleString("it-IT")}</span>
+          <span>
+            <b>{ground.buildable.toLocaleString("it-IT")}</b> celle edificabili su{" "}
+            {(ground.size ** 2).toLocaleString("it-IT")}
+          </span>
+          <span>{((ground.size * ground.cell_metres) / 1000).toFixed(1)} km di lato</span>
         </footer>
       )}
     </main>

@@ -319,18 +319,64 @@ E il server statico locale non risolveva gli URL puliti: l'export scrive `coloni
 visitatore chiede `/colonia`. Un host statico vero lo fa da se', il nostro no, e la pagina
 dava 404 col file li' accanto.
 
-### Da dove arriva il terreno
+### Da dove arriva il terreno: dal client
 
-Da un file cucinato, oggi, perche' il visore e' statico e non ha un'API davanti. Il renderer
-pero' non lo sa: prende un payload e disegna. Il giorno che il client del gioco chiedera' gli
-stessi byte a `GET /cities/{id}/ground`, del disegno non cambia una riga.
+Prima era un file cucinato dal backend e messo accanto alla pagina. Sei mappe, sempre quelle
+sei: non si poteva guardare la casella che si stava scegliendo, che e' l'unica cosa per cui
+serve guardare. Ora il terreno lo genera IL CLIENT, dal pianeta che ha gia' in mano.
+
+    globo -> "Scendi sul terreno" -> /colonia?tile=N -> il pianeta (file) -> generate(seme, sito)
+
+Niente API, niente asset per colonia, niente nulla di sveglio da nessuna parte: il pianeta e'
+gia' un file statico, e la colonia e' una funzione pura di quel file. Il server resta l'autorita'
+su tutto cio' che viene DECISO -- atterrare, costruire, votare; questo e' per GUARDARE.
+
+Il prezzo e' una definizione in due lingue, che di solito e' come si scrive un bug silenzioso:
+due generatori che divergono di un valore e il client mostra un posto che sul server non
+esiste. Due cose lo impediscono.
+
+**Il generatore e' portabile per costruzione.** Niente `random` di Python, niente Mersenne
+Twister da reimplementare in JavaScript: `app/prng.py` e `colony/prng.ts` sono mulberry32 su
+interi a 32 bit, con il seme da FNV-1a e le direzioni prese per campionamento sulla sfera --
+scelto perche' non usa logaritmi, dove due linguaggi possono differire sull'ultimo bit.
+
+**E l'equivalenza e' un test.** Python scrive `colony/reference.json` -- cinque siti veri,
+64x64 celle ciascuno -- e `citygen.test.ts` confronta CELLA PER CELLA terreno, quota,
+fertilita' e vegetazione. Cambiare una costante da una parte sola fa cadere la suite: e' lo
+stesso arnese che tiene insieme le due strade verso il pianeta.
 
 ## Atterrare: la casella smette di essere scenografia
 
 Il pianeta decide una cosa sola: quale esagono. E' la scala a cui il mondo condiviso viene
 deciso, e non e' la scala a cui una colonia si gioca. Atterrare apre una seconda mappa -- un
-quadrato di terreno da 128x128 celle, circa un chilometro di lato, generato per quella colonia
-e per nessun'altra.
+quadrato di terreno da 768x768 celle -- 590.000 celle, circa SEI chilometri di lato -- che la
+casella si porta dietro.
+
+### Sei chilometri, non uno
+
+Un chilometro di lato era il terreno di una scenetta, non di una colonia: ci si costruisce per
+mezz'ora e i bordi sono gia' li'. Sei chilometri sono 590.000 celle, trentasei volte l'area di
+prima, e il costo si vede in tre punti -- tutti e tre misurati, non stimati.
+
+    generazione            2,5 s in Python (una volta, poi la mappa e' in memoria)
+    buffer del terreno     1536x1536 px a 2 px per cella -- 9 MB, dentro il limite di Safari su iPhone
+    sprite a schermo       nessuna sotto i 7 px per cella
+
+Il buffer e' sceso da quattro pixel per cella a due: quattro avrebbero voluto 3072x3072, 9,4
+megapixel, oltre quello che un telefono alloca. Non si perde nulla, perche' la grana fine si
+stende sopra alla risoluzione dello schermo e al buffer resta solo la sfumatura tra due terreni.
+
+E sotto i sette pixel per cella non si disegna piu' niente di eretto: da lontano una finestra
+copre centomila celle, e centomila sprite per fotogramma sono una presentazione. La vegetazione
+a quella distanza la porta gia' il colore del terreno.
+
+### Si guarda prima di scendere
+
+Il seme di una casella non mescola piu' la colonia che ci arriva: lo decide LA CASELLA. Prima
+il dado si tirava nell'istante dell'atterraggio, quindi nessuno poteva sapere su cosa stesse
+scendendo finche' non era sceso. Scegliere un sito e poi prenderlo e' un gioco migliore di
+prenderlo e poi scoprirlo, e non costa niente: con una colonia per casella non esiste il caso
+in cui due colonie vorrebbero terreni diversi dallo stesso posto.
 
 ### Casuale una volta, poi per sempre
 
@@ -339,11 +385,11 @@ persistente: due giocatori vedrebbero posti diversi e quello che hai costruito i
 altrove oggi. Quindi il dado si tira UNA volta, all'atterraggio, e cio' che si conserva e' il
 SEME.
 
-    16.384 celle per colonia, salvate  ->  80 milioni di righe per il mondo da 5000 giocatori
-    il seme che le genera              ->  32 caratteri
+    590.000 celle per colonia, salvate  ->  3 miliardi di righe per il mondo da 5000 giocatori
+    il seme che le genera               ->  32 caratteri
 
-La mappa e' una funzione pura del seme e di cosa il pianeta dice del sito, e si rigenera in sei
-centesimi di secondo. Quando le colonie potranno modificare il terreno, le modifiche saranno
+La mappa e' una funzione pura del seme e di cosa il pianeta dice del sito, e si rigenera in due
+secondi e mezzo in Python -- meno nel browser, che e' dove ora viene generata davvero. Quando le colonie potranno modificare il terreno, le modifiche saranno
 righe a parte sopra questa base: come un salvataggio di gioco, che non riscrive il mondo ma
 cio' che gli e' stato fatto.
 
@@ -354,9 +400,9 @@ copertura vegetale, asprezza del rilievo, quanto volentieri le conche si riempio
 temperatura e la quota del pianeta muovono poi quei valori, quindi due deserti non sono lo
 stesso deserto. Su tre caselle vere di un pianeta vero:
 
-    palude tropicale, fiume grande, costa      526 celle edificabili su 16.384, fertilita' 25
-    deserto a 1450 m                        16.021 celle edificabili,           fertilita'  0
-    macchia arida sulla costa               10.854 celle edificabili,           fertilita' 12
+    palude tropicale, fiume grande, costa    19.180 celle edificabili su 589.824, fertilita' 43
+    deserto a 1450 m                        589.287 celle edificabili,            fertilita'  2
+    macchia arida sulla costa               393.232 celle edificabili,            fertilita' 20
 
 Spazio o cibo. E' questo che rende la scelta del sito una decisione invece di una formalita'.
 

@@ -15,6 +15,8 @@ from app.mapservice import generate_and_store
 from app.service import DomainError, city_ground, land, provision
 
 FREQUENCY = 12       # 1442 tiles: enough for coasts, rivers and several biomes
+SMALL = 96           # a test-sized colony: production is 768 a side and three seconds, and
+                     # these assertions are about shape, not about scale
 
 
 def world():
@@ -129,17 +131,21 @@ def test_the_ground_is_not_stored_and_comes_back_the_same_every_time(database):
     assert tables == 0
 
 
-def test_two_colonies_on_identical_ground_get_different_maps(database):
-    """Random at landing. The seed mixes the city, so the same tile twice -- which cannot
-    happen now, but will the day a colony is abandoned -- is not the same map twice."""
+def test_the_tile_decides_the_ground_not_the_colony(database):
+    """A change of rule, deliberate. The seed used to mix the city id, so the ground was rolled
+    at the moment of landing and nobody could know what they were taking until they had taken
+    it. Scouting a site and then choosing it is a better game -- and it costs nothing, because
+    one colony to a tile means two colonies never want different ground from the same place.
+
+    It is also what lets the planet viewer show you the ground BEFORE you commit to it.
+    """
     world()
     tile = a_land_tile()
-    first = citygen.seed_for("Approdo", tile, uuid4())
-    second = citygen.seed_for("Approdo", tile, uuid4())
-    assert first != second
-    # ... and a different world hands out different ground for the same tile and colony.
-    city = uuid4()
-    assert citygen.seed_for("Approdo", tile, city) != citygen.seed_for("Altrove", tile, city)
+    assert citygen.seed_for("Approdo", tile) == citygen.seed_for("Approdo", tile)
+    # A different tile is a different place...
+    assert citygen.seed_for("Approdo", tile) != citygen.seed_for("Approdo", tile + 1)
+    # ... and a different world does not hand out the old one's ground.
+    assert citygen.seed_for("Approdo", tile) != citygen.seed_for("Altrove", tile)
 
 
 def test_an_unlanded_colony_has_no_ground(database):
@@ -157,9 +163,9 @@ def test_the_biome_really_shapes_the_ground(database):
     ordering rather than on exact numbers, because the numbers are balancing knobs in
     BIOME_RULES and are meant to be turned.
     """
-    swamp = citygen.generate("x", citygen.Site("tropical_swamp", 40, 26.0, 2400, 0, False))
-    desert = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False))
-    ice = citygen.generate("x", citygen.Site("ice_sheet", 900, -30.0, 120, 0, False))
+    swamp = citygen.generate("x", citygen.Site("tropical_swamp", 40, 26.0, 2400, 0, False), SMALL)
+    desert = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False), SMALL)
+    ice = citygen.generate("x", citygen.Site("ice_sheet", 900, -30.0, 120, 0, False), SMALL)
 
     assert desert.buildable > swamp.buildable * 3
     assert _mean(swamp.fertility) > _mean(desert.fertility) * 10
@@ -170,8 +176,8 @@ def test_the_biome_really_shapes_the_ground(database):
 def test_a_river_makes_its_banks_worth_landing_on(database):
     """The one reason to land in a desert. Without it the site looked interesting on the
     planet and was worthless on the ground."""
-    dry = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False))
-    watered = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 3100, False))
+    dry = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False), SMALL)
+    watered = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 3100, False), SMALL)
     assert max(watered.fertility) > 8 * max(dry.fertility)
     assert max(watered.vegetation) > 10 * max(dry.vegetation)
     # The bank is silt, not the sand the river crossed -- which is what stops the bonus being

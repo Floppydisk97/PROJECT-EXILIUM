@@ -8,14 +8,14 @@ const NAMES = ["deep_water", "water", "marsh", "sand", "soil", "gravel", "rock",
 
 function colony(cells: { ground: number; fertility: number; vegetation: number }[], size = 4): ColonyGround {
   return {
-    name: "t", label: "T", seed: "seed", size, cell_metres: 8, buildable: 0,
+    seed: "seed", size, cell_metres: 8, buildable: 0,
     site: { biome: "temperate_forest", elevation: 100, temperature: 10, rainfall: 900, river_flow: 0, coastal: false },
     ground_names: NAMES,
     cells: {
-      ground: cells.map((c) => c.ground),
-      height: cells.map(() => 0),
-      fertility: cells.map((c) => c.fertility),
-      vegetation: cells.map((c) => c.vegetation),
+      ground: Uint8Array.from(cells, (c) => c.ground),
+      height: Int32Array.from(cells, () => 0),
+      fertility: Uint8Array.from(cells, (c) => c.fertility),
+      vegetation: Uint8Array.from(cells, (c) => c.vegetation),
     },
   };
 }

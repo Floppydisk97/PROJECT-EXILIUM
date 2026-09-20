@@ -161,6 +161,7 @@ def build_model(meta: dict, rows: list, total: int, rivers: dict) -> dict:
     river_flow: list[int] = []
     landmass_size: list[int] = []
     neighbor_count: list[int] = []
+    coastal: list[int] = []
     ring: list[int] = []
     ring_offset: list[int] = [0]
     land_count = 0
@@ -175,6 +176,7 @@ def build_model(meta: dict, rows: list, total: int, rivers: dict) -> dict:
         river_flow.append(row["river_flow"])
         landmass_size.append(row["landmass_size"])
         neighbor_count.append(row["neighbor_count"])
+        coastal.append(1 if row["coastal"] else 0)
         if row["elevation"] >= 0 and row["biome"] != "lake":
             land_count += 1
         for point in row["polygon"]:
@@ -202,7 +204,8 @@ def build_model(meta: dict, rows: list, total: int, rivers: dict) -> dict:
             "id": ids, "center": center, "elevation": elevation,
             "temperature": temperature, "rainfall": rainfall, "biome": biome,
             "river_flow": river_flow, "landmass_size": landmass_size,
-            "neighbor_count": neighbor_count, "ring": ring, "ring_offset": ring_offset,
+            "neighbor_count": neighbor_count, "coastal": coastal,
+            "ring": ring, "ring_offset": ring_offset,
         },
     }
 
@@ -236,9 +239,16 @@ def read_map(conn) -> dict:
     # reads them, and at three numbers per tile they were 13 per cent of the response (15 per
     # cent gzipped, which is what actually travels). They stay in the table: recomputing them
     # means regenerating the world, and the client could want them again.
+    # `coastal` travels with the tile because the client has no adjacency -- the render model
+    # sends a neighbour COUNT, not their ids -- and without it it cannot tell whether landing
+    # there means having the sea beside you. It is a property of the neighbourhood, so either
+    # it is sent or it is lost.
     select = """SELECT t.id, t.cx, t.cy, t.cz, t.elevation, t.temperature, t.rainfall,
                        t.biome, t.river_flow, t.landmass_size,
-                       COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon
+                       COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon,
+                       EXISTS (SELECT 1 FROM world_tiles n
+                               WHERE n.map_id = t.map_id AND n.id = ANY(t.neighbors)
+                                 AND n.biome IN ('ocean', 'sea_ice')) AS coastal
                 FROM world_tiles t WHERE t.map_id = 1 AND """
     rows = conn.execute(
         select + "(t.elevation >= 0 OR t.biome = 'sea_ice')"

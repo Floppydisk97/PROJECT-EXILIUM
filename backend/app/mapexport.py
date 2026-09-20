@@ -46,9 +46,12 @@ def _rows_from_world(world: worldgen.World) -> list[dict]:
     shared by exact value. The same `_round` is applied here for that reason.
     """
     shelf: set[int] = set()
+    water = set()
     for tile in world.tiles:
         if tile.elevation >= 0:
             shelf.update(tile.neighbors)
+        if tile.biome in ("ocean", "sea_ice"):
+            water.add(tile.id)
 
     rows = []
     for tile in world.tiles:
@@ -64,6 +67,7 @@ def _rows_from_world(world: worldgen.World) -> list[dict]:
             "rainfall": tile.rainfall, "biome": tile.biome,
             "river_flow": tile.river_flow, "landmass_size": tile.landmass_size,
             "neighbor_count": len(tile.neighbors),
+            "coastal": any(n in water for n in tile.neighbors),
             "polygon": [mapservice._round(p) for p in tile.polygon],
         })
     rows.sort(key=lambda row: row["id"])

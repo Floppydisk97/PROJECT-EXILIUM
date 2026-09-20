@@ -136,6 +136,10 @@ export function tileAt(map: WorldMap, index: number): Tile {
     river_flow: map.tiles.river_flow[index],
     landmass_size: map.tiles.landmass_size[index],
     neighbor_count: map.tiles.neighbor_count[index],
+    // A property of the NEIGHBOURHOOD, so it has to travel: the render model sends a
+    // count of neighbours, not their ids, and without this the client could not know
+    // whether landing here means having the sea next door.
+    coastal: map.tiles.coastal[index] === 1,
   };
 }
 

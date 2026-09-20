@@ -114,13 +114,6 @@ html, body {
   padding: 0.7rem 1rem 0.5rem; border-bottom: 1px solid #1d2733;
 }
 .colony-head h1 { font-size: 1rem; letter-spacing: 0.04em; margin: 0; opacity: 0.85; }
-.colony-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-.colony-tabs button {
-  background: #16202b; color: #b9c6d2; border: 1px solid #243040; border-radius: 999px;
-  padding: 0.25rem 0.75rem; font: inherit; font-size: 0.82rem; cursor: pointer;
-}
-.colony-tabs button:hover { background: #1d2a37; }
-.colony-tabs button.on { background: #2b4258; color: #eaf2f8; border-color: #3d5c79; }
 .colony-stage { position: relative; flex: 1; min-height: 0; }
 .colony-canvas { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .colony-canvas:active { cursor: grabbing; }
@@ -138,3 +131,13 @@ html, body {
 .colony-spacer { flex: 1; }
 .colony-note { padding: 1.2rem; color: #9fb0bf; }
 @media (max-width: 640px) { .colony-head h1 { width: 100%; } }
+
+.globe-land {
+  display: block; margin-top: 0.6rem; text-align: center; text-decoration: none;
+  background: #2b4258; color: #eaf2f8; border: 1px solid #3d5c79; border-radius: 4px;
+  padding: 0.4rem 0.6rem; font-size: 0.86rem;
+}
+.globe-land:hover { background: #35506b; }
+.colony-back { color: #9fb0bf; text-decoration: none; font-size: 0.82rem; }
+.colony-back:hover { color: #dbe6ef; }
+.colony-progress { padding: 1.2rem; color: #9fb0bf; }

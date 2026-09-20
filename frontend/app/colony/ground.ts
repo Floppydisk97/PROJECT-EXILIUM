@@ -6,20 +6,12 @@
 // like art -- and because a colony that redrew itself differently on every pan would not be a
 // place, it would be a screensaver.
 
-export type ColonyGround = {
-  name: string;
-  label: string;
-  seed: string;
-  size: number;
-  cell_metres: number;
-  buildable: number;
-  site: {
-    biome: string; elevation: number; temperature: number;
-    rainfall: number; river_flow: number; coastal: boolean;
-  };
-  ground_names: string[];
-  cells: { ground: number[]; height: number[]; fertility: number[]; vegetation: number[] };
-};
+import type { Generated } from "./citygen";
+
+/** What the drawing needs to know: exactly what the generator produces. The ground is no
+ *  longer a file that was baked somewhere else -- it is generated here, from the planet and
+ *  the tile -- so the renderer and the generator share one type rather than two that agree. */
+export type ColonyGround = Generated;
 
 /** Ground colours and the words for them. Order follows `citygen.GROUNDS`. */
 export const GROUND_STYLE: Record<string, { color: [number, number, number]; label: string }> = {

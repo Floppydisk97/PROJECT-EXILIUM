@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ColonyGround } from "./ground";
+import type { Generated } from "./citygen";
 import { describe, seedNumber } from "./ground";
 import { makeGrain, paintProps, paintTerrain } from "./draw";
 
-const MIN_SCALE = 3;        // pixels per cell, zoomed all the way out
+// Zoomed all the way out means the whole colony on screen, so the floor is not a constant:
+// at 768 cells a side, six kilometres of ground in an 800-pixel window is about one pixel per
+// cell, and a fixed floor of three would have made a third of the map unreachable.
 const MAX_SCALE = 42;
 
-export default function ColonyView({ ground }: { ground: ColonyGround }) {
+export default function ColonyView({ ground }: { ground: Generated }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hover, setHover] = useState<string | null>(null);
 
@@ -35,12 +37,19 @@ export default function ColonyView({ ground }: { ground: ColonyGround }) {
       canvas!.height = Math.round(height * dpr);
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (scale === 0) {
-        scale = Math.max(MIN_SCALE, Math.min(width, height) / ground.size);
+        scale = minScale();
         originX = ground.size / 2 - width / (2 * scale);
         originY = ground.size / 2 - height / (2 * scale);
       }
       clampOrigin();
       schedule();
+    }
+
+    /** The widest the camera goes: the whole colony inside the shorter side of the window. */
+    function minScale(): number {
+      const width = canvas!.clientWidth;
+      const height = canvas!.clientHeight;
+      return Math.min(width, height) / ground.size;
     }
 
     function clampOrigin() {
@@ -122,7 +131,7 @@ export default function ColonyView({ ground }: { ground: ColonyGround }) {
       // Zoom about the cursor, so the cell under the pointer stays under the pointer.
       const cellX = originX + px / scale;
       const cellY = originY + py / scale;
-      const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * Math.exp(-event.deltaY * 0.0016)));
+      const next = Math.max(minScale(), Math.min(MAX_SCALE, scale * Math.exp(-event.deltaY * 0.0016)));
       scale = next;
       originX = cellX - px / scale;
       originY = cellY - py / scale;
