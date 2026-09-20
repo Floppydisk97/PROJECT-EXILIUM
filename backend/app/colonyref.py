@@ -64,8 +64,8 @@ def build() -> dict:
             # the two copies computed them differently, the site you weighed and the site you
             # took would not be the same site, and every cell-for-cell check would still pass.
             "economy": {"food": made.economy.food, "timber": made.economy.timber,
-                        "stone": made.economy.stone, "effort": made.economy.effort,
-                        "room": made.economy.room},
+                        "stone": made.economy.stone, "ore": made.economy.ore,
+                        "effort": made.economy.effort, "room": made.economy.room},
         })
     seeds = [{"world": world, "tile": tile, "seed": seed_for(world, tile)}
              for world, tile in SEEDS]

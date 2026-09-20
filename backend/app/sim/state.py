@@ -37,9 +37,14 @@ class CityState:
     level: int
     settled_at: datetime
     stock: Mapping[str, int] = field(default_factory=dict)
+    # Le opere costruite, per tipo. Consumano e producono di continuo, e sono la ragione per
+    # cui la produzione non e' piu' una moltiplicazione: un processo che CONSUMA puo'
+    # rimanere a secco, e da quel momento il tasso non e' piu' quello di prima.
+    works: Mapping[str, int] = field(default_factory=dict)
     site_food: int = 0             # 0 -> the rate is untouched
     site_timber: int = 0           # what the standing growth is worth once cleared
     site_stone: int = 0            # what is under the colony
+    site_ore: int = 0              # i filoni: l'unico che non sta in superficie
     site_effort: int = 0           # 0 -> an upgrade takes its bare duration
     site_room: int | None = None   # None -> nothing to crowd against
 
@@ -52,6 +57,7 @@ class Commitment:
     city_id: UUID
     kind: str
     completes_at: datetime
+    choice: str | None = None      # per un'opera: quale opera
 
 
 @dataclass(frozen=True)
@@ -134,6 +140,7 @@ def snapshot(policy: str, cities: tuple[CityState, ...] | list[CityState]) -> di
                 "id": str(city.id),
                 "level": city.level,
                 "stock": dict(sorted(city.stock.items())),
+                "works": dict(sorted(city.works.items())),
                 "settled_at": city.settled_at.isoformat(),
                 "site": {"food": city.site_food, "timber": city.site_timber,
                          "stone": city.site_stone, "effort": city.site_effort,

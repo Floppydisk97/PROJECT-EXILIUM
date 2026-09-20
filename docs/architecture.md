@@ -652,6 +652,72 @@ l'indirizzo del server. Decidere cosa mostrare prima di essere nel browser signi
 disegnare una cosa e poi un'altra: React lo chiama disallineamento di idratazione e si vedeva
 come un errore in console a ogni caricamento. Ora il primo disegno e' vuoto di proposito.
 
+## Le catene: la produzione smette di essere una moltiplicazione
+
+Una fonderia consuma minerale e legname e rende lega. Tre conseguenze, e nessuna e' cosmetica.
+
+### Il minerale e' un asse nuovo, non la pietra riscritta
+
+I filoni hanno un campo di rumore tutto loro, e la soglia la abbassa la QUOTA: la roccia
+profonda viene a giorno dove la crosta e' stata spinta su. Se avessero seguito la pietra di
+superficie non avrebbero aggiunto nessuna geografia -- una macchia arida sarebbe stata ricca
+due volte e la scelta del sito piu' povera, non piu' ricca.
+
+    pluviale in pianura    minerale  7      macchia arida in piano   minerale  8
+    pluviale a 1800 m      minerale 16      macchia arida a 2200 m   minerale 22
+
+E i numeri dicono la cosa che conta: **nessuno regge una fonderia con cio' che ha sotto i
+piedi.** La montagna arida ha il minerale e non il legno, la giungla il contrario.
+
+    pluviale a 1800 m    regge 1,20 fonderie
+    pluviale in pianura  regge 0,90      (manca il minerale)
+    macchia arida        regge 0,50      (manca il legname)
+
+E' da qui che nascera' il commercio, e non e' un auspicio: e' il rapporto fra due numeri
+misurati.
+
+### L'integrazione a eventi, adesso che serve
+
+Finche' le risorse salivano soltanto, liquidare era una moltiplicazione. Un processo che
+CONSUMA la rompe: se il minerale e' finito mercoledi', la fonderia si e' fermata mercoledi' e
+il tasso di giovedi' non e' quello di martedi'.
+
+Quindi fra un evento e l'altro tutto e' lineare, e il momento in cui una scorta tocca lo zero
+o il tetto si CALCOLA invece di aspettarlo: si salta li', si ricalcolano i tassi, si prosegue.
+
+    dieci anni di assenza  ->  liquidati in 0,15 ms
+
+Nessun tick e' tornato dalla finestra. E l'invariante che aveva permesso di toglierlo regge
+ancora: **spezzare un intervallo non cambia il risultato**, al milli, verificato liquidando
+due giorni in un colpo e poi ora per ora.
+
+Un'opera tira dal magazzino finche' ce n'e' -- puo' girare a pieno anche consumando piu' di
+quanto arrivi, sta svuotando un buffer -- e quando il buffer e' a zero gira al ritmo con cui
+l'ingresso arriva. I millesimi tengono tutto intero, perche' un mondo salvato deve riprodursi
+identico.
+
+### La lega ha uno sbocco, o sarebbe un numero che nessuno spende
+
+Dal livello tre in su un avanzamento vuole anche lega, che non si raccoglie: si fonde. Senza,
+la catena avrebbe prodotto lo stesso difetto che il cibo ha oggi -- una scorta che sale e
+resta li' -- ma voluto invece che ereditato.
+
+### Tre difetti che solo il costruirla ha fatto uscire
+
+**Il minerale non era ammesso nel ledger.** La migrazione precedente aveva fissato l'elenco
+delle risorse; aggiungerne una alle regole e alla riga della citta' senza estenderlo
+significava poterla produrre e non poterla scrivere. Non si vedeva finche' qualcuno non
+estraeva il primo grammo. Ora un test confronta i due elenchi invece di sperare.
+
+**La produzione non poteva essere negativa.** Il vincolo diceva: genesis e production
+aggiungono, upgrade toglie. Vero finche' nulla consumava. Una colonia che fonde piu' minerale
+di quanto ne scavi ha, a fine intervallo, meno minerale di prima -- e quel movimento e'
+esattamente cio' che il ledger deve registrare.
+
+**La previsione guardava il raccolto.** La lega non si raccoglie, quindi la schermata diceva
+"fermo" di una risorsa che stava crescendo. Ora guarda i flussi netti -- e "gia' pieno" e
+"non si fermera' mai" sono tornati due stati distinti, che sembravano uguali e non lo sono.
+
 ## Via il tick: il mondo e' continuo
 
 Il tick era il momento in cui le cose accadevano: gli ordini si accodavano a mezzanotte, ogni

@@ -18,7 +18,7 @@ from app import gameclock, mapbuild, mapservice
 from app.db import transaction
 from app.service import (
     DomainError, cast_vote, city_ground, current_policy, land, owned_city, read_city,
-    start_upgrade, token_hash,
+    start_upgrade, start_work, token_hash,
 )
 
 
@@ -243,6 +243,20 @@ def colony_ground(city_id: UUID, owner: Owner):
     them faster than this instance can serialise them."""
     with transaction() as conn:
         return city_ground(conn, city_id, owner)
+
+
+class Work(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["smelter"]
+
+
+@app.post("/cities/{city_id}/works")
+def build_work(city_id: UUID, work: Work, owner: Owner,
+               idempotency_key: Annotated[UUID, Header()]):
+    """Mettere in piedi un'opera. Consuma e produce di continuo: e' cio' che trasforma un
+    magazzino che sale in una catena che puo' restare a secco."""
+    with transaction() as conn:
+        return commitment_view(start_work(conn, city_id, owner, work.kind, idempotency_key))
 
 
 @app.put("/cities/{city_id}/vote")

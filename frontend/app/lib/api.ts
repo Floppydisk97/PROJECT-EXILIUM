@@ -66,6 +66,12 @@ export type CityView = {
   next_upgrade_seconds: number;
   supported_level: number;
   stalls_in_seconds: StallForecast;
+  works: Record<string, number>;
+  /** A quanti millesimi girano le opere: mille e' pieno regime, meno significa a secco. */
+  work_permille: number;
+  work_cost_milli: Record<string, string>;
+  work_seconds: number;
+  chains: Record<string, { inputs: Record<string, number>; outputs: Record<string, number> }>;
   busy_until: string | null;
   busy_with: string | null;
 };
@@ -130,5 +136,7 @@ export const myCities = (token?: string) =>
 export const readCity = (id: string) => call<CityView>(`/cities/${id}`);
 export const upgrade = (id: string) =>
   call<unknown>(`/cities/${id}/upgrade`, { method: "POST" });
+export const buildWork = (id: string, kind: string) =>
+  call<unknown>(`/cities/${id}/works`, { method: "POST", body: { kind } });
 export const vote = (id: string, choice: string) =>
   call<unknown>(`/cities/${id}/vote`, { method: "PUT", body: { choice } });

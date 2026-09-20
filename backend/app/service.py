@@ -24,11 +24,13 @@ from uuid import uuid4
 from app import db
 from app import citygen
 from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade
+from app.sim.rules import begin_work
 from app.sim.config import (
-    ALL_RESOURCES, RESOURCES, RULESET, STARTING_STOCK, store_cap, supported_level,
+    ALL_RESOURCES, CHAINS, RESOURCES, RULESET, STARTING_STOCK, WORK_COST, WORK_DURATION,
+    store_cap, supported_level,
     time_to_full, upgrade_cost, upgrade_duration,
 )
-from app.sim.rules import majority_policy, resource_rate
+from app.sim.rules import majority_policy, net_flows, throttle
 
 
 class DomainError(Exception):
@@ -52,6 +54,15 @@ def owned_city(conn, city_id, owner_id, lock=False):
     if city is None:
         raise DomainError(404, "City not found")
     return city
+
+
+def works(conn, city_id) -> dict[str, int]:
+    """Le opere costruite, per tipo. Zero non si conserva: un'opera che non c'e' non e' una
+    riga con un conteggio a zero, e' una riga che non esiste."""
+    rows = conn.execute(
+        "SELECT kind, count FROM city_works WHERE city_id = %s AND count > 0", (city_id,)
+    ).fetchall()
+    return {row["kind"]: int(row["count"]) for row in rows}
 
 
 def stock(conn, city_id) -> dict[str, int]:
@@ -85,7 +96,8 @@ def write_entry(conn, described):
           described.event_key, described.effective_at, described.resource)
 
 
-def city_state(row, held: dict[str, int] | None = None) -> CityState:
+def city_state(row, held: dict[str, int] | None = None,
+               works: dict[str, int] | None = None) -> CityState:
     """A database row as the simulation sees it: nothing about ownership or naming, which
     are the adapter's business, and no column the rules do not actually read.
 
@@ -98,11 +110,13 @@ def city_state(row, held: dict[str, int] | None = None) -> CityState:
         level=row["level"],
         settled_at=row["settled_at"],
         stock=held or {},
+        works=works or {},
         # What the colony kept of its ground. Null until it lands -- and null is not zero
         # room, it is no ground to be crowded against, which is what an orbiting colony has.
         site_food=row["site_food"] or 0,
         site_timber=row["site_timber"] or 0,
         site_stone=row["site_stone"] or 0,
+        site_ore=row["site_ore"] or 0,
         site_effort=row["site_effort"] or 0,
         site_room=row["site_room"],
     )
@@ -132,12 +146,12 @@ def current_policy(conn) -> str:
 
 def commitment_of(conn, city_id) -> Commitment | None:
     row = conn.execute(
-        "SELECT id, city_id, kind, completes_at FROM orders "
+        "SELECT id, city_id, kind, choice, completes_at FROM orders "
         "WHERE city_id = %s AND status = 'pending'",
         (city_id,),
     ).fetchone()
     return None if row is None else Commitment(
-        row["id"], row["city_id"], row["kind"], row["completes_at"]
+        row["id"], row["city_id"], row["kind"], row["completes_at"], row["choice"]
     )
 
 
@@ -148,7 +162,7 @@ def advance(conn, city_row, now):
     looks at the city or asks it to do something -- so a world with nobody watching costs
     nothing and a city nobody touches is still correct the moment it is read.
     """
-    city = city_state(city_row, stock(conn, city_row["id"]))
+    city = city_state(city_row, stock(conn, city_row["id"]), works(conn, city_row["id"]))
     result = advance_city(
         city, commitment_of(conn, city_row["id"]), policy_periods(conn, city.settled_at), now
     )
@@ -160,6 +174,15 @@ def advance(conn, city_row, now):
             "UPDATE orders SET status = 'applied', outcome = %s WHERE id = %s",
             (completion.outcome, completion.commitment_id),
         )
+    # Le opere che sono state messe in piedi durante questa liquidazione. Scritte qui e non
+    # nelle regole, che descrivono e non applicano mai.
+    if result.city.works != city.works:
+        for kind, count in result.city.works.items():
+            conn.execute(
+                """INSERT INTO city_works (city_id, kind, count) VALUES (%s, %s, %s)
+                   ON CONFLICT (city_id, kind) DO UPDATE SET count = EXCLUDED.count""",
+                (result.city.id, kind, count),
+            )
     if result.settlements or result.completions:
         conn.execute(
             "UPDATE cities SET settled_at = %s, level = %s WHERE id = %s",
@@ -194,12 +217,22 @@ def stall_forecast(conn, city_row, now) -> dict[str, int | None]:
     held = stock(conn, city_row["id"])
     cap = store_cap(city_row["level"])
     policy = current_policy(conn)
-    city = city_state(city_row, held)
+    city = city_state(city_row, held, works(conn, city_row["id"]))
+    # I flussi NETTI, non il raccolto. La lega non si raccoglie: la fonde un'opera, e una
+    # previsione fatta sul solo raccolto diceva "fermo" di una risorsa che stava crescendo.
+    flows = net_flows(city, policy, held)
     forecast: dict[str, int | None] = {}
     for resource in RESOURCES:
-        seconds = time_to_full(held[resource], cap, resource_rate(resource, policy, city))
+        seconds = time_to_full(held[resource], cap, flows.get(resource, 0))
         forecast[resource] = None if seconds is None else int(seconds)
     return forecast
+
+
+def running_at(conn, city_row) -> int:
+    """A quanti millesimi girano le opere adesso. Mille significa a pieno regime."""
+    held = stock(conn, city_row["id"])
+    city = city_state(city_row, held, works(conn, city_row["id"]))
+    return throttle(city, current_policy(conn), held)
 
 
 def city_view(conn, city_row, now) -> dict:
@@ -224,6 +257,14 @@ def city_view(conn, city_row, now) -> dict:
         # una faccenda da sbrigare. Detto prima, si pianifica.
         "supported_level": supported_level(city_row["site_food"] or 0),
         "stalls_in_seconds": stall_forecast(conn, city_row, now),
+        # Le opere, e a che regime stanno girando. Il secondo numero e' cio' che spiega un
+        # magazzino che non cresce come ci si aspettava: una fonderia a secco non si ferma,
+        # rallenta, e senza dirlo sembrerebbe soltanto che i conti non tornino.
+        "works": works(conn, city_row["id"]),
+        "work_permille": running_at(conn, city_row),
+        "work_cost_milli": {name: str(amount) for name, amount in WORK_COST.items()},
+        "work_seconds": int(WORK_DURATION.total_seconds()),
+        "chains": {kind: chain for kind, chain in CHAINS.items()},
         "busy_until": None if busy is None else busy.completes_at,
         "busy_with": None if busy is None else busy.kind,
     }
@@ -264,6 +305,34 @@ def start_upgrade(conn, city_id, owner_id, key):
                               completes_at, cost_milli)
            VALUES (%s, %s, 'upgrade', NULL, %s, %s, %s) RETURNING *""",
         (city_id, key, now, completes_at, sum(-described.amount for described in spends)),
+    ).fetchone()
+
+
+def start_work(conn, city_id, owner_id, kind, key):
+    """Impegnare questa citta' a costruire un'opera. Stessa forma dell'avanzamento, e non per
+    pigrizia: una colonia fa una cosa alla volta, quindi costruire una fonderia significa non
+    star crescendo. E' li' che sta la scelta."""
+    city_row = owned_city(conn, city_id, owner_id, lock=True)
+    previous = conn.execute(
+        "SELECT * FROM orders WHERE city_id = %s AND idempotency_key = %s", (city_id, key)
+    ).fetchone()
+    if previous:
+        return previous
+
+    now = db.database_now(conn)
+    result = advance(conn, city_row, now)
+    decision = begin_work(result.city, commitment_of(conn, city_id) is not None, kind, now)
+    if isinstance(decision, str):
+        raise DomainError(409, decision)
+    spends, completes_at = decision
+    for described in spends:
+        write_entry(conn, described)
+    return conn.execute(
+        """INSERT INTO orders(city_id, idempotency_key, kind, choice, submitted_at,
+                              completes_at, cost_milli)
+           VALUES (%s, %s, 'work', %s, %s, %s, %s) RETURNING *""",
+        (city_id, key, kind, now, completes_at,
+         sum(-described.amount for described in spends)),
     ).fetchone()
 
 
@@ -368,9 +437,9 @@ def land(conn, city_id, owner_id, tile_id: int) -> dict:
         conn.execute(
             """UPDATE cities SET tile_id = %s, landed_at = %s, map_seed = %s,
                                  site_food = %s, site_timber = %s, site_stone = %s,
-                                 site_effort = %s, site_room = %s
+                                 site_ore = %s, site_effort = %s, site_room = %s
                WHERE id = %s""",
-            (tile_id, now, seed, economy.food, economy.timber, economy.stone,
+            (tile_id, now, seed, economy.food, economy.timber, economy.stone, economy.ore,
              economy.effort, economy.room, city_id),
         )
     except psycopg.errors.UniqueViolation:
@@ -378,7 +447,8 @@ def land(conn, city_id, owner_id, tile_id: int) -> dict:
     return {"tile_id": tile_id, "landed_at": now, "biome": site.biome,
             "coastal": site.coastal, "river_flow": site.river_flow,
             "site_food": economy.food, "site_timber": economy.timber,
-            "site_stone": economy.stone, "site_effort": economy.effort,
+            "site_stone": economy.stone, "site_ore": economy.ore,
+            "site_effort": economy.effort,
             "site_room": economy.room}
 
 

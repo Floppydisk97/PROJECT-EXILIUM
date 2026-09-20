@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
@@ -6,8 +7,11 @@ from app.sim.config import (
     LEVEL_RATE, POLICY_RATES, ROOM_PER_LEVEL, UPGRADE_DURATION,
     harvest_rate, production_rate, store_cap, time_to_full, upgrade_cost, upgrade_duration,
 )
-from app.sim.rules import majority_policy, production_amount
-from app.sim.state import PolicyPeriod
+from app.sim.config import CHAINS
+from app.sim.rules import (
+    majority_policy, net_flows, production_amount, settle_city, throttle,
+)
+from app.sim.state import CityState, PolicyPeriod
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 FOREVER = [PolicyPeriod("balanced", START - timedelta(days=1), None)]
@@ -146,9 +150,10 @@ def test_a_full_store_is_predictable_before_it_happens():
     assert time_to_full(stock=0, cap=cap, rate=100) == cap / 100
     # A meta' strada manca la meta' del tempo.
     assert time_to_full(cap // 2, cap, 100) == (cap - cap // 2) / 100
-    # Gia' pieno, o fermo: non si fermera' mai piu' di cosi'.
-    assert time_to_full(cap, cap, 100) is None
-    assert time_to_full(0, cap, 0) is None
+    # Due stati che sembrerebbero uguali se si confondessero, e non lo sono: uno chiede di
+    # spendere, l'altro dice che quella risorsa qui non arriva.
+    assert time_to_full(cap, cap, 100) == 0         # gia' pieno
+    assert time_to_full(0, cap, 0) is None          # non si riempira' mai
 
 
 def test_every_site_can_still_build_something():
@@ -159,3 +164,85 @@ def test_every_site_can_still_build_something():
         assert harvest_rate(resource, level=0, site=0) > 0
     # ... ma la terra che ce l'ha resta molto meglio: il minimo e' una rete, non un livellamento.
     assert harvest_rate("stone", 0, 99) > harvest_rate("stone", 0, 0) * 5
+
+
+SITE = {"site_food": 52, "site_timber": 48, "site_stone": 12, "site_ore": 7,
+        "site_effort": 41, "site_room": 500_000}
+FOREVER_FROM = [PolicyPeriod("balanced", START - timedelta(days=2), None)]
+
+
+def colony(stock=None, works=None, level=0, **site):
+    return CityState(id=UUID(int=1), level=level, settled_at=START,
+                     stock=dict(stock or {}), works=dict(works or {}), **{**SITE, **site})
+
+
+def test_a_work_drains_the_buffer_and_then_runs_on_what_arrives():
+    """Il cuore della catena, e il motivo per cui la produzione non e' piu' una moltiplicazione.
+
+    Un'opera tira dal magazzino finche' ce n'e': puo' girare a pieno anche consumando piu' di
+    quanto arrivi, perche' sta svuotando un buffer. Quando il buffer e' a zero puo' girare
+    solo al ritmo con cui l'ingresso arriva -- e da quel momento il tasso e' un altro.
+    """
+    two = colony(stock={"ore": 40_000, "timber": 200_000}, works={"smelter": 2})
+    assert throttle(two, "balanced", two.stock) == 1000          # c'e' scorta: a pieno
+    assert net_flows(two, "balanced", two.stock)["ore"] < 0       # e la sta consumando
+
+    starved = throttle(two, "balanced", {**two.stock, "ore": 0})
+    assert 0 < starved < 1000                                     # a secco: al ritmo del filone
+    # Non e' un arrotondamento: e' il rapporto fra cio' che arriva e cio' che si vorrebbe.
+    arriving = harvest_rate("ore", 0, SITE["site_ore"])
+    wanted = CHAINS["smelter"]["inputs"]["ore"] * 2
+    assert starved == 1000 * arriving // wanted
+
+
+def test_splitting_an_interval_still_cannot_change_the_answer():
+    """L'invariante che ha permesso di togliere il tick, messa alla prova da cio' che avrebbe
+    potuto romperla. Con un processo che CONSUMA il tasso cambia dentro l'intervallo, quindi
+    liquidare due giorni in un colpo e liquidarli ora per ora devono comunque coincidere --
+    al milli, non circa."""
+    start = colony(stock={"ore": 40_000, "timber": 200_000}, works={"smelter": 2})
+    whole = settle_city(start, START + timedelta(hours=48), FOREVER_FROM).city.stock
+
+    piecewise = start
+    for hour in range(48):
+        piecewise = settle_city(piecewise, START + timedelta(hours=hour + 1),
+                                FOREVER_FROM).city
+    assert whole == piecewise.stock
+
+
+def test_a_decade_of_absence_is_still_a_handful_of_steps():
+    """Nessun tick e' tornato dalla finestra. Ogni risorsa cambia regime al piu' due volte --
+    tocca lo zero, tocca il tetto -- quindi la camminata converge e si ferma, invece di
+    percorrere trecentoquindici milioni di secondi."""
+    forgotten = colony(stock={"ore": 40_000, "timber": 200_000}, works={"smelter": 2})
+    settled = settle_city(forgotten, START + timedelta(days=3650), FOREVER_FROM)
+    assert settled is not None
+    assert settled.city.settled_at == START + timedelta(days=3650)
+
+
+def test_nothing_but_a_work_makes_alloy():
+    """La lega non si raccoglie: si fonde. E' cio' che rende la catena necessaria invece che
+    decorativa, perche' dal livello tre in su un avanzamento la richiede."""
+    bare = colony(stock={"ore": 40_000, "timber": 40_000})
+    after = settle_city(bare, START + timedelta(hours=6), FOREVER_FROM).city
+    assert after.stock.get("alloy", 0) == 0
+
+    with_works = colony(stock={"ore": 40_000, "timber": 40_000}, works={"smelter": 1})
+    made = settle_city(with_works, START + timedelta(hours=6), FOREVER_FROM).city
+    assert made.stock["alloy"] > 0
+
+
+def test_an_oscillating_chain_is_refused_instead_of_looping_for_ever():
+    """Un ciclo infinito dentro una richiesta e' il modo peggiore di scoprire che una catena
+    e' mal fatta. Meglio rifiutare rumorosamente che pagare un anno con l'economia
+    dell'ultimo secondo."""
+    import app.sim.rules as rules
+
+    normal = rules.MAX_EVENTS
+    rules.MAX_EVENTS = 1                       # una sola mossa: qualunque evento lo supera
+    try:
+        busy = colony(stock={"ore": 40_000, "timber": 200_000}, works={"smelter": 2})
+        with pytest.raises(ValueError, match="regime"):
+            settle_city(busy, START + timedelta(days=30), FOREVER_FROM)
+    finally:
+        rules.MAX_EVENTS = normal

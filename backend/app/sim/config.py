@@ -53,8 +53,8 @@ ROOM_PER_LEVEL = 150    # buildable cells a level takes before the colony starts
 # Le risorse. La lega non si produce piu': tornera' come primo PRODOTTO della prima catena,
 # che e' il posto in cui avrebbe dovuto stare dall'inizio. Cio' che e' stato guadagnato resta
 # spendibile -- non si confisca -- semplicemente non se ne conia altra.
-RESOURCES = ("food", "timber", "stone")
-ALL_RESOURCES = ("alloy",) + RESOURCES
+RESOURCES = ("food", "timber", "stone", "ore", "alloy")
+ALL_RESOURCES = RESOURCES
 
 # Milli-unita' al secondo. La terra rende quello che rende: il cibo NON cresce col livello,
 # mentre il consumo si'. Da qui viene il tetto vero della colonia -- un sito fertile regge una
@@ -69,6 +69,11 @@ FOOD_UPKEEP = 6         # per livello: piu' gente, piu' bocche
 # che un giorno fara' servire una colonia a un'altra.
 TIMBER_RATE = 40
 STONE_RATE = 40
+# Piu' alto degli altri non perche' scavare sia facile, ma perche' il minerale ha una SCALA
+# diversa: la pietra copre 0-99 della mappa, i filoni 7-22. Lo stesso moltiplicatore avrebbe
+# reso ogni fonderia affamata dieci a uno, che non e' un bilanciamento -- e' un'unita' di
+# misura sbagliata travestita da scelta di gioco.
+ORE_RATE = 75
 # Anche la terra piu' spoglia da' qualcosa: si cava la propria ghiaia, si recupera. Senza
 # questo un deserto -- niente roccia, niente alberi -- non potrebbe costruire MAI nulla, e
 # sarebbe un vicolo cieco in attesa di un commercio che ancora non esiste.
@@ -94,8 +99,8 @@ def production_rate(policy: str, level: int, site_food: int = 0) -> int:
 # piu' nulla da spostare, e il voto -- che e' l'unica cosa condivisa fra tutti i giocatori --
 # sarebbe diventato decorativo.
 POLICY_SHIFT = {
-    "balanced":   {"food": 100, "timber": 100, "stone": 100},
-    "industrial": {"food":  80, "timber": 125, "stone": 125},
+    "balanced":   {"food": 100, "timber": 100, "stone": 100, "ore": 100},
+    "industrial": {"food":  80, "timber": 125, "stone": 125, "ore": 125},
 }
 
 
@@ -128,9 +133,36 @@ def harvest_rate(resource: str, level: int, site: int, policy: str = "balanced")
     """Milli-unita' al secondo di cio' che si raccoglie. Un intero per l'intera fetta su cui
     viene usato, per la stessa ragione di sempre: spezzare un intervallo non deve cambiare il
     totale."""
-    base = {"timber": TIMBER_RATE, "stone": STONE_RATE}[resource]
+    base = {"timber": TIMBER_RATE, "stone": STONE_RATE, "ore": ORE_RATE}[resource]
     gathered = base * (level + 1) * max(site, HARVEST_FLOOR) // 100
     return gathered * POLICY_SHIFT[policy][resource] // 100
+
+
+# LE CATENE. Il primo prodotto: una fonderia consuma minerale e legname e restituisce lega.
+#
+# E' questo che trasforma il pianeta da fondale in vincolo. Il minerale sta in quota e il
+# legname in basso, quindi la colonia che ha l'uno raramente ha l'altro -- e nessuna fonderia
+# gira a pieno regime su cio' che si trova sotto i piedi.
+#
+# I tassi sono PER OPERA: costruirne una seconda raddoppia il consumo e la resa.
+CHAINS = {
+    "smelter": {
+        "inputs": {"ore": 10, "timber": 8},
+        "outputs": {"alloy": 6},
+    },
+}
+
+# Cosa costa un'opera, e quanto occupa la colonia. Una alla volta, come tutto il resto: la
+# scarsita' di questo gioco e' l'ATTENZIONE, non il magazzino.
+WORK_COST = {"stone": 120_000, "timber": 120_000}
+WORK_DURATION = timedelta(hours=3)
+MAX_WORKS = 8           # oltre, una colonia sarebbe una fabbrica e non un insediamento
+
+# Da questo livello in su un avanzamento vuole anche LEGA, che non si raccoglie: si fonde.
+# Senza questo la catena produrrebbe un numero che nessuno spende -- lo stesso difetto che il
+# cibo ha oggi, e che qui sarebbe stato voluto invece che ereditato.
+ALLOY_FROM_LEVEL = 3
+UPGRADE_ALLOY = 40_000
 
 
 def store_cap(level: int) -> int:
@@ -140,12 +172,16 @@ def store_cap(level: int) -> int:
 
 
 def time_to_full(stock: int, cap: int, rate: int) -> float | None:
-    """Fra quanti secondi questa scorta si ferma, o None se non si fermera'.
+    """Fra quanti secondi questa scorta smette di guadagnare. Zero se e' gia' ferma, None se
+    non si fermera\' -- due stati diversi che sembrerebbero uguali se si confondessero: uno
+    chiede di spendere, l'altro dice che quella risorsa qui non arriva.
 
     Il numero che rende lo stallo una strategia invece che una sorpresa: una colonia che si
     guarda da lontano deve poter dire quando smettera' di guadagnare, non scoprirlo tornando.
     """
-    if rate <= 0 or stock >= cap:
+    if stock >= cap:
+        return 0.0          # gia' fermo: non e' la stessa cosa di "non si fermera' mai"
+    if rate <= 0:
         return None
     return (cap - stock) / rate
 
@@ -173,7 +209,10 @@ UPGRADE_TIMBER = 60_000
 def upgrade_cost(level: int, room: int | None = None) -> dict[str, int]:
     """Cio' che costa l'avanzamento che si lascia alle spalle `level`, per risorsa."""
     factor = (level + 1) * (1 + crowding(level, room))
-    return {"stone": UPGRADE_STONE * factor, "timber": UPGRADE_TIMBER * factor}
+    cost = {"stone": UPGRADE_STONE * factor, "timber": UPGRADE_TIMBER * factor}
+    if level + 1 >= ALLOY_FROM_LEVEL:
+        cost["alloy"] = UPGRADE_ALLOY * factor
+    return cost
 
 
 def upgrade_duration(level: int, effort: int = 0, room: int | None = None) -> timedelta:

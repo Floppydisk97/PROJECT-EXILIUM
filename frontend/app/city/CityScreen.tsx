@@ -2,15 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  ApiUnavailable, CityView, NotAuthorised, apiBase, myCities, readCity, saveToken,
+  ApiUnavailable, CityView, NotAuthorised, apiBase, buildWork, myCities, readCity, saveToken,
   savedToken, upgrade, vote,
 } from "../lib/api";
 import { howLong, missingFor, stallNote, units } from "./format";
 
-const RESOURCES = ["food", "timber", "stone"] as const;
+const RESOURCES = ["food", "timber", "stone", "ore", "alloy"] as const;
 const LABEL: Record<string, string> = {
-  food: "Cibo", timber: "Legname", stone: "Pietra", alloy: "Lega",
+  food: "Cibo", timber: "Legname", stone: "Pietra", ore: "Minerale", alloy: "Lega",
 };
+const WORK_NAME: Record<string, string> = { smelter: "Fonderia" };
 // Il server parla la lingua del dominio, che è inglese come tutto il codice. Al giocatore no.
 const BUSY: Record<string, string> = { upgrade: "avanzamento" };
 
@@ -200,6 +201,54 @@ export default function CityScreen() {
               >
                 Avanza al livello {city.level + 1}
               </button>
+            </div>
+
+            <div className="city-card">
+              <h2>Opere</h2>
+              {Object.entries(city.chains).map(([kind, chain]) => {
+                const built = city.works[kind] ?? 0;
+                return (
+                  <p key={kind} className="city-cost">
+                    <b>{WORK_NAME[kind] ?? kind}</b> ×{built} —{" "}
+                    {Object.entries(chain.inputs)
+                      .map(([r, n]) => `${LABEL[r].toLowerCase()} ${n}`).join(" + ")}
+                    {" → "}
+                    {Object.entries(chain.outputs)
+                      .map(([r, n]) => `${LABEL[r].toLowerCase()} ${n}`).join(" + ")}
+                    {" al secondo"}
+                  </p>
+                );
+              })}
+              {Object.values(city.works).some((n) => n > 0) && (
+                <p className={city.work_permille < 1000 ? "city-alarm" : "city-note"}>
+                  {city.work_permille >= 1000
+                    ? "Girano a pieno regime."
+                    : `Girano al ${Math.round(city.work_permille / 10)}%: un ingresso è
+                       finito, quindi vanno al ritmo con cui arriva.`}
+                </p>
+              )}
+              <p className="city-cost">
+                Costruirne una:{" "}
+                {Object.entries(city.work_cost_milli)
+                  .map(([r, amount]) => `${LABEL[r]} ${units(amount)}`).join(" · ")}
+                {" — "}{howLong(city.work_seconds)}
+              </p>
+              <button
+                disabled={busy || working !== null}
+                onClick={() => act("Metto in piedi la fonderia…", () => buildWork(city.id, "smelter"))}
+              >
+                Costruisci una fonderia
+              </button>
+              <p className="city-note">
+                {busy
+                  ? city.busy_with === "work"
+                    /* Un'opera ordinata non esiste ancora: esiste il CANTIERE. Senza dirlo, la
+                       pagina mostrava "Fonderia ×0" dopo aver speso il materiale, che si
+                       legge come un bottone che non ha funzionato. */
+                    ? `In costruzione, pronta alle ${new Date(city.busy_until!).toLocaleTimeString("it-IT")}.`
+                    : "La colonia sta già facendo altro: una cosa alla volta."
+                  : "Una cosa alla volta: costruire un'opera significa non stare crescendo."}
+              </p>
             </div>
 
             <div className="city-card">

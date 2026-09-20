@@ -337,9 +337,11 @@ def test_simultaneous_reads_never_duplicate_production(database, monkeypatch):
             "SELECT resource, count(*) AS n FROM resource_ledger"
             " WHERE reason='production' GROUP BY resource"
         ).fetchall()
-        assert {row["resource"]: int(row["n"]) for row in by_resource} == {
-            resource: 1 for resource in RESOURCES
-        }
+        # Una riga per risorsa che si e' MOSSA, e nessuna scritta due volte. La lega non
+        # compare: senza una fonderia nessuno la produce, ed e' esattamente il punto.
+        written = {row["resource"]: int(row["n"]) for row in by_resource}
+        assert set(written) <= set(RESOURCES) and written
+        assert set(written.values()) == {1}
 
 
 def test_distinct_cities_settle_concurrently_without_any_global_lock(database, monkeypatch):
@@ -361,8 +363,9 @@ def test_distinct_cities_settle_concurrently_without_any_global_lock(database, m
                 "SELECT count(*) AS n FROM resource_ledger WHERE city_id=%s AND reason='production'",
                 (p["city_id"],),
             ).fetchone()["n"]
-            # Una riga per risorsa, non sei letture che scrivono sei volte.
-            assert n == len(RESOURCES)
+            # Una riga per risorsa che si e' mossa, non sei letture che scrivono sei volte.
+            # Senza opere la lega non si muove, quindi il conto e' minore dell'elenco.
+            assert 0 < n <= len(RESOURCES)
             held = stock(conn, p["city_id"])
             assert held["stone"] == STARTING_STOCK["stone"] + 60 * harvest_rate("stone", 0, 0)
 
@@ -590,7 +593,9 @@ def test_a_colony_says_when_it_will_stop_earning(database, monkeypatch):
     with transaction() as conn:
         later = read_city(conn, p["city_id"], p["player_id"])
     assert int(later["stock_milli"]["stone"]) == store_cap(later["level"])
-    assert later["stalls_in_seconds"]["stone"] is None
+    # Zero, non None: "gia' fermo" e "non si fermera' mai" sono due stati diversi, e
+    # confonderli farebbe leggere un magazzino pieno come una risorsa che non arriva.
+    assert later["stalls_in_seconds"]["stone"] == 0
 
 
 def test_the_browser_is_told_which_pages_may_spend_a_token(database, monkeypatch):
@@ -628,3 +633,23 @@ def test_the_browser_is_told_which_pages_may_spend_a_token(database, monkeypatch
 
     monkeypatch.delenv("ALLOWED_ORIGINS")
     importlib.reload(main_module)
+
+
+def test_every_resource_the_rules_can_produce_is_a_resource_the_ledger_accepts(database):
+    """Un difetto trovato costruendo, e che nessun test prendeva: il minerale e' stato
+    aggiunto alle regole e alla riga della citta', ma l'elenco delle risorse ammesse nel
+    ledger e' rimasto quello di prima. Si poteva produrre e non si poteva scrivere -- e non si
+    vede finche' qualcuno non estrae il primo grammo.
+
+    Questo confronta i due elenchi invece di fidarsi che restino allineati.
+    """
+    p = player()
+    with transaction() as conn:
+        now = database_now(conn)
+        for resource in RESOURCES:
+            # Se il CHECK non conosce la risorsa, questo alza CheckViolation e il test cade.
+            service.entry(conn, p["city_id"], 1, "genesis",
+                          f"allineamento:{resource}", now, resource)
+        held = stock(conn, p["city_id"])
+    for resource in RESOURCES:
+        assert held[resource] >= 1, resource

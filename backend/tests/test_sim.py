@@ -13,7 +13,8 @@ from uuid import UUID
 
 from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade, snapshot
 from app.sim.config import (
-    MAX_LEVEL, RESOURCES, RULESET, STARTING_ALLOY, food_income, food_upkeep, harvest_rate,
+    ALLOY_FROM_LEVEL, MAX_LEVEL, RESOURCES, RULESET, STARTING_ALLOY, food_income,
+    food_upkeep, harvest_rate,
     store_cap, supported_level, upgrade_cost, upgrade_duration,
 )
 
@@ -137,7 +138,15 @@ def test_a_full_store_stops_earning_and_loses_nothing():
 def test_the_cost_and_the_wait_both_grow_with_the_level():
     """A flat cost against compounding production measured out as a pure exponential with
     nothing to decide. Both curves rise so that time, not alloy, is what a level costs."""
-    assert upgrade_cost(9) == {k: 10 * v for k, v in upgrade_cost(0).items()}
+    # Ogni voce cresce linearmente col livello che si lascia indietro...
+    for resource, amount in upgrade_cost(2).items():
+        assert upgrade_cost(9)[resource] == amount * 10 // 3
+
+    # ... e dal livello tre in su ne compare una nuova: la LEGA, che non si raccoglie e si
+    # fonde. E' cio' che rende la catena necessaria invece che decorativa -- senza, la
+    # fonderia produrrebbe un numero che nessuno spende.
+    assert "alloy" not in upgrade_cost(ALLOY_FROM_LEVEL - 2)
+    assert "alloy" in upgrade_cost(ALLOY_FROM_LEVEL - 1)
     assert upgrade_duration(9) == 10 * upgrade_duration(0)
 
 

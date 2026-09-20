@@ -255,3 +255,49 @@ resa vivibile in un altro modo — vedi sotto.
 
 **Da rivedere se.** Arrivano le catene: lì i tassi diventano negativi e dipendenti fra loro, la
 forma chiusa salta e serve l'integrazione a eventi. `time_to_full` è già il pezzo che servirà.
+
+---
+
+## ADR-008 — Le catene si integrano a eventi, non si simulano a passi
+
+**Decisione.** Un'opera (per ora la fonderia) consuma e produce di continuo. Liquidare una
+colonia significa **camminare sugli eventi**: fra un evento e l'altro i tassi sono costanti,
+quindi il momento in cui una scorta tocca lo zero o il tetto si *calcola* e ci si salta sopra.
+Un'opera tira dal magazzino finché ce n'è e, a buffer vuoto, gira al ritmo con cui l'ingresso
+arriva — in millesimi, per restare in aritmetica intera.
+
+**Motivazione.** Senza catene la produzione era un integrale in forma chiusa, ed è ciò che ha
+permesso di togliere il tick: una colonia dimenticata da un anno si liquida con una
+moltiplicazione. Un processo che consuma distrugge quella comodità. L'alternativa ovvia —
+simulare a passi fissi — rimette il tick dalla finestra e uccide il mondo continuo.
+
+Misurato: dieci anni di assenza si liquidano in 0,15 ms, e spezzare un intervallo dà lo stesso
+risultato **al milli** (verificato su 48 ore, in un colpo contro ora per ora).
+
+**Alternative considerate.**
+1. *Passi fissi (un minuto, un'ora).* Semplice da scrivere, e sbagliato: reintroduce il tick,
+   e una colonia ferma da un anno diventerebbe mezzo milione di iterazioni.
+2. *Lotti discreti* («ogni 30 s consuma 2 e produce 1»), più vicino ad Anno nello spirito. Ma
+   un anno di lotti è un milione di eventi, a meno di calcolarne il numero in forma chiusa —
+   che è di nuovo il calcolo dei flussi, con più cerimonia.
+3. *Niente throttling: a ingresso vuoto l'opera si spegne.* Scartata perché oscilla — si
+   spegne, il buffer si riempie di un grammo, si riaccende — a frequenza infinita.
+
+**Rischi e criticità.**
+- **Un'opera non si può spegnere né demolire.** È la mancanza più grave di questo gradino:
+  una fonderia mangia il legname per sempre, e siccome il legname serve anche a costruire, una
+  sola opera può bloccare la crescita di una colonia senza che il giocatore possa farci nulla.
+  In Anno un edificio si mette in pausa. Qui ancora no, ed è il prossimo pezzo da fare.
+- **Il numero di eventi è limitato** (`MAX_EVENTS`) e superarlo *alza un errore*. È voluto: un
+  ciclo infinito dentro una richiesta è il modo peggiore di scoprire che una catena oscilla.
+  Ma significa che una catena futura mal fatta romperà la lettura di una città invece di
+  degradare in silenzio — che è la scelta giusta, e va ricordata.
+- **Il throttling arrotonda.** I millesimi perdono qualcosa a ogni calcolo; è deterministico e
+  riproducibile, ma una catena lunga accumulerà una perdita sistematica a sfavore del
+  giocatore. Da rivedere quando le catene avranno più di un anello.
+- **Ancora nessun commercio.** I numeri sono tarati perché nessun sito regga una fonderia da
+  solo: finché non si può scambiare, questo significa che tutti girano a regime ridotto.
+
+**Da rivedere se.** Le catene diventano a più stadi (un'opera che mangia ciò che un'altra
+produce): lì il calcolo dei flussi smette di essere una divisione e diventa una propagazione
+sul grafo, e va scritto come tale invece che allargato per gradi.

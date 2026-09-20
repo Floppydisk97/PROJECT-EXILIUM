@@ -103,6 +103,9 @@ export default function ColonyPicker({ tileId }: { tileId: number | null }) {
           <span title="Quota di roccia e ghiaia sulla mappa">
             pietra <b>{ground.economy.stone}</b>
           </span>
+          <span title="Filoni: l'unica ricchezza che non sta in superficie — la decide la quota">
+            minerale <b>{ground.economy.ore}</b>
+          </span>
           <span title="Verde e palude da sgomberare: allunga ogni avanzamento">
             fatica <b>{ground.economy.effort}</b>
           </span>

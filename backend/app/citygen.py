@@ -100,6 +100,10 @@ class CityMap:
     height: tuple[int, ...]         # centimetres above the map's own datum
     fertility: tuple[int, ...]      # 0-100
     vegetation: tuple[int, ...]     # 0-100
+    # I filoni non sono una mappa per cella come gli altri: finche' non ci si costruisce
+    # sopra un edificio, di un giacimento interessa QUANTO ce n'e', non dove. Il giorno in cui
+    # una miniera andra' piazzata su una casella, questo diventera' uno strato come gli altri.
+    ore: int = 0                    # 0-100: quota di terra asciutta che porta un filone
 
     @property
     def buildable(self) -> int:
@@ -134,7 +138,7 @@ class CityMap:
         # to be drained before anything can be built on it -- but a bog has no timber in it,
         # and the two would be the same number only by accident.
         stone = 100 * sum(1 for g in self.ground if g in STONE) // cells
-        return SiteEconomy(food=food, timber=greenery, stone=stone,
+        return SiteEconomy(food=food, timber=greenery, stone=stone, ore=self.ore,
                            effort=effort, room=self.buildable)
 
 
@@ -150,6 +154,7 @@ class SiteEconomy:
     food: int       # 0-100: fertility of the buildable land
     timber: int     # 0-100: standing growth, the marsh excluded -- a bog has no timber
     stone: int      # 0-100: share of the map that is rock or gravel
+    ore: int        # 0-100: share carrying a vein -- the only one that is not on the surface
     effort: int     # 0-200: growth AND marsh to clear -- drives how long an upgrade takes
     room: int       # buildable cells -- how far the colony grows before it starts to crowd
 
@@ -219,6 +224,10 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     detail = PlaneNoise(_rng(seed, "detail"), 3, 11.0)
     damp = PlaneNoise(_rng(seed, "damp"), 4, 4.5)
     grain = PlaneNoise(_rng(seed, "grain"), 3, 9.0)
+    # I filoni. Un campo tutto suo, a frequenza alta perche' un giacimento e' stretto: se
+    # seguisse il rilievo o il terreno di superficie non aggiungerebbe nessuna geografia --
+    # sarebbe la pietra con un altro nome, e una macchia arida sarebbe ricca due volte.
+    veins = PlaneNoise(_rng(seed, "veins"), 3, 13.0)
 
     altitude_roughness = 0.6 + min(2.0, max(0.0, site.elevation) / 2200.0)
     amplitude = 320.0 * rule.roughness * altitude_roughness
@@ -229,6 +238,12 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     # how much it has, so the cover raises the line -- `bare_rock` (cover 0.02) keeps its stone
     # almost everywhere, a rainforest (0.95) shows it only on the real crests.
     bare_above = amplitude * (0.62 + 0.30 * rule.cover)
+
+    # Quanto in alto si e', quanto e' probabile incontrare un filone: la roccia profonda
+    # viene a giorno dove la crosta e' stata spinta su. Una foresta in quota puo' avere
+    # minerale sotto, una macchia arida in pianura puo' non averne -- che e' cio' che rende
+    # il minerale un asse NUOVO invece della pietra scritta due volte.
+    vein_line = 0.62 - 0.30 * min(1.0, max(0, site.elevation) / 2500.0)
 
     # Where the water goes. A river on the planet becomes a river here; a coastal tile gets a
     # shore along one edge, its direction rolled from the seed so two coasts differ.
@@ -244,6 +259,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     fertility_base = rule.fertility * (0.55 + 0.75 * min(1.0, site.rainfall / 1800.0))
     frozen = site.temperature < -8.0
 
+    ore_cells = 0
     ground: list[int] = []
     height: list[int] = []
     fertility: list[int] = []
@@ -322,6 +338,9 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
                 # less than half of what the rule said it was.
                 name = "soil"
 
+            if veins.at(u, v) > vein_line:
+                ore_cells += 1
+
             index = GROUNDS.index(name)
             slope_penalty = 1.0 - _smoothstep(abs(metres) / max(1.0, amplitude)) * 0.45
             # Water makes its banks fertile whatever the biome says. Without this a desert
@@ -358,4 +377,5 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
         seed=seed, size=size, cell_metres=CELL_METRES, site=site,
         ground_names=GROUNDS, ground=tuple(ground), height=tuple(height),
         fertility=tuple(fertility), vegetation=tuple(vegetation),
+        ore=100 * ore_cells // (size * size),
     )

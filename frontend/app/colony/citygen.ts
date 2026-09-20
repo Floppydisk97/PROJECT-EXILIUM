@@ -105,6 +105,7 @@ export type SiteEconomy = {
   food: number;      // fertility of the buildable land
   timber: number;    // standing growth alone -- a bog has none
   stone: number;     // share of the map that is rock or gravel
+  ore: number;       // share carrying a vein -- the only one that is not on the surface
   effort: number;    // growth AND marsh to clear
   room: number;      // buildable cells
 };
@@ -122,6 +123,9 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   const detail = new PlaneNoise(new Prng(`${seed}:detail`), 3, 11.0);
   const damp = new PlaneNoise(new Prng(`${seed}:damp`), 4, 4.5);
   const grain = new PlaneNoise(new Prng(`${seed}:grain`), 3, 9.0);
+  // I filoni: un campo tutto suo, a frequenza alta perche' un giacimento e' stretto. Se
+  // seguisse la pietra di superficie non aggiungerebbe nessuna geografia.
+  const veins = new PlaneNoise(new Prng(`${seed}:veins`), 3, 13.0);
 
   const altitudeRoughness = 0.6 + Math.min(2.0, Math.max(0, site.elevation) / 2200.0);
   const amplitude = 320.0 * rule.roughness * altitudeRoughness;
@@ -130,6 +134,9 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   // of naked stone -- a rainforest with continents of grey in it. What covers rock is
   // vegetation, and the biome already says how much it has.
   const bareAbove = amplitude * (0.62 + 0.30 * rule.cover);
+  // Piu' in alto, piu' facile incontrare un filone: la roccia profonda viene a giorno dove
+  // la crosta e' stata spinta su.
+  const veinLine = 0.62 - 0.30 * Math.min(1, Math.max(0, site.elevation) / 2500.0);
 
   const hasRiver = site.river_flow > 0;
   const riverAxis = new Prng(`${seed}:river`).uniform(0, Math.PI);
@@ -165,6 +172,7 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   let greenery = 0;
   let marshCells = 0;
   let stoneCells = 0;
+  let oreCells = 0;
 
   for (let y = 0; y < size; y++) {
     const v = (y / (size - 1)) * 2 - 1;
@@ -226,6 +234,8 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
           Math.trunc(100 * cover * Math.sqrt(fertility / 100))));
       }
 
+      if (veins.at(u, v) > veinLine) oreCells++;
+
       cells.ground[at] = index;
       cells.height[at] = Math.trunc(metres);
       cells.fertility[at] = fertility;
@@ -249,6 +259,7 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
     food: buildable ? Math.trunc(usableFertility / buildable) : 0,
     timber: greenAverage,
     stone: Math.trunc((100 * stoneCells) / cells_total),
+    ore: Math.trunc((100 * oreCells) / cells_total),
     effort: greenAverage + Math.trunc((100 * marshCells) / cells_total),
     room: buildable,
   };
