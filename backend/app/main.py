@@ -10,11 +10,14 @@ from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict
 
 from app import gameclock, mapbuild, mapservice
 from app.db import transaction
-from app.service import DomainError, owned_city, read_city, submit_order, token_hash
+from app.service import (
+    DomainError, cast_vote, current_policy, owned_city, read_city, start_upgrade,
+    token_hash,
+)
 
 
 @asynccontextmanager
@@ -107,21 +110,14 @@ def authenticate(credentials: Annotated[HTTPAuthorizationCredentials | None, Dep
 Owner = Annotated[UUID, Depends(authenticate)]
 
 
-class Command(BaseModel):
+class Vote(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["upgrade", "policy_vote"]
-    choice: Literal["balanced", "industrial"] | None = None
-
-    @model_validator(mode="after")
-    def valid_choice(self):
-        if (self.kind == "policy_vote") != (self.choice is not None):
-            raise ValueError("Only policy_vote requires a choice")
-        return self
+    choice: Literal["balanced", "industrial"]
 
 
-def order_view(order):
+def commitment_view(row):
     # IDs and economic integers are strings on the wire to avoid JS precision loss.
-    return {**order, "id": str(order["id"]), "target_tick": str(order["target_tick"])}
+    return {**row, "id": str(row["id"]), "cost_milli": str(row["cost_milli"])}
 
 
 @app.get("/health/live")
@@ -131,14 +127,15 @@ def live():
 
 @app.get("/health/ready")
 def ready():
+    """A continuous world has nothing to be behind on: production accrues from timestamps and
+    commitments complete when they are read. What readiness means now is that the policy
+    timeline is intact -- without an open period a city cannot be settled at all."""
     with transaction() as conn:
-        # World time, not wall time: under a compressed clock the wall clock says nothing
-        # about whether a tick is overdue.
-        state = conn.execute(
-            f"SELECT next_tick_at > {gameclock.NOW_SQL} AS ready FROM world WHERE id = 1"
-        ).fetchone()
-    if not state or not state["ready"]:
-        raise DomainError(503, "World requires tick recovery")
+        open_periods = conn.execute(
+            "SELECT count(*) AS n FROM policy_periods WHERE to_at IS NULL"
+        ).fetchone()["n"]
+    if open_periods != 1:
+        raise DomainError(503, "World policy timeline is broken")
     return {"status": "ready"}
 
 
@@ -146,14 +143,13 @@ def ready():
 def world_state():
     with transaction() as conn:
         world = conn.execute(
-            f"""SELECT policy, last_tick, next_tick_at, time_speed,
-                       {gameclock.NOW_SQL} AS server_time
-                FROM world WHERE id = 1"""
+            f"""SELECT time_speed, {gameclock.NOW_SQL} AS server_time FROM world WHERE id = 1"""
         ).fetchone()
-    # `time_speed` travels with the state on purpose: a client counting down to the next tick
-    # has to know how fast this world's seconds go by, and a world running at anything but 1
+        policy = current_policy(conn)
+    # `time_speed` travels with the state on purpose: a client counting down to something has
+    # to know how fast this world's seconds go by, and a world running at anything but 1
     # should be able to say so rather than look broken.
-    return {**world, "last_tick": str(world["last_tick"])}
+    return {**world, "policy": policy}
 
 
 @app.get("/world/map")
@@ -193,19 +189,28 @@ def city_state(city_id: UUID, owner: Owner):
         return read_city(conn, city_id, owner)
 
 
-@app.post("/cities/{city_id}/orders")
-def create_order(city_id: UUID, command: Command, owner: Owner,
-                 idempotency_key: Annotated[UUID, Header()]):
+@app.post("/cities/{city_id}/upgrade")
+def begin_upgrade(city_id: UUID, owner: Owner, idempotency_key: Annotated[UUID, Header()]):
+    """Commit the city to an upgrade. The alloy goes now, the level arrives when it is done,
+    and until then the city is busy -- which is the whole of the game's scarcity."""
     with transaction() as conn:
-        return order_view(submit_order(conn, city_id, owner, idempotency_key, command.kind, command.choice))
+        return commitment_view(start_upgrade(conn, city_id, owner, idempotency_key))
 
 
-@app.get("/cities/{city_id}/orders")
-def list_orders(city_id: UUID, owner: Owner, after: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
+@app.put("/cities/{city_id}/vote")
+def set_vote(city_id: UUID, vote: Vote, owner: Owner):
+    """A standing preference, not an order aimed at a deadline: the majority is whatever the
+    held preferences currently say, and it takes effect the moment it moves."""
+    with transaction() as conn:
+        return cast_vote(conn, city_id, owner, vote.choice)
+
+
+@app.get("/cities/{city_id}/commitments")
+def list_commitments(city_id: UUID, owner: Owner, after: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
     with transaction() as conn:
         owned_city(conn, city_id, owner)
         rows = conn.execute("SELECT * FROM orders WHERE city_id = %s AND id > %s ORDER BY id LIMIT %s", (city_id, after, limit)).fetchall()
-    return [order_view(row) for row in rows]
+    return [commitment_view(row) for row in rows]
 
 
 @app.get("/cities/{city_id}/ledger")

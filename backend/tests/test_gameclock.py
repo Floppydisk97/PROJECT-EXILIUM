@@ -12,9 +12,9 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from app import gameclock, service, worker
+from app import db, gameclock, service
 from app.db import database_now, transaction
-from app.service import balance, provision, run_tick
+from app.service import balance, provision, start_upgrade
 
 
 def test_at_speed_one_the_world_clock_is_the_real_clock(database):
@@ -100,60 +100,27 @@ def test_production_scales_with_the_clock(database):
     assert grown > 10 * 1800
 
 
-def test_the_worker_breathes_at_the_world_speed(database):
-    """Found by playing, not by reading.
-
-    The worker slept a fixed five seconds between rounds. At one day per day the window
-    between midnight and the worker noticing is a blink and nobody ever meets it. At 43200x a
-    world day goes by in two seconds, so that same nap leaves the world overdue almost always
-    -- and `require_current` refuses every economic operation while it is. A compressed world
-    was unplayable for exactly that reason: submitting an order answered 503.
-    """
-    with transaction() as conn:
-        assert worker.idle_wait(conn) == worker.IDLE_MAX          # speed 1: as it always was
-
-    with transaction() as conn:
-        gameclock.set_speed(conn, 43200)
-        fast = worker.idle_wait(conn)
-    assert fast == pytest.approx(0.5)      # four looks per world day
-
-    with transaction() as conn:
-        gameclock.set_speed(conn, 10_000_000)
-        assert worker.idle_wait(conn) == worker.IDLE_MIN          # ... but never a tight spin
-
-
 def test_a_compressed_world_lets_you_act_in_it(database):
-    """The point of the exercise, end to end: submit, let the clock run, and the order
-    resolves -- in seconds rather than a day. This is the test that would have caught the
-    worker's fixed nap, because it fails with a 503 instead of an assertion."""
+    """The point of the exercise, end to end: commit to an upgrade, let the clock run, and it
+    completes -- in seconds rather than an hour of world time.
+
+    This used to have to fight the tick. It no longer does, and the thing it was fighting is
+    worth recording: `require_current` refused every economic operation while a tick was
+    overdue, and at 43200x the world was overdue almost always. A continuous world cannot be
+    behind on anything, so a fast world is simply a fast world.
+    """
     import time
     with transaction() as conn:
         player = provision(conn, "Cronos II")
     with transaction() as conn:
-        gameclock.set_speed(conn, 86400)                          # a world day per second
+        gameclock.set_speed(conn, 86400)                    # a world day per real second
+    with transaction() as conn:
+        start_upgrade(conn, player["city_id"], player["player_id"], uuid4())
 
     deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
+    level = 0
+    while time.monotonic() < deadline and level == 0:
+        time.sleep(0.1)
         with transaction() as conn:
-            run_tick(conn)
-        with transaction() as conn:
-            try:
-                city = service.read_city(conn, player["city_id"], player["player_id"])
-            except service.DomainError:
-                continue                                          # a tick is due; go round again
-        if city["level"] == 0 and not _has_pending(player):
-            with transaction() as conn:
-                service.submit_order(conn, player["city_id"], player["player_id"],
-                                     uuid4(), "upgrade", None)
-        if city["level"] > 0:
-            break
-        time.sleep(0.05)
-    assert city["level"] > 0, "a compressed world never resolved an order"
-
-
-def _has_pending(player) -> bool:
-    with transaction() as conn:
-        return conn.execute(
-            "SELECT 1 FROM orders WHERE city_id = %s AND status = 'pending'",
-            (player["city_id"],),
-        ).fetchone() is not None
+            level = service.read_city(conn, player["city_id"], player["player_id"])["level"]
+    assert level == 1, "an upgrade never completed in a compressed world"

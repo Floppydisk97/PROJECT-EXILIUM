@@ -1,124 +1,100 @@
-"""The tick, exercised without a database.
+"""The continuous world, exercised without a database.
 
-These tests exist to prove the point of `app/sim/`: the rules of the game can be stated,
-run and asserted on with nothing but values. No PostgreSQL, no schema, no fixtures, no
-clock. If one of these fails, a rule is wrong -- not a query, not a lock, not a migration.
+These tests exist to prove the point of `app/sim/`: the rules of the game can be stated, run
+and asserted on with nothing but values. No PostgreSQL, no schema, no fixtures, no clock. If
+one of these fails, a rule is wrong -- not a query, not a lock, not a migration.
+
+There is no tick to exercise any more. `advance_city` is what it became: the same question,
+asked about one city instead of all of them.
 """
 import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from app.sim import CityState, OrderState, WorldState, advance, snapshot
-from app.sim.config import MAX_LEVEL, STARTING_ALLOY, TICK_INTERVAL, UPGRADE_COST
+from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade, snapshot
+from app.sim.config import (
+    MAX_LEVEL, POLICY_RATES, STARTING_ALLOY, upgrade_cost, upgrade_duration,
+)
 
-DUE = datetime(2026, 3, 1, tzinfo=UTC)
+NOW = datetime(2026, 3, 1, tzinfo=UTC)
 ONE = UUID("00000000-0000-0000-0000-000000000001")
 TWO = UUID("00000000-0000-0000-0000-000000000002")
+BALANCED = [PolicyPeriod("balanced", NOW - timedelta(days=365), None)]
 
 
-def world(policy="balanced", last_tick=0):
-    return WorldState(policy=policy, last_tick=last_tick, next_tick_at=DUE)
-
-
-def city(city_id=ONE, level=0, balance=STARTING_ALLOY, settled=DUE - timedelta(seconds=10)):
+def city(city_id=ONE, level=0, balance=STARTING_ALLOY, settled=NOW - timedelta(seconds=10)):
     return CityState(id=city_id, level=level, balance_milli=balance, settled_at=settled)
 
 
-def test_production_is_paid_at_the_outgoing_rate_not_the_incoming_one():
-    """The day belongs to the policy that was in force during it. Settling before resolving
-    the election is the only reason this holds, so it is asserted directly."""
-    result = advance(
-        world(policy="balanced"),
-        [city()],
-        [OrderState(id=1, city_id=ONE, kind="policy_vote", choice="industrial")],
-        DUE,
+def test_a_commitment_splits_the_interval_at_the_moment_it_completes():
+    """The rule the tick's boundary used to enforce, and it does not stop being a rule just
+    because the boundary is gone: production before the upgrade is earned at the OLD level,
+    production after it at the new one. Settling the whole stretch and raising the level
+    afterwards would pay the past at a rate the past did not have."""
+    started = NOW - timedelta(seconds=10)
+    done = NOW - timedelta(seconds=4)
+    result = advance_city(
+        city(settled=started), Commitment(1, ONE, "upgrade", done), BALANCED, NOW
     )
-    assert result.policy_after == "industrial"
-    settlement = result.settlements[0]
-    assert settlement.entry.amount == 10 * 10   # ten seconds at the balanced rate
-    assert settlement.entry.effective_at == DUE
+    before, after = result.settlements
+    assert before.entry.amount == 6 * POLICY_RATES["balanced"]                  # level 0
+    assert after.entry.amount == 4 * (POLICY_RATES["balanced"] + 5)             # level 1
+    assert result.city.level == 1
+    assert [c.outcome for c in result.completions] == ["level_increased"]
 
 
-def test_an_upgrade_is_paid_out_of_production_settled_in_the_same_tick():
-    poor = city(balance=UPGRADE_COST - 100, settled=DUE - timedelta(seconds=10))
-    result = advance(
-        world(), [poor], [OrderState(id=1, city_id=ONE, kind="upgrade", choice=None)], DUE
-    )
-    # 100 milli short before the tick, exactly covered by ten seconds of production.
-    assert result.resolutions[0].outcome == "level_increased"
-    assert result.resolutions[0].level_after == 1
-    assert result.resolutions[0].entry.amount == -UPGRADE_COST
+def test_a_commitment_not_yet_due_changes_nothing_but_the_cursor():
+    later = Commitment(1, ONE, "upgrade", NOW + timedelta(hours=1))
+    result = advance_city(city(), later, BALANCED, NOW)
+    assert result.completions == ()
+    assert result.city.level == 0
+    assert result.city.settled_at == NOW
 
 
-def test_an_unaffordable_upgrade_is_rejected_with_no_effects():
-    result = advance(
-        world(),
-        [city(balance=0, settled=DUE)],
-        [OrderState(id=1, city_id=ONE, kind="upgrade", choice=None)],
-        DUE,
-    )
-    resolution = result.resolutions[0]
-    assert (resolution.status, resolution.outcome) == ("rejected", "insufficient_alloy")
-    assert resolution.entry is None and resolution.level_after is None
-    assert result.rejected == 1 and result.applied == 0
+def test_a_city_already_at_now_settles_to_nothing():
+    """No entry and no cursor move: re-reading a city must not manufacture production."""
+    result = advance_city(city(settled=NOW), None, BALANCED, NOW)
+    assert result.settlements == () and result.completions == ()
+    assert result.city == city(settled=NOW)
+
+
+def test_committing_spends_immediately_and_buys_a_moment():
+    decision = begin_upgrade(city(settled=NOW), busy=False, now=NOW)
+    spend, completes_at = decision
+    assert spend.amount == -upgrade_cost(0)
+    assert spend.effective_at == NOW
+    assert completes_at == NOW + upgrade_duration(0)
+
+
+def test_a_busy_city_cannot_start_a_second_thing():
+    """The whole of the new scarcity, in one assertion. There is no queue to be limited: the
+    limit is that a city does one thing at a time, so starting something is choosing not to
+    start anything else until it finishes."""
+    assert begin_upgrade(city(settled=NOW), busy=True, now=NOW) == "already_busy"
+
+
+def test_an_unaffordable_upgrade_is_refused_with_no_effects():
+    assert begin_upgrade(city(balance=0, settled=NOW), False, NOW) == "insufficient_alloy"
+
+
+def test_the_cost_and_the_wait_both_grow_with_the_level():
+    """A flat cost against compounding production measured out as a pure exponential with
+    nothing to decide. Both curves rise so that time, not alloy, is what a level costs."""
+    assert upgrade_cost(9) == 10 * upgrade_cost(0)
+    assert upgrade_duration(9) == 10 * upgrade_duration(0)
 
 
 def test_the_level_ceiling_is_enforced_by_the_rules_not_by_a_constraint():
-    result = advance(
-        world(),
-        [city(level=MAX_LEVEL, settled=DUE)],
-        [OrderState(id=1, city_id=ONE, kind="upgrade", choice=None)],
-        DUE,
-    )
-    assert result.resolutions[0].outcome == "maximum_level"
-
-
-def test_an_election_needs_a_majority_and_a_tie_keeps_the_incumbent():
-    tie = advance(
-        world(policy="balanced"),
-        [city(ONE, settled=DUE), city(TWO, settled=DUE)],
-        [
-            OrderState(id=1, city_id=ONE, kind="policy_vote", choice="industrial"),
-            OrderState(id=2, city_id=TWO, kind="policy_vote", choice="balanced"),
-        ],
-        DUE,
-    )
-    assert tie.votes == {"industrial": 1, "balanced": 1}
-    assert tie.policy_after == "balanced"
-    assert tie.applied == 2 and tie.rejected == 0
-
-    silent = advance(world(policy="industrial"), [city(settled=DUE)], [], DUE)
-    assert silent.policy_after == "industrial"
-
-
-def test_the_boundary_advances_by_exactly_one_interval():
-    result = advance(world(last_tick=7), [city(settled=DUE)], [], DUE)
-    assert result.number == 8
-    assert result.next_tick_at == DUE + TICK_INTERVAL
-
-
-def test_a_city_already_at_the_boundary_settles_to_nothing():
-    """No entry and no cursor move: re-running a tick must not manufacture production."""
-    result = advance(world(), [city(settled=DUE)], [], DUE)
-    assert result.settlements == ()
-    assert result.cities_settled == 1   # counted as seen, not as moved
+    assert begin_upgrade(city(level=MAX_LEVEL, settled=NOW), False, NOW) == "maximum_level"
 
 
 def test_the_same_inputs_always_produce_the_same_result():
-    args = (
-        world(),
-        [city(ONE), city(TWO, level=3)],
-        [
-            OrderState(id=1, city_id=ONE, kind="upgrade", choice=None),
-            OrderState(id=2, city_id=TWO, kind="policy_vote", choice="industrial"),
-        ],
-        DUE,
-    )
-    assert advance(*args) == advance(*args)
+    args = (city(), Commitment(1, ONE, "upgrade", NOW - timedelta(seconds=5)), BALANCED, NOW)
+    assert advance_city(*args) == advance_city(*args)
 
 
 def test_the_state_is_serialisable_and_carries_its_ruleset():
-    picture = snapshot(world(), [city(ONE), city(TWO, level=2)])
+    picture = snapshot("balanced", [city(ONE), city(TWO, level=2)])
     assert picture["ruleset"] == 1
     assert json.loads(json.dumps(picture)) == picture   # no exotic types leaked in
     assert picture["cities"][1]["level"] == 2
@@ -126,7 +102,7 @@ def test_the_state_is_serialisable_and_carries_its_ruleset():
 
 def test_the_rules_never_touch_the_state_they_are_given():
     original = city()
-    advance(world(), [original], [OrderState(1, ONE, "upgrade", None)], DUE)
+    advance_city(original, Commitment(1, ONE, "upgrade", NOW), BALANCED, NOW)
     assert original == city()   # frozen in, frozen out: effects are described, not applied
 
 
@@ -143,7 +119,7 @@ def test_the_simulation_core_imports_nothing_that_knows_about_storage_or_transpo
     from pathlib import Path
 
     forbidden = {"psycopg", "fastapi", "alembic", "starlette", "app.db", "app.service",
-                 "app.main", "app.mapservice", "app.worker"}
+                 "app.main", "app.mapservice", "app.worker", "app.gameclock"}
 
     def offends(module: str | None) -> bool:
         if not module:

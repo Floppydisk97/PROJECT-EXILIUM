@@ -5,21 +5,24 @@ seam: it loads rows into simulation state, asks the rules what should happen, an
 described effects back inside one transaction. It also owns what is genuinely the database's
 job and not the simulation's -- locking, authorisation, idempotency and the clock.
 
-The lock model is deliberate and is the reason the rules are per-entity rather than global.
-Economic operations take `world FOR SHARE`: they proceed in parallel with each other but not
-with a tick, and they serialise only on their own city row. The tick takes `world FOR UPDATE`
-and observes a quiescent world.
+THE LOCK MODEL, which is the whole reason the rules are per-entity.
+
+There is no global barrier any more. A city is advanced under a lock on its OWN row: two
+requests touching the same city serialise, and two touching different cities do not meet at
+all. The tick used to take `world FOR UPDATE` and settle everybody at once, which is what put
+a ceiling on how many players the world could hold.
+
+What is left of the world row is the policy timeline, and it is locked only when the majority
+actually changes -- a short lock on a handful of rows, not a stall over every city.
 """
 import hashlib
 import secrets
 from uuid import uuid4
 
-from psycopg.types.json import Jsonb
-
-from app.db import database_now
-from app.sim import CityState, OrderState, WorldState, advance
-from app.sim.config import RULESET, STARTING_ALLOY
-from app.sim.rules import settle_city
+from app import db
+from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade
+from app.sim.config import RULESET, STARTING_ALLOY, upgrade_cost, upgrade_duration
+from app.sim.rules import majority_policy
 
 
 class DomainError(Exception):
@@ -32,27 +35,9 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def lock_world(conn):
-    # Exclusive lock: the tick barrier. Blocks and is blocked by every economic
-    # operation, so a tick observes a quiescent world and no settlement is mid-flight.
-    return conn.execute("SELECT * FROM world WHERE id = 1 FOR UPDATE").fetchone()
-
-
-def read_world(conn):
-    # Shared lock: economic operations only need the world to hold still (no tick
-    # running) while they act. Many run in parallel; they serialize per city on the
-    # city row, not globally. FOR SHARE still conflicts with the tick's FOR UPDATE.
-    return conn.execute("SELECT * FROM world WHERE id = 1 FOR SHARE").fetchone()
-
-
-def require_current(world, now):
-    if now >= world["next_tick_at"]:
-        raise DomainError(503, "World tick pending; retry after recovery")
-
-
 def owned_city(conn, city_id, owner_id, lock=False):
-    # lock=True takes a row lock on this city only: concurrent settlements of the
-    # SAME city serialize (no duplicate production), while different cities proceed
+    # lock=True takes a row lock on this city only: concurrent advances of the SAME city
+    # serialize (no duplicate production, no two commitments), while different cities proceed
     # in parallel. Read-only authorization checks pass lock=False.
     suffix = " FOR UPDATE" if lock else ""
     city = conn.execute(
@@ -73,10 +58,15 @@ def balance(conn, city_id):
 
 def entry(conn, city_id, amount, reason, event_key, effective_at):
     conn.execute(
-        """INSERT INTO resource_ledger(city_id, amount, reason, event_key, effective_at)
-           VALUES (%s, %s, %s, %s, %s)""",
-        (city_id, amount, reason, event_key, effective_at),
+        """INSERT INTO resource_ledger(city_id, amount, reason, event_key, effective_at, ruleset)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (city_id, amount, reason, event_key, effective_at, RULESET),
     )
+
+
+def write_entry(conn, described):
+    entry(conn, described.city_id, described.amount, described.reason,
+          described.event_key, described.effective_at)
 
 
 def city_state(row) -> CityState:
@@ -90,33 +80,70 @@ def city_state(row) -> CityState:
     )
 
 
-def world_state(row) -> WorldState:
-    return WorldState(
-        policy=row["policy"], last_tick=row["last_tick"], next_tick_at=row["next_tick_at"]
+def policy_periods(conn, since) -> list[PolicyPeriod]:
+    """The policy timeline covering everything from `since` onwards.
+
+    Only the periods a city still has to settle across are loaded, which is normally one.
+    A world whose policy changes daily and a city untouched for a year would load a year of
+    them -- bounded by how often the majority actually moves, not by how many cities exist.
+    """
+    rows = conn.execute(
+        """SELECT policy, from_at, to_at FROM policy_periods
+           WHERE to_at IS NULL OR to_at > %s
+           ORDER BY from_at""",
+        (since,),
+    ).fetchall()
+    return [PolicyPeriod(r["policy"], r["from_at"], r["to_at"]) for r in rows]
+
+
+def current_policy(conn) -> str:
+    return conn.execute(
+        "SELECT policy FROM policy_periods WHERE to_at IS NULL"
+    ).fetchone()["policy"]
+
+
+def commitment_of(conn, city_id) -> Commitment | None:
+    row = conn.execute(
+        "SELECT id, city_id, kind, completes_at FROM orders "
+        "WHERE city_id = %s AND status = 'pending'",
+        (city_id,),
+    ).fetchone()
+    return None if row is None else Commitment(
+        row["id"], row["city_id"], row["kind"], row["completes_at"]
     )
 
 
-def write_entry(conn, described):
-    entry(conn, described.city_id, described.amount, described.reason,
-          described.event_key, described.effective_at)
+def advance(conn, city_row, now):
+    """Bring one city up to `now`: finish what came due, then mature its production.
 
-
-def settle(conn, city, until, policy):
-    """Apply the settlement the rules describe for this one city."""
-    settlement = settle_city(city_state(city), until, policy)
-    if settlement is None:
-        return
-    if settlement.entry is not None:
-        write_entry(conn, settlement.entry)
-    conn.execute("UPDATE cities SET settled_at = %s WHERE id = %s", (until, city["id"]))
+    This is what the tick was, narrowed to a single city. It runs lazily -- whenever somebody
+    looks at the city or asks it to do something -- so a world with nobody watching costs
+    nothing and a city nobody touches is still correct the moment it is read.
+    """
+    city = city_state(city_row)
+    result = advance_city(
+        city, commitment_of(conn, city_row["id"]), policy_periods(conn, city.settled_at), now
+    )
+    for settlement in result.settlements:
+        if settlement.entry is not None:
+            write_entry(conn, settlement.entry)
+    for completion in result.completions:
+        conn.execute(
+            "UPDATE orders SET status = 'applied', outcome = %s WHERE id = %s",
+            (completion.outcome, completion.commitment_id),
+        )
+    if result.settlements or result.completions:
+        conn.execute(
+            "UPDATE cities SET settled_at = %s, level = %s WHERE id = %s",
+            (result.city.settled_at, result.city.level, result.city.id),
+        )
+    return result
 
 
 def provision(conn, name):
     if not 1 <= len(name.strip()) <= 80:
         raise DomainError(422, "City name must contain 1-80 characters")
-    world = read_world(conn)
-    now = database_now(conn)
-    require_current(world, now)
+    now = db.database_now(conn)
     owner, city, token = uuid4(), uuid4(), secrets.token_urlsafe(32)
     conn.execute("INSERT INTO players VALUES (%s, %s, %s)", (owner, token_hash(token), now))
     conn.execute(
@@ -127,98 +154,96 @@ def provision(conn, name):
     return {"player_id": owner, "city_id": city, "token": token}
 
 
-def read_city(conn, city_id, owner_id):
-    world = read_world(conn)
-    city = owned_city(conn, city_id, owner_id, lock=True)
-    now = database_now(conn)
-    require_current(world, now)
-    settle(conn, city, now, world["policy"])
+def city_view(conn, city_row, now) -> dict:
+    busy = commitment_of(conn, city_row["id"])
+    level = city_row["level"]
     return {
-        "id": city["id"], "name": city["name"], "level": city["level"],
-        "alloy_milli": str(balance(conn, city_id)), "settled_at": now,
-        "policy": world["policy"], "next_tick_at": world["next_tick_at"],
+        "id": city_row["id"], "name": city_row["name"], "level": level,
+        "alloy_milli": str(balance(conn, city_row["id"])),
+        "settled_at": now,
+        "policy": current_policy(conn),
+        "policy_vote": city_row["policy_vote"],
+        # What it would take to start the next upgrade, so a client never has to know the
+        # curve: the rules own it and say so.
+        "next_upgrade_cost_milli": str(upgrade_cost(level)),
+        "next_upgrade_seconds": int(upgrade_duration(level).total_seconds()),
+        "busy_until": None if busy is None else busy.completes_at,
+        "busy_with": None if busy is None else busy.kind,
     }
 
 
-def submit_order(conn, city_id, owner_id, key, kind, choice):
-    world = read_world(conn)
+def read_city(conn, city_id, owner_id):
     city = owned_city(conn, city_id, owner_id, lock=True)
+    now = db.database_now(conn)
+    advance(conn, city, now)
+    return city_view(conn, owned_city(conn, city_id, owner_id), now)
+
+
+def start_upgrade(conn, city_id, owner_id, key):
+    """Commit this city to an upgrade. The alloy goes now; the level arrives later.
+
+    Idempotent on `key`, because a retried request must not spend twice -- the same guarantee
+    the order queue used to give, kept now that there is no queue.
+    """
+    city_row = owned_city(conn, city_id, owner_id, lock=True)
     previous = conn.execute(
         "SELECT * FROM orders WHERE city_id = %s AND idempotency_key = %s", (city_id, key)
     ).fetchone()
     if previous:
-        if (previous["kind"], previous["choice"]) != (kind, choice):
-            raise DomainError(409, "Idempotency key already used for a different command")
         return previous
-    now = database_now(conn)
-    require_current(world, now)
-    target = world["last_tick"] + 1
-    exists = conn.execute(
-        "SELECT 1 FROM orders WHERE city_id = %s AND target_tick = %s AND kind = %s",
-        (city_id, target, kind),
-    ).fetchone()
-    if exists:
-        raise DomainError(409, "This city already submitted this order type for the tick")
-    settle(conn, city, now, world["policy"])
+
+    now = db.database_now(conn)
+    result = advance(conn, city_row, now)
+    decision = begin_upgrade(result.city, commitment_of(conn, city_id) is not None, now)
+    if isinstance(decision, str):
+        raise DomainError(409, decision)
+    spend, completes_at = decision
+    write_entry(conn, spend)
     return conn.execute(
-        """INSERT INTO orders(city_id, idempotency_key, kind, choice, target_tick, submitted_at)
-           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
-        (city_id, key, kind, choice, target, now),
+        """INSERT INTO orders(city_id, idempotency_key, kind, choice, submitted_at,
+                              completes_at, cost_milli)
+           VALUES (%s, %s, 'upgrade', NULL, %s, %s, %s) RETURNING *""",
+        (city_id, key, now, completes_at, -spend.amount),
     ).fetchone()
 
 
-def run_tick(conn):
-    """One tick per transaction. Caller commits; retry is safe after any failure.
+def cast_vote(conn, city_id, owner_id, choice):
+    """Set this city's standing preference and, if the majority moved, close the current
+    policy period and open a new one.
 
-    The decision is made entirely by `sim.advance`, which touches nothing. What is left here
-    is loading the inputs under the world lock and writing the described effects -- in the
-    same order the rules described them, so a failure part-way leaves the transaction to roll
-    back a coherent prefix rather than an arbitrary one.
+    The world row is locked for the length of that decision so two votes cannot both think
+    they flipped it. It is one row, held for one statement -- not the old barrier, which held
+    every city still for as long as it took to settle all of them.
     """
-    world_row = lock_world(conn)
-    if database_now(conn) < world_row["next_tick_at"]:
-        return None
-    world = world_state(world_row)
-    cities = [
-        city_state(row)
-        for row in conn.execute("SELECT * FROM cities ORDER BY id").fetchall()
-    ]
-    orders = [
-        OrderState(id=row["id"], city_id=row["city_id"], kind=row["kind"], choice=row["choice"])
-        for row in conn.execute(
-            "SELECT * FROM orders WHERE target_tick = %s AND status = 'pending' ORDER BY id",
-            (world.last_tick + 1,),
+    if choice not in ("balanced", "industrial"):
+        raise DomainError(422, "Vote must be 'balanced' or 'industrial'")
+    owned_city(conn, city_id, owner_id, lock=True)
+    conn.execute("SELECT 1 FROM world WHERE id = 1 FOR UPDATE")
+    conn.execute("UPDATE cities SET policy_vote = %s WHERE id = %s", (choice, city_id))
+
+    votes = {
+        row["policy_vote"]: int(row["n"]) for row in conn.execute(
+            "SELECT policy_vote, count(*) AS n FROM cities "
+            "WHERE policy_vote IS NOT NULL GROUP BY policy_vote"
         ).fetchall()
-    ]
-
-    result = advance(world, cities, orders, world.next_tick_at)
-
-    for settlement in result.settlements:
-        if settlement.entry is not None:
-            write_entry(conn, settlement.entry)
-        conn.execute(
-            "UPDATE cities SET settled_at = %s WHERE id = %s",
-            (settlement.city.settled_at, settlement.city.id),
-        )
-    for resolution in result.resolutions:
-        if resolution.entry is not None:
-            write_entry(conn, resolution.entry)
-        if resolution.level_after is not None:
+    }
+    standing = current_policy(conn)
+    elected = majority_policy(standing, votes)
+    if elected != standing:
+        now = db.database_now(conn)
+        open_from = conn.execute(
+            "SELECT from_at FROM policy_periods WHERE to_at IS NULL"
+        ).fetchone()["from_at"]
+        if open_from == now:
+            # Two changes inside the same second. A period of zero length is not a period --
+            # it would cover no production and could not be told apart from the one it
+            # replaced -- so the standing one is corrected rather than closed and reopened.
             conn.execute(
-                "UPDATE cities SET level = %s WHERE id = %s",
-                (resolution.level_after, resolution.city_id),
+                "UPDATE policy_periods SET policy = %s WHERE to_at IS NULL", (elected,)
             )
-        conn.execute(
-            "UPDATE orders SET status = %s, outcome = %s WHERE id = %s",
-            (resolution.status, resolution.outcome, resolution.order_id),
-        )
-
-    conn.execute(
-        "INSERT INTO ticks(number, due_at, ruleset, summary) VALUES (%s, %s, %s, %s)",
-        (result.number, result.due_at, RULESET, Jsonb(result.summary)),
-    )
-    conn.execute(
-        "UPDATE world SET last_tick = %s, next_tick_at = %s, policy = %s WHERE id = 1",
-        (result.number, result.next_tick_at, result.policy_after),
-    )
-    return {"number": result.number, "due_at": result.due_at, **result.summary}
+        else:
+            conn.execute("UPDATE policy_periods SET to_at = %s WHERE to_at IS NULL", (now,))
+            conn.execute(
+                "INSERT INTO policy_periods(policy, from_at) VALUES (%s, %s)", (elected, now)
+            )
+    return {"policy_vote": choice, "policy": elected, "votes": votes}

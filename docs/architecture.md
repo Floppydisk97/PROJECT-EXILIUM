@@ -280,6 +280,66 @@ renderer, verificabili senza una GPU. È una separazione voluta, non estetica �
 checker vede array di numeri e uno screenshot mostra solo il fotogramma che qualcuno ha
 guardato, quindi senza test di unità un errore aritmetico qui non ha nulla che lo fermi.
 
+## Via il tick: il mondo e' continuo
+
+Il tick era il momento in cui le cose accadevano: gli ordini si accodavano a mezzanotte, ogni
+citta' veniva liquidata al confine, e la politica si eleggeva li'. Non c'e' piu'. La produzione
+matura dai timestamp, un impegno si completa nell'istante in cui scade, e una citta' viene
+portata al presente quando qualcuno la guarda -- sotto un lock sulla SUA riga soltanto.
+
+    decideva quando un ordine si risolve   ->  un ordine occupa tempo e si completa da se'
+    UNIQUE(city_id, target_tick, kind)     ->  indice parziale: una cosa in corso per citta'
+    elezione a maggioranza al confine      ->  voto permanente, maggioranza continua
+    tabella ticks (ruleset, riassunto)     ->  il ledger, riga per riga
+    barriera globale world FOR UPDATE      ->  SPARITA. Era il muro di scala dichiarato.
+    require_current                        ->  SPARITO: non c'e' piu' niente su cui essere in arretrato.
+
+### Il freno
+
+L'unico limite alla velocita' d'azione era quel vincolo di unicita' per tick. Toglierlo e
+basta avrebbe reso il gioco piu' degenere, non meno: con la lega che si accumula, una sola
+richiesta avrebbe portato una citta' su di centinaia di livelli.
+
+Il freno di un mondo continuo non e' una quota artificiale, e' che **le azioni occupano
+tempo**. L'impegno paga subito e una citta' ne regge uno solo: scegliere di iniziare qualcosa
+e' scegliere di non iniziare nient'altro finche' non finisce. La decisione smette di essere
+"quando premere" e diventa "a cosa impegnarsi adesso". Costo e durata crescono entrambi col
+livello, perche' contro una produzione che compone un costo fisso non e' un costo.
+
+### La politica e' una linea del tempo, ed e' la parte che costa
+
+`production_amount` prende una politica per intervallo, e finora era il tick a garantirlo:
+ogni citta' liquidata al confine con la politica uscente, prima che la nuova entrasse -- "un
+giorno di produzione non e' mai pagato a una tariffa che quel giorno non aveva". Senza tick,
+una politica che cambia a meta' intervallo pagherebbe retroattivamente tutto l'intervallo alla
+tariffa nuova.
+
+Si poteva risolvere liquidando TUTTE le citta' al momento del cambio: sarebbe stata di nuovo
+una barriera globale, piu' rara ma la stessa cosa, e con migliaia di citta' uno stallo di
+secondi. Quindi la politica e' un registro di periodi e la produzione si integra su quelli che
+l'intervallo attraversa. Ogni citta' calcola la propria storia da sola, quando qualcuno la
+guarda, e nessuno blocca nessun altro. Un intervallo che nessun periodo copre viene RIFIUTATO,
+non pagato come zero: un buco nella linea del tempo e' un difetto, non lega gratis.
+
+Due invarianti che sembrano dettagli e non lo sono. I confini dei periodi sono a secondi
+interi, perche' il cursore di una citta' e' troncato al secondo e un confine con i microsecondi
+cade dopo un cursore che dovrebbe coprire -- costato un test verde che non lo era. E un periodo
+di durata zero non e' un periodo: due cambi nello stesso secondo correggono quello in corso
+invece di aprirne un altro.
+
+### Cosa e' stato tolto e non rimpianto
+
+Il ritmo variabile del worker, aggiunto lo stesso giorno. Difendeva da `require_current`, che
+rifiutava ogni operazione economica mentre il mondo era in arretrato; senza tick non c'e'
+arretrato, quindi non c'e' niente da cui difendersi. Il worker ora e' uno SPAZZINO: nessuna
+citta' ha bisogno di lui per essere corretta -- lo e' nel momento in cui viene letta -- ma in
+un mondo condiviso e' bene che una citta' finita smetta di dirsi occupata anche mentre il suo
+proprietario dorme.
+
+E l'orologio aveva due riferimenti indipendenti, uno per modulo, legati all'import. Era un
+giunto solo nelle intenzioni: bastava che un modulo guardasse l'ora per conto suo perche' una
+prova a tempo congelato usasse in silenzio il tempo vero. Ora passano tutti da `db`.
+
 ## L'orologio del mondo
 
 Un tick al giorno rende il gioco improvabile: una mossa si valuta dopo ventiquattr'ore.
