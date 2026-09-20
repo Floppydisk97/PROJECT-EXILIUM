@@ -34,32 +34,74 @@ export async function loadPlanet(
   onProgress?: (received: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<WorldMap> {
-  if (typeof DecompressionStream === "undefined") {
-    // Chrome 80, Firefox 113, Safari 16.4. Older browsers get a sentence rather than a
-    // blank sphere and no idea why.
-    throw new PlanetUnavailable("Questo browser non sa decomprimere il pianeta.");
-  }
-
   const manifest = await fetchJson<PlanetManifest>("map/manifest.json", signal);
   const response = await fetch(`map/${manifest.file}`, { cache: "force-cache", signal });
   if (!response.ok || !response.body) {
     throw new PlanetUnavailable(`Il pianeta non si è caricato (${response.status}).`);
   }
 
-  const counted: ReadableStream<Uint8Array> = onProgress
-    ? response.body.pipeThrough(countingStream(onProgress, manifest.packed_bytes))
-    : response.body;
-  // The payload is gzip and is deliberately NOT named `.gz`: a static host would set
-  // Content-Encoding on that name by guesswork, the browser would unpack it silently, and
-  // this line would then fail on bytes already unpacked. One party unpacks, and it is this one.
-  //
-  // The cast is a lib.dom quirk, not a doubt about the data: DecompressionStream is declared
-  // as accepting BufferSource, which does not unify with a ReadableStream<Uint8Array> even
-  // though every chunk of one is a BufferSource.
-  const gunzip = new DecompressionStream("gzip") as unknown as
-    ReadableWritablePair<Uint8Array, Uint8Array>;
-  const text = await new Response(counted.pipeThrough(gunzip)).text();
-  return JSON.parse(text) as WorldMap;
+  const packed = await readAll(response.body, onProgress, manifest.packed_bytes);
+
+  // The payload is gzip, and is deliberately NOT named `.gz`: a static host that trusted that
+  // extension would set Content-Encoding, the browser would unpack it silently, and unpacking
+  // it again here would fail on bytes already unpacked. But "deliberately" is a decision made
+  // on this side of the wire, and the CDN is on the other -- so instead of trusting the
+  // arrangement, we look: 1f 8b is gzip's magic number, and its absence means somebody already
+  // did the work. Either way the page draws.
+  const text = looksGzipped(packed)
+    ? await gunzip(packed)
+    : new TextDecoder().decode(packed);
+
+  try {
+    return JSON.parse(text) as WorldMap;
+  } catch {
+    throw new PlanetUnavailable("Il pianeta è arrivato danneggiato.");
+  }
+}
+
+async function gunzip(packed: Uint8Array): Promise<string> {
+  if (typeof DecompressionStream === "undefined") {
+    // Chrome 80, Firefox 113, Safari 16.4. Older browsers get a sentence rather than a blank
+    // sphere and no idea why. Asked here rather than on the way in, because a payload the CDN
+    // already unpacked does not need this at all.
+    throw new PlanetUnavailable("Questo browser non sa decomprimere il pianeta.");
+  }
+  return await new Response(
+        new Blob([packed as BlobPart]).stream().pipeThrough(
+          new DecompressionStream("gzip") as unknown as
+        ReadableWritablePair<Uint8Array, Uint8Array>,
+    ),
+  ).text();
+}
+
+const GZIP_MAGIC = [0x1f, 0x8b];
+
+function looksGzipped(bytes: Uint8Array): boolean {
+  return bytes.length > 2 && bytes[0] === GZIP_MAGIC[0] && bytes[1] === GZIP_MAGIC[1];
+}
+
+/** Drain the body, reporting progress as it goes. Reading it ourselves rather than piping
+ *  straight into the decompressor is what lets us look at the first bytes before deciding
+ *  whether to decompress at all. */
+async function readAll(
+  body: ReadableStream<Uint8Array>,
+  onProgress: ((received: number, total: number) => void) | undefined,
+  total: number,
+): Promise<Uint8Array> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    onProgress?.(received, total);
+  }
+  const all = new Uint8Array(received);
+  let at = 0;
+  for (const chunk of chunks) { all.set(chunk, at); at += chunk.byteLength; }
+  return all;
 }
 
 async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -68,18 +110,4 @@ async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     throw new PlanetUnavailable(`Manca il manifesto del pianeta (${response.status}).`);
   }
   return (await response.json()) as T;
-}
-
-function countingStream(
-  onProgress: (received: number, total: number) => void,
-  total: number,
-): TransformStream<Uint8Array, Uint8Array> {
-  let received = 0;
-  return new TransformStream({
-    transform(chunk, controller) {
-      received += chunk.byteLength;
-      onProgress(received, total);
-      controller.enqueue(chunk);
-    },
-  });
 }
