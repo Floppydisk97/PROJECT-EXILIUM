@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from app import mapbuild, mapservice
+from app import gameclock, mapbuild, mapservice
 from app.db import transaction
 from app.service import DomainError, owned_city, read_city, submit_order, token_hash
 
@@ -132,7 +132,11 @@ def live():
 @app.get("/health/ready")
 def ready():
     with transaction() as conn:
-        state = conn.execute("SELECT next_tick_at > clock_timestamp() AS ready FROM world WHERE id = 1").fetchone()
+        # World time, not wall time: under a compressed clock the wall clock says nothing
+        # about whether a tick is overdue.
+        state = conn.execute(
+            f"SELECT next_tick_at > {gameclock.NOW_SQL} AS ready FROM world WHERE id = 1"
+        ).fetchone()
     if not state or not state["ready"]:
         raise DomainError(503, "World requires tick recovery")
     return {"status": "ready"}
@@ -141,7 +145,14 @@ def ready():
 @app.get("/world")
 def world_state():
     with transaction() as conn:
-        world = conn.execute("SELECT policy, last_tick, next_tick_at, clock_timestamp() AS server_time FROM world WHERE id = 1").fetchone()
+        world = conn.execute(
+            f"""SELECT policy, last_tick, next_tick_at, time_speed,
+                       {gameclock.NOW_SQL} AS server_time
+                FROM world WHERE id = 1"""
+        ).fetchone()
+    # `time_speed` travels with the state on purpose: a client counting down to the next tick
+    # has to know how fast this world's seconds go by, and a world running at anything but 1
+    # should be able to say so rather than look broken.
     return {**world, "last_tick": str(world["last_tick"])}
 
 

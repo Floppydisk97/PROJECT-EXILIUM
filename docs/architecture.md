@@ -280,6 +280,53 @@ renderer, verificabili senza una GPU. È una separazione voluta, non estetica �
 checker vede array di numeri e uno screenshot mostra solo il fotogramma che qualcuno ha
 guardato, quindi senza test di unità un errore aritmetico qui non ha nulla che lo fermi.
 
+## L'orologio del mondo
+
+Un tick al giorno rende il gioco improvabile: una mossa si valuta dopo ventiquattr'ore.
+Finche' il mondo e' in lavorazione, quella non e' una regola -- e' l'impossibilita' di capire
+cosa manca.
+
+**Accorciare il tick non serve a niente.** La produzione non la fa il tick: `POLICY_RATES` e'
+in milli-lega al SECONDO e `settle_city` la ricava dalla differenza fra due timestamp; il tick
+porta avanti il cursore fino al confine, e basta. Portare `TICK_INTERVAL` da un giorno a dieci
+secondi darebbe 8640 cerimonie al giorno con dentro un diecimillesimo ciascuna, e il gioco
+andrebbe esattamente alla stessa velocita'. Ad andare compresso e' l'orologio che la
+simulazione LEGGE.
+
+    tempo_del_mondo = ancora_mondo + (tempo_reale - ancora_reale) * velocita'
+
+Due ancore e non una, perche' cambiare velocita' deve lasciare il tempo CONTINUO: toccare la
+sola velocita' farebbe saltare il mondo avanti o indietro di giorni, e all'indietro significa
+produzione negativa e un ledger che non torna. Chi cambia velocita' rimette prima l'ancora
+sull'istante corrente, calcolandola con la velocita' VECCHIA -- da cui le due formule si
+incontrano nel punto del cambio.
+
+E con le ancore sullo stesso istante e velocita' 1 la formula si riduce a `tempo_reale`
+**esattamente**: la sottrazione e la somma si annullano. E' la proprieta' che rende sicuro
+spedire tutto questo dentro un mondo che deve girare a un secondo al secondo -- resta inerte
+finche' nessuno gira la manopola.
+
+Il giunto e' uno solo, `db.database_now`. Restano al tempo reale, di proposito, le colonne di
+audit (`recorded_at`, `completed_at`, `generated_at`): dicono quando un fatto e' stato
+SCRITTO, non quando VALE nel mondo, ed e' la stessa distinzione che c'era gia' fra
+`effective_at` e `recorded_at`.
+
+### Il difetto che si e' visto solo giocando
+
+Il worker dormiva cinque secondi fissi fra un giro e l'altro. A un giorno al giorno la
+finestra fra mezzanotte e il worker che se ne accorge e' un battito di ciglia e non la
+incontra nessuno. A 43200x un giorno di mondo passa in due secondi, quindi quella stessa
+pausa lascia il mondo "in arretrato" quasi sempre -- e `require_current` rifiuta OGNI
+operazione economica mentre lo e'. Il mondo compresso era inutilizzabile: ogni ordine
+rispondeva 503.
+
+Ora la pausa e' proporzionale alla velocita' del mondo (quattro sguardi per giorno di mondo,
+con un pavimento che evita il ciclo stretto). A velocita' 1 restituisce gli stessi cinque
+secondi di prima.
+
+Non c'era modo di trovarlo leggendo il codice: e' saltato fuori al primo tentativo di fondare
+una citta' in un mondo veloce.
+
 ## Il pianeta e' un file
 
 Il visore chiedeva all'API due cose sole: la mappa, immutabile e generata una volta, e una
