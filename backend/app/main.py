@@ -10,13 +10,13 @@ from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app import gameclock, mapbuild, mapservice
 from app.db import transaction
 from app.service import (
-    DomainError, cast_vote, current_policy, owned_city, read_city, start_upgrade,
-    token_hash,
+    DomainError, cast_vote, city_ground, current_policy, land, owned_city, read_city,
+    start_upgrade, token_hash,
 )
 
 
@@ -195,6 +195,27 @@ def begin_upgrade(city_id: UUID, owner: Owner, idempotency_key: Annotated[UUID, 
     and until then the city is busy -- which is the whole of the game's scarcity."""
     with transaction() as conn:
         return commitment_view(start_upgrade(conn, city_id, owner, idempotency_key))
+
+
+class Landing(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tile_id: int = Field(ge=0)
+
+
+@app.post("/cities/{city_id}/land")
+def land_colony(city_id: UUID, landing: Landing, owner: Owner):
+    """Take a tile. Once, and for ever: the colony's own ground is rolled here and the seed
+    that rolled it is what gets kept."""
+    with transaction() as conn:
+        return land(conn, city_id, owner, landing.tile_id)
+
+
+@app.get("/cities/{city_id}/ground")
+def colony_ground(city_id: UUID, owner: Owner):
+    """The colony's local map, regenerated from its seed. Not stored: a pure function of the
+    seed and of what the planet says about the site."""
+    with transaction() as conn:
+        return city_ground(conn, city_id, owner)
 
 
 @app.put("/cities/{city_id}/vote")
