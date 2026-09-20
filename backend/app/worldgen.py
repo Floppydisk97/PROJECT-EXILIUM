@@ -503,9 +503,15 @@ class _SeededBowls:
         return deepest
 
 
-class _BandNoise:
-    """Smooth band-limited noise on the unit sphere: a sum of directional sinusoids with
-    seeded random directions, frequencies and phases. Cheap, continuous and deterministic."""
+class BandNoise:
+    """Smooth band-limited noise: a sum of directional sinusoids with seeded random
+    directions, frequencies and phases. Cheap, continuous and deterministic.
+
+    Public because it is the project's one noise primitive, and `citygen` samples it on a
+    plane to build a colony's ground. It is defined over 3-D points and continuous there, so
+    a plane cut through it is valid 2-D noise -- which is a good deal cheaper than a second
+    implementation that would have to be kept in step with this one.
+    """
 
     def __init__(self, rng: random.Random, octaves: int, base_freq: float):
         self.terms = []
@@ -849,15 +855,15 @@ def generate(seed: str, frequency: int = 12) -> World:
     shape_rng = random.Random(_seed_int(seed, "coastline"))
     arc_rng = random.Random(_seed_int(seed, "arcs"))
 
-    continents = _BandNoise(elev_rng, octaves=6, base_freq=CONTINENT_FREQUENCY)
-    warp_noise = _BandNoise(temp_rng, octaves=3, base_freq=2.2)
-    rain_noise = _BandNoise(rain_rng, octaves=5, base_freq=2.6)
-    ridge_noise = _BandNoise(ridge_rng, octaves=4, base_freq=3.1)
-    belt_noise = _BandNoise(belt_rng, octaves=3, base_freq=1.7)
-    island_noise = _BandNoise(isle_rng, octaves=3, base_freq=13.0)
+    continents = BandNoise(elev_rng, octaves=6, base_freq=CONTINENT_FREQUENCY)
+    warp_noise = BandNoise(temp_rng, octaves=3, base_freq=2.2)
+    rain_noise = BandNoise(rain_rng, octaves=5, base_freq=2.6)
+    ridge_noise = BandNoise(ridge_rng, octaves=4, base_freq=3.1)
+    belt_noise = BandNoise(belt_rng, octaves=3, base_freq=1.7)
+    island_noise = BandNoise(isle_rng, octaves=3, base_freq=13.0)
     # Three independent fields drawn from one generator: the displacement vector.
-    coast_warp = tuple(_BandNoise(shape_rng, octaves=3, base_freq=3.4) for _ in range(3))
-    coast_noise = _BandNoise(shape_rng, octaves=3, base_freq=8.0)
+    coast_warp = tuple(BandNoise(shape_rng, octaves=3, base_freq=3.4) for _ in range(3))
+    coast_noise = BandNoise(shape_rng, octaves=3, base_freq=8.0)
     island_field = _SeededIslandField(_island_centers(arc_rng))
     rift_noise = _IsotropicBandNoise(shape_rng, octaves=3, base_freq=RIFT_FREQUENCY)
 
@@ -904,7 +910,7 @@ def generate(seed: str, frequency: int = 12) -> World:
     basins = _SeededBowls(
         random.Random(_seed_int(seed, "basins")),
         lambda point: _base_field(point) > inland_margin,
-        _BandNoise(random.Random(_seed_int(seed, "shorelines")), octaves=2,
+        BandNoise(random.Random(_seed_int(seed, "shorelines")), octaves=2,
                    base_freq=BASIN_WOBBLE_FREQUENCY),
     )
 

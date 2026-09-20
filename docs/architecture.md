@@ -280,6 +280,68 @@ renderer, verificabili senza una GPU. È una separazione voluta, non estetica �
 checker vede array di numeri e uno screenshot mostra solo il fotogramma che qualcuno ha
 guardato, quindi senza test di unità un errore aritmetico qui non ha nulla che lo fermi.
 
+## Atterrare: la casella smette di essere scenografia
+
+Il pianeta decide una cosa sola: quale esagono. E' la scala a cui il mondo condiviso viene
+deciso, e non e' la scala a cui una colonia si gioca. Atterrare apre una seconda mappa -- un
+quadrato di terreno da 128x128 celle, circa un chilometro di lato, generato per quella colonia
+e per nessun'altra.
+
+### Casuale una volta, poi per sempre
+
+Una mappa che si rigenera diversa a ogni sguardo non puo' appartenere a un mondo condiviso e
+persistente: due giocatori vedrebbero posti diversi e quello che hai costruito ieri sarebbe
+altrove oggi. Quindi il dado si tira UNA volta, all'atterraggio, e cio' che si conserva e' il
+SEME.
+
+    16.384 celle per colonia, salvate  ->  80 milioni di righe per il mondo da 5000 giocatori
+    il seme che le genera              ->  32 caratteri
+
+La mappa e' una funzione pura del seme e di cosa il pianeta dice del sito, e si rigenera in sei
+centesimi di secondo. Quando le colonie potranno modificare il terreno, le modifiche saranno
+righe a parte sopra questa base: come un salvataggio di gioco, che non riscrive il mondo ma
+cio' che gli e' stato fatto.
+
+### Il bioma non e' decorazione
+
+Ogni manopola che un sito gira sta in `BIOME_RULES`, come dati: terreno di base, fertilita',
+copertura vegetale, asprezza del rilievo, quanto volentieri le conche si riempiono. Piovosita',
+temperatura e la quota del pianeta muovono poi quei valori, quindi due deserti non sono lo
+stesso deserto. Su tre caselle vere di un pianeta vero:
+
+    palude tropicale, fiume grande, costa      526 celle edificabili su 16.384, fertilita' 25
+    deserto a 1450 m                        16.021 celle edificabili,           fertilita'  0
+    macchia arida sulla costa               10.854 celle edificabili,           fertilita' 12
+
+Spazio o cibo. E' questo che rende la scelta del sito una decisione invece di una formalita'.
+
+### Tre cose che si sono viste solo guardando le immagini
+
+**Qualunque valore positivo diventava acqua.** La soglia di ristagno era fissa (40 cm), quindi
+anche un deserto con piovosita' tre centesimi allagava ogni conca. Ora la soglia e' una frazione
+del rilievo della mappa stessa, inversamente alla piovosita'.
+
+**La vicinanza a un'acqua IPOTETICA fertilizzava.** La fascia di riva si calcolava dalla quota
+del pelo d'acqua, che esiste anche dove l'acqua non arriva mai: un deserto senza fiume passava
+da fertilita' 1 a 20. Ora la fascia la danno solo sorgenti d'acqua vere -- costa e fiume --
+piu' le conche, ma solo nei climi che le riempiono davvero.
+
+**La riva di un fiume non e' la sabbia che il fiume attraversa.** Il bonus di riva veniva
+dimezzato dal moltiplicatore della sabbia applicato DOPO, proprio dove contava di piu'. Ora la
+riva diventa limo: il solo motivo per atterrare in un deserto vale quello che la regola dice.
+
+Nessuna delle tre si vedeva leggendo il codice, e tutte e tre si sono viste al primo sguardo
+alle immagini di `app/cityshots.py` -- che scrive PNG a mano con zlib, perche' un generatore
+che non si puo' guardare e' un generatore su cui si sta tirando a indovinare.
+
+### Una casella, una colonia
+
+Un indice parziale lo impone. Con circa 70.000 caselle di terra e cinquemila giocatori previsti
+lo spazio abbonda, ma la scarsita' non e' nel numero: e' nella qualita'. Un fiume nel deserto e'
+una casella sola. E atterrare e' irreversibile -- un trigger rifiuta di spostare o riseminare
+una colonia gia' a terra, cosi' se un giorno esistera' il trasferimento sara' una regola scritta
+apposta e non un UPDATE distratto.
+
 ## Via il tick: il mondo e' continuo
 
 Il tick era il momento in cui le cose accadevano: gli ordini si accodavano a mezzanotte, ogni

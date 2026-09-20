@@ -17,9 +17,12 @@ actually changes -- a short lock on a handful of rows, not a stall over every ci
 """
 import hashlib
 import secrets
+
+import psycopg
 from uuid import uuid4
 
 from app import db
+from app import citygen
 from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade
 from app.sim.config import RULESET, STARTING_ALLOY, upgrade_cost, upgrade_duration
 from app.sim.rules import majority_policy
@@ -247,3 +250,91 @@ def cast_vote(conn, city_id, owner_id, choice):
                 "INSERT INTO policy_periods(policy, from_at) VALUES (%s, %s)", (elected, now)
             )
     return {"policy_vote": choice, "policy": elected, "votes": votes}
+
+
+def _site_of(conn, tile_id: int) -> tuple[citygen.Site, dict]:
+    """What the planet says about a tile, in the shape the local generator accepts.
+
+    `coastal` is a property of the NEIGHBOURHOOD, not of the tile: a colony is on the coast
+    when open water is next door. It is worked out here rather than stored because the map is
+    immutable, so the answer can never go stale, and a column would be one more thing that has
+    to be right at generation time.
+    """
+    row = conn.execute(
+        """SELECT t.id, t.biome, t.elevation, t.temperature, t.rainfall, t.river_flow,
+                  t.landmass_size, t.lat, t.lon,
+                  EXISTS (SELECT 1 FROM world_tiles n
+                          WHERE n.map_id = t.map_id AND n.id = ANY(t.neighbors)
+                            AND n.biome IN ('ocean', 'sea_ice')) AS coastal
+           FROM world_tiles t WHERE t.map_id = 1 AND t.id = %s""",
+        (tile_id,),
+    ).fetchone()
+    if row is None:
+        raise DomainError(404, "No such tile on this world")
+    site = citygen.Site(
+        biome=row["biome"], elevation=row["elevation"], temperature=row["temperature"],
+        rainfall=row["rainfall"], river_flow=row["river_flow"], coastal=row["coastal"],
+    )
+    return site, row
+
+
+def land(conn, city_id, owner_id, tile_id: int) -> dict:
+    """Put a colony on a tile, once and for all.
+
+    Three things are refused, and each is a rule rather than a technicality: a colony already
+    down cannot move, water cannot be landed on, and a tile already taken is taken. The last is
+    what makes a site worth choosing -- there is exactly one river in that desert, and if
+    somebody else is on it there is not another.
+    """
+    city = owned_city(conn, city_id, owner_id, lock=True)
+    if city["tile_id"] is not None:
+        raise DomainError(409, "already_landed")
+
+    site, tile = _site_of(conn, tile_id)
+    if tile["elevation"] < 0 or site.biome in ("ocean", "lake", "sea_ice"):
+        raise DomainError(409, "not_dry_land")
+
+    now = db.database_now(conn)
+    seed = citygen.seed_for(world_seed(conn), tile_id, city_id)
+    try:
+        conn.execute(
+            "UPDATE cities SET tile_id = %s, landed_at = %s, map_seed = %s WHERE id = %s",
+            (tile_id, now, seed, city_id),
+        )
+    except psycopg.errors.UniqueViolation:
+        raise DomainError(409, "tile_taken")
+    return {"tile_id": tile_id, "landed_at": now, "biome": site.biome,
+            "coastal": site.coastal, "river_flow": site.river_flow}
+
+
+def world_seed(conn) -> str:
+    return conn.execute("SELECT seed FROM world_map WHERE id = 1").fetchone()["seed"]
+
+
+def city_ground(conn, city_id, owner_id) -> dict:
+    """The colony's own map, regenerated from its seed.
+
+    Nothing about it is stored: sixteen thousand cells a colony would be eighty million rows
+    at the size this planet is built for, and the whole thing is a pure function that takes
+    six hundredths of a second. What is stored is the seed that rolled it.
+    """
+    city = owned_city(conn, city_id, owner_id)
+    if city["tile_id"] is None:
+        raise DomainError(409, "not_landed")
+    site, _tile = _site_of(conn, city["tile_id"])
+    ground = citygen.generate(city["map_seed"], site)
+    return {
+        "city_id": city["id"], "tile_id": city["tile_id"], "seed": ground.seed,
+        "size": ground.size, "cell_metres": ground.cell_metres,
+        "site": {
+            "biome": site.biome, "elevation": site.elevation,
+            "temperature": site.temperature, "rainfall": site.rainfall,
+            "river_flow": site.river_flow, "coastal": site.coastal,
+        },
+        "ground_names": list(ground.ground_names),
+        "buildable": ground.buildable,
+        "cells": {
+            "ground": list(ground.ground), "height": list(ground.height),
+            "fertility": list(ground.fertility), "vegetation": list(ground.vegetation),
+        },
+    }
