@@ -96,9 +96,16 @@ export async function seedFor(worldSeed: string, tileId: number): Promise<string
     .map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
 }
 
+/** What the ground is worth, as three integers -- the twin of `citygen.SiteEconomy`.
+ *
+ *  Computed here as well as on the server so a site can be WEIGHED before it is taken. The
+ *  server writes its own copy down at landing and never asks this one; this is what turns
+ *  "scendi sul terreno" from a picture into a decision. */
+export type SiteEconomy = { yield_: number; effort: number; room: number };
+
 export type Generated = {
   seed: string; size: number; cell_metres: number; site: Site;
-  ground_names: string[]; cells: Cells; buildable: number;
+  ground_names: string[]; cells: Cells; buildable: number; economy: SiteEconomy;
 };
 
 /** The colony's ground, from a seed and what the planet said about the site. */
@@ -145,7 +152,12 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   const iRock = GROUNDS.indexOf("rock");
   const iSand = GROUNDS.indexOf("sand");
   const poolFloor = amplitude * (0.90 - 0.65 * Math.min(1, wetness));
+  const iSoil = GROUNDS.indexOf("soil");
+  const iGravel = GROUNDS.indexOf("gravel");
   let buildable = 0;
+  let usableFertility = 0;
+  let greenery = 0;
+  let marshCells = 0;
 
   for (let y = 0; y < size; y++) {
     const v = (y / (size - 1)) * 2 - 1;
@@ -211,13 +223,26 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
       cells.height[at] = Math.trunc(metres);
       cells.fertility[at] = fertility;
       cells.vegetation[at] = vegetation;
-      if (index === iSand || index === GROUNDS.indexOf("soil")
-          || index === GROUNDS.indexOf("gravel") || index === iRock) buildable++;
+      if (index === iSand || index === iSoil || index === iGravel || index === iRock) {
+        buildable++;
+        usableFertility += fertility;      // yield is the quality of what you can build on
+      }
+      greenery += vegetation;
+      if (index === iMarsh) marshCells++;
     }
   }
 
+  // The three numbers the economy keeps instead of the map. Mirrors `CityMap.economy`:
+  // yield is the fertility of the BUILDABLE land -- averaged over everything, a swamp full
+  // of water reads as middling, which confuses "excellent ground" with "ground you can use".
+  const economy: SiteEconomy = {
+    yield_: buildable ? Math.trunc(usableFertility / buildable) : 0,
+    effort: Math.trunc(greenery / (size * size)) + Math.trunc((100 * marshCells) / (size * size)),
+    room: buildable,
+  };
+
   return {
     seed, size, cell_metres: CELL_METRES, site,
-    ground_names: [...GROUNDS], cells, buildable,
+    ground_names: [...GROUNDS], cells, buildable, economy,
   };
 }

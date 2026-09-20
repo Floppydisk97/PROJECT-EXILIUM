@@ -9,6 +9,7 @@ const NAMES = ["deep_water", "water", "marsh", "sand", "soil", "gravel", "rock",
 function colony(cells: { ground: number; fertility: number; vegetation: number }[], size = 4): ColonyGround {
   return {
     seed: "seed", size, cell_metres: 8, buildable: 0,
+    economy: { yield_: 0, effort: 0, room: 0 },
     site: { biome: "temperate_forest", elevation: 100, temperature: 10, rainfall: 900, river_flow: 0, coastal: false },
     ground_names: NAMES,
     cells: {

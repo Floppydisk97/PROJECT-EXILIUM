@@ -12,7 +12,8 @@ import pytest
 from app import citygen
 from app.db import transaction
 from app.mapservice import generate_and_store
-from app.service import DomainError, city_ground, land, provision
+from app.service import DomainError, _site_of, city_ground, city_state, land, provision
+from app.sim.config import POLICY_RATES, production_rate
 
 FREQUENCY = 12       # 1442 tiles: enough for coasts, rivers and several biomes
 SMALL = 96           # a test-sized colony: production is 768 a side and three seconds, and
@@ -30,7 +31,10 @@ def player(name="Exilium"):
 
 
 def a_land_tile(biome=None, with_river=False):
-    clause = "elevation >= 0 AND biome NOT IN ('ocean', 'lake', 'sea_ice')"
+    # Not frozen: a tile can be dry by elevation and still be ice end to end, and landing
+    # there is refused -- see `test_a_site_with_nothing_to_build_on_is_refused`.
+    clause = ("elevation >= 0 AND biome NOT IN ('ocean', 'lake', 'sea_ice')"
+              " AND temperature > -8")
     if biome:
         clause += f" AND biome = '{biome}'"
     if with_river:
@@ -61,11 +65,11 @@ def test_a_colony_cannot_land_twice_or_move_afterwards(database):
     future code path is free to forget."""
     world()
     p = player()
-    first, second = a_land_tile(), None
     with transaction() as conn:
         rows = conn.execute(
             "SELECT id FROM world_tiles WHERE map_id = 1 AND elevation >= 0"
-            " AND biome NOT IN ('ocean','lake','sea_ice') ORDER BY id LIMIT 2"
+            " AND biome NOT IN ('ocean','lake','sea_ice') AND temperature > -8"
+            " ORDER BY id LIMIT 2"
         ).fetchall()
     first, second = rows[0]["id"], rows[1]["id"]
     with transaction() as conn:
@@ -209,3 +213,61 @@ def test_a_river_makes_its_banks_worth_landing_on(database):
 
 def _mean(values):
     return sum(values) / len(values)
+
+
+def test_landing_writes_down_what_the_ground_is_worth(database):
+    """The map is grown once, here, and reduced to three numbers. Nowhere else: production is
+    worked out every time somebody looks at a city, and a colony is 590.000 cells."""
+    world()
+    p = player()
+    with transaction() as conn:
+        landed = land(conn, p["city_id"], p["player_id"], a_land_tile())
+    assert {"site_yield", "site_effort", "site_room"} <= set(landed)
+    with transaction() as conn:
+        row = conn.execute(
+            "SELECT site_yield, site_effort, site_room FROM cities WHERE id = %s",
+            (p["city_id"],),
+        ).fetchone()
+    assert row["site_yield"] == landed["site_yield"]
+    assert row["site_room"] > 0
+    # And the numbers are the map's own, not a guess: regrowing from the stored seed agrees.
+    with transaction() as conn:
+        seed = conn.execute("SELECT map_seed FROM cities WHERE id = %s",
+                            (p["city_id"],)).fetchone()["map_seed"]
+        site, _tile = _site_of(conn, a_land_tile())
+    assert citygen.generate(seed, site).economy.yield_ == row["site_yield"]
+
+
+def test_a_colony_in_orbit_earns_exactly_what_it_earned_before_the_ground_mattered(database):
+    """Null is not zero. A colony that has not landed has no ground to be crowded against,
+    and ruleset 2 must not quietly tax it for standing nowhere."""
+    world()
+    p = player()
+    with transaction() as conn:
+        row = conn.execute("SELECT * FROM cities WHERE id = %s", (p["city_id"],)).fetchone()
+    assert row["site_room"] is None
+    state = city_state(row)
+    assert state.site_yield == 0 and state.site_effort == 0 and state.site_room is None
+    assert production_rate("balanced", 7, state.site_yield) == POLICY_RATES["balanced"] + 7 * 5
+
+
+def test_a_site_with_nothing_to_build_on_is_refused(database):
+    """Dry by elevation and yet frozen end to end: an ice cap has not one buildable cell.
+
+    Landing is irreversible, so letting a colony down there would strand it for ever with
+    nothing it could ever build. Hard ground is a decision -- a swamp has almost no room and
+    is allowed -- but NO ground is a trap, and the planet has plenty of it.
+    """
+    world()
+    p = player()
+    with transaction() as conn:
+        frozen = conn.execute(
+            """SELECT id FROM world_tiles WHERE map_id = 1 AND elevation >= 0
+                 AND biome NOT IN ('ocean', 'lake', 'sea_ice') AND temperature <= -8
+               ORDER BY id LIMIT 1"""
+        ).fetchone()
+    if frozen is None:
+        pytest.skip("this test world happens to have no frozen land")
+    with pytest.raises(DomainError) as error, transaction() as conn:
+        land(conn, p["city_id"], p["player_id"], frozen["id"])
+    assert error.value.detail == "no_ground"

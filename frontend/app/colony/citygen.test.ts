@@ -21,6 +21,11 @@ describe("the two generators agree", () => {
       expect([...made.cells.fertility]).toEqual(testCase.fertility);
       expect([...made.cells.vegetation]).toEqual(testCase.vegetation);
       expect(made.buildable).toBe(testCase.buildable);
+      // What the ground is WORTH, not only what it looks like: this is the number the viewer
+      // shows before a landing and the server writes down after one.
+      expect(made.economy.yield_).toBe(testCase.economy.yield);
+      expect(made.economy.effort).toBe(testCase.economy.effort);
+      expect(made.economy.room).toBe(testCase.economy.room);
     });
   }
 

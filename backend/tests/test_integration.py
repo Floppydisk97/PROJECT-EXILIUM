@@ -22,9 +22,9 @@ from app.db import database_now, transaction
 from app.main import app
 from app.mapservice import generate_and_store, read_map
 from app.service import (
-    DomainError, balance, cast_vote, current_policy, provision, read_city, start_upgrade,
+    DomainError, balance, cast_vote, current_policy, land, provision, read_city, start_upgrade,
 )
-from app.sim.config import upgrade_cost, upgrade_duration
+from app.sim.config import RULESET, upgrade_cost, upgrade_duration
 from app.worker import sweep
 
 
@@ -291,7 +291,7 @@ def test_api_authorization_validation_idempotency_and_ledger(database):
         assert client.get(path + "/ledger?limit=201", headers=headers).status_code == 422
         assert client.get(path + "/commitments", headers=headers).json()[0]["id"] == first.json()["id"]
         # Every ledger row records which rules produced it, now that no tick does.
-        assert all(row["ruleset"] == 1 for row in ledger)
+        assert all(row["ruleset"] == RULESET for row in ledger)
 
 
 def test_simultaneous_reads_never_duplicate_production(database, monkeypatch):
@@ -473,3 +473,51 @@ def test_rate_limit_counts_per_address_and_spares_health():
     # throttled health check would take the service down.
     with TestClient(app) as client:
         assert client.get("/health/live").status_code == 200
+
+
+def test_two_colonies_on_different_ground_do_not_earn_the_same(database, monkeypatch):
+    """Ruleset 2, end to end -- through the database and the service, not the rules alone.
+
+    This is the assertion the whole change exists for: before it, a colony on forest soil and
+    a colony on bare desert produced identical alloy, and choosing a site was a formality with
+    a scenery.
+    """
+    with transaction() as conn:
+        generate_and_store(conn, "Approdo", 12)
+
+    def a_tile(biome):
+        with transaction() as conn:
+            row = conn.execute(
+                """SELECT id FROM world_tiles WHERE map_id = 1 AND biome = %s
+                     AND elevation >= 0 AND temperature > -8 ORDER BY id LIMIT 1""",
+                (biome,),
+            ).fetchone()
+        return row["id"] if row else None
+
+    rich_tile, poor_tile = a_tile("temperate_forest"), a_tile("desert")
+    if rich_tile is None or poor_tile is None:
+        pytest.skip("this test world has neither a forest nor a desert")
+
+    rich, poor = player("Fertile"), player("Arida")
+    names = {rich["city_id"]: "Fertile", poor["city_id"]: "Arida"}
+    with transaction() as conn:
+        land(conn, rich["city_id"], rich["player_id"], rich_tile)
+        land(conn, poor["city_id"], poor["player_id"], poor_tile)
+
+    rewind(3600)
+    now = freeze_clock(monkeypatch)
+    earned = {}
+    for who in (rich, poor):
+        with transaction() as conn:
+            row = conn.execute("SELECT * FROM cities WHERE id = %s",
+                               (who["city_id"],)).fetchone()
+            before = int(row["balance_milli"])
+            service.advance(conn, row, now)
+            after = conn.execute("SELECT balance_milli, site_yield FROM cities WHERE id = %s",
+                                 (who["city_id"],)).fetchone()
+        earned[names[who["city_id"]]] = (int(after["balance_milli"]) - before,
+                                         after["site_yield"])
+
+    (rich_alloy, rich_yield), (poor_alloy, poor_yield) = earned["Fertile"], earned["Arida"]
+    assert rich_yield > poor_yield, earned
+    assert rich_alloy > poor_alloy, earned

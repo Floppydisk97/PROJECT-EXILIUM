@@ -80,6 +80,11 @@ def city_state(row) -> CityState:
         level=row["level"],
         balance_milli=int(row["balance_milli"]),
         settled_at=row["settled_at"],
+        # What the colony kept of its ground. Null until it lands -- and null is not zero
+        # room, it is no ground to be crowded against, which is what an orbiting colony has.
+        site_yield=row["site_yield"] or 0,
+        site_effort=row["site_effort"] or 0,
+        site_room=row["site_room"],
     )
 
 
@@ -296,15 +301,30 @@ def land(conn, city_id, owner_id, tile_id: int) -> dict:
 
     now = db.database_now(conn)
     seed = citygen.seed_for(world_seed(conn), tile_id)
+    # The map is grown ONCE, here, and reduced to the three numbers the economy asks of it.
+    # Nowhere else may this happen: 590.000 cells is seconds of work, and production is
+    # computed every time anybody looks at a city.
+    economy = citygen.generate(seed, site).economy
+    if economy.room == 0:
+        # Dry by elevation and yet nothing to build on: an ice cap, a glacier, a mountain that
+        # is frozen end to end. Landing is IRREVERSIBLE -- a trigger refuses to move a colony
+        # once it is down -- so allowing this would create a colony that can never build
+        # anything, for ever, with no way back. Hard ground is a choice; no ground is a trap.
+        # The viewer already shows the buildable count before anybody commits.
+        raise DomainError(409, "no_ground")
     try:
         conn.execute(
-            "UPDATE cities SET tile_id = %s, landed_at = %s, map_seed = %s WHERE id = %s",
-            (tile_id, now, seed, city_id),
+            """UPDATE cities SET tile_id = %s, landed_at = %s, map_seed = %s,
+                                 site_yield = %s, site_effort = %s, site_room = %s
+               WHERE id = %s""",
+            (tile_id, now, seed, economy.yield_, economy.effort, economy.room, city_id),
         )
     except psycopg.errors.UniqueViolation:
         raise DomainError(409, "tile_taken")
     return {"tile_id": tile_id, "landed_at": now, "biome": site.biome,
-            "coastal": site.coastal, "river_flow": site.river_flow}
+            "coastal": site.coastal, "river_flow": site.river_flow,
+            "site_yield": economy.yield_, "site_effort": economy.effort,
+            "site_room": economy.room}
 
 
 def world_seed(conn) -> str:

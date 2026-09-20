@@ -1,4 +1,4 @@
-"""The rules of ruleset 1: pure functions from state to described effects.
+"""The rules of ruleset 2: pure functions from state to described effects.
 
 These are deliberately per-entity rather than one function over the whole world. The world is
 shared and persistent, and different players' cities are meant to proceed in parallel -- they
@@ -16,7 +16,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from app.sim.config import (
-    LEVEL_RATE, MAX_LEVEL, POLICY_RATES, upgrade_cost, upgrade_duration,
+    MAX_LEVEL, production_rate, upgrade_cost, upgrade_duration,
 )
 from app.sim.state import (
     Advance, CityState, Commitment, Completion, LedgerEntry, PolicyPeriod, Settlement,
@@ -32,7 +32,8 @@ def _whole_seconds(*moments: datetime) -> None:
 
 
 def production_amount(
-    start: datetime, end: datetime, periods: list[PolicyPeriod], level: int
+    start: datetime, end: datetime, periods: list[PolicyPeriod], level: int,
+    site_yield: int = 0,
 ) -> int:
     """Milli-alloy matured over an interval, integrated across the policies it crosses.
 
@@ -47,6 +48,10 @@ def production_amount(
     somebody looks at it, without holding anyone else still.
 
     An interval not covered by any period is a bug rather than free alloy, so it is refused.
+
+    `site_yield` is the colony's ground, and it multiplies the rate rather than the total:
+    the rate has to be one integer per slice, or splitting an interval would not give the
+    same answer as not splitting it.
     """
     _whole_seconds(start, end)
     if end < start or level < 0:
@@ -64,7 +69,7 @@ def production_amount(
         elapsed = slice_end - slice_start
         seconds = elapsed.days * 86400 + elapsed.seconds
         covered += seconds
-        total += seconds * (POLICY_RATES[period.policy] + level * LEVEL_RATE)
+        total += seconds * production_rate(period.policy, level, site_yield)
 
     whole = end - start
     if covered != whole.days * 86400 + whole.seconds:
@@ -95,7 +100,7 @@ def settle_city(
     rejected whether or not there is anything to settle, or a bad clock would pass silently in
     exactly the case where nothing looks wrong.
     """
-    amount = production_amount(city.settled_at, until, periods, city.level)
+    amount = production_amount(city.settled_at, until, periods, city.level, city.site_yield)
     if until == city.settled_at:
         return None
     entry = None
@@ -159,8 +164,8 @@ def begin_upgrade(
         return "already_busy"
     if city.level >= MAX_LEVEL:
         return "maximum_level"
-    cost = upgrade_cost(city.level)
+    cost = upgrade_cost(city.level, city.site_room)
     if city.balance_milli < cost:
         return "insufficient_alloy"
     entry = LedgerEntry(city.id, -cost, "upgrade", f"upgrade:{city.id}:{now.isoformat()}", now)
-    return entry, now + upgrade_duration(city.level)
+    return entry, now + upgrade_duration(city.level, city.site_effort, city.site_room)

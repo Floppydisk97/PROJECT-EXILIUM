@@ -13,7 +13,7 @@ from uuid import UUID
 
 from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade, snapshot
 from app.sim.config import (
-    MAX_LEVEL, POLICY_RATES, STARTING_ALLOY, upgrade_cost, upgrade_duration,
+    MAX_LEVEL, POLICY_RATES, RULESET, STARTING_ALLOY, upgrade_cost, upgrade_duration,
 )
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
@@ -95,7 +95,10 @@ def test_the_same_inputs_always_produce_the_same_result():
 
 def test_the_state_is_serialisable_and_carries_its_ruleset():
     picture = snapshot("balanced", [city(ONE), city(TWO, level=2)])
-    assert picture["ruleset"] == 1
+    # Asserted against the constant, not against a literal: the number is meant to move when
+    # the rules change, and a test that had to be edited every time would teach people to
+    # edit it without thinking.
+    assert picture["ruleset"] == RULESET
     assert json.loads(json.dumps(picture)) == picture   # no exotic types leaked in
     assert picture["cities"][1]["level"] == 2
 

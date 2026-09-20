@@ -167,3 +167,49 @@ tolto passando all'alternativa 1 per le caselle non ancora rivelate.
 **Da rivedere se.** Nasce il client scaricabile con una sessione persistente: lì la latenza non
 c'è più e l'alternativa 1 elimina la duplicazione. Oppure se l'equivalenza cella-per-cella
 comincia a costare più di quanto valga.
+
+---
+
+## ADR-006 — Il terreno vale tre numeri, non uno
+
+**Decisione.** Una colonia atterrata conserva tre interi misurati sulla propria mappa: **resa**
+(fertilità della terra edificabile), **fatica** (verde e palude da sgomberare) e **spazio**
+(celle edificabili). La resa alza il tasso di produzione, la fatica allunga gli avanzamenti, lo
+spazio dà un tetto **morbido**. È il ruleset 2.
+
+**Motivazione.** Prima di questo, dove atterravi cambiava la vista e nient'altro. La manopola
+ovvia — «la fertilità alza la produzione» — è stata scartata **dopo averla misurata**: con un
+numero solo esiste un sito migliore in assoluto, e scegliere diventa cercarlo. Non è una
+decisione, è una classifica. E i due candidati ovvi non erano neppure in tensione: la foresta
+pluviale batte il deserto sia in fertilità sia in spazio (correlazione fra i due assi: −0,12).
+
+Tre numeri che tirano in direzioni diverse producono invece un **sorpasso**: simulando un anno,
+la terra grassa è avanti del 37% a dieci giorni e il deserto la passa fra i novanta giorni e
+l'anno. Nessun sito è la risposta a tutti gli orizzonti.
+
+**Alternative considerate.**
+1. *Una manopola sola (la resa).* Due giorni di lavoro invece di una settimana. Scartata per la
+   ragione sopra: costruisce una classifica.
+2. *Solo attrito* — il terreno non cambia la resa, cambia quanto costa crescere. Difficile da
+   sbilanciare, ma la scelta del sito si sente invece di leggersi.
+3. *La seconda risorsa subito* (minerali nella roccia, cibo nel fertile). È la soluzione che fa
+   contare davvero la geografia, e resta la strada per il ruleset 3 — ma tocca ledger, costi,
+   avanzamenti e interfaccia tutti insieme, e non era il momento.
+
+**Rischi e criticità.**
+- **I biomi intermedi restano smorti.** La tundra è media in tutto, quindi non è la migliore da
+  nessuna parte. Accettato consapevolmente: la cura è l'alternativa 3, dove il freddo e la
+  roccia diventano *necessari* invece che scadenti. Aggiungere ora una quarta manopola sarebbe
+  rattoppare un problema che ha già una soluzione strutturale.
+- **La palude è quattro volte indietro.** Non è un difetto: una palude *è* un brutto posto per
+  una città, e il visore mostra 0,3% di edificabile mentre la stai guardando. Una trappola
+  visibile è una scelta; sarebbe un tranello solo se non si vedesse.
+- **Due copie del calcolo**, come per il generatore. Il riferimento verifica anche i tre numeri
+  economici: se divergessero, il sito che hai pesato e quello che hai preso non sarebbero lo
+  stesso, e ogni confronto cella per cella continuerebbe a passare.
+- **I numeri sono di partenza, non bilanciati.** Stanno tutti in `sim/config.py`, e cambiarli è
+  un ruleset nuovo — non una riscrittura silenziosa della storia, perché il ledger timbra ogni
+  riga.
+
+**Da rivedere se.** Arriva la seconda risorsa: a quel punto resa e fatica diventano due voci di
+un conto più grande, e il tetto morbido potrebbe non servire più.

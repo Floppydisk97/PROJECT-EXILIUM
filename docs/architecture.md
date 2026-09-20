@@ -462,6 +462,67 @@ una casella sola. E atterrare e' irreversibile -- un trigger rifiuta di spostare
 una colonia gia' a terra, cosi' se un giorno esistera' il trasferimento sara' una regola scritta
 apposta e non un UPDATE distratto.
 
+## Il terreno entra nell'economia
+
+Fino a ieri atterrare su un delta o su un deserto produceva la STESSA lega: dove scendevi
+cambiava la vista e nient'altro, quindi scegliere il sito era una formalita' con un panorama.
+
+### Perche' non bastava un numero
+
+La cosa ovvia era una manopola sola -- la fertilita' alza la produzione -- ed e' stata scartata
+misurandola. Con un numero solo esiste un sito migliore in assoluto, e scegliere diventa
+cercarlo: una classifica, non una decisione. Peggio, i due candidati ovvi non erano nemmeno in
+tensione: la foresta pluviale batte il deserto sia in fertilita' sia in spazio.
+
+### Tre numeri che tirano in direzioni diverse
+
+    resa    fertilita' della terra EDIFICABILE   ->  alza il tasso di produzione
+    fatica  verde da sgomberare piu' palude      ->  allunga ogni avanzamento
+    spazio  celle edificabili                    ->  quanto cresci prima di stringerti
+
+La resa si misura sulla terra su cui si puo' costruire, non sulla media della mappa: annacquata
+dall'acqua, una palude legge come mediocre -- e non e' mediocre, e' ottima terra su cui non ci
+sta una citta', che sono due fatti diversi e l'economia li deve tenere separati.
+
+Simulando un anno di tempo di mondo, giocando ovunque allo stesso modo:
+
+    lega accumulata      10 giorni   30 giorni   90 giorni     1 anno
+    pluviale                57.511     305.934   1.602.138  13.147.513
+    foresta temperata       56.111     298.369   1.565.233  12.853.542
+    deserto                 41.284     262.081   1.518.775  13.251.161  <- sorpassa
+    tundra                  46.057     258.868   1.418.098  11.964.478
+    palude tropicale        31.492     143.591     575.507   3.280.694
+
+**C'e' il sorpasso**, ed e' il punto: a dieci giorni la terra grassa e' avanti del 37%, fra i
+novanta giorni e l'anno il deserto la passa. Nessun sito e' la risposta a tutti gli orizzonti,
+quindi la domanda «parto forte o cresco per sempre?» ha davvero due risposte.
+
+### Il tetto e' morbido perche' atterrare e' definitivo
+
+Oltre il proprio spazio una colonia non si ferma: ogni livello costa e dura molto di piu'.
+Un muro condannerebbe per sempre chi ha scelto un delta, in un mondo dove non si ricomincia.
+
+Per la stessa ragione un sito con ZERO celle edificabili adesso viene rifiutato: una calotta a
+3637 metri e' asciutta per quota e ghiacciata da parte a parte, e scenderci significherebbe
+non poter costruire mai piu' niente. Terra difficile e' una scelta; nessuna terra e' una
+trappola.
+
+### Dove vivono i tre numeri
+
+Sulla riga della citta', scritti UNA volta all'atterraggio. Non possono stare altrove: la
+produzione si calcola ogni volta che qualcuno guarda una citta', e una colonia e' 590.000
+celle. Sono annullabili, e NULL non e' zero -- zero spazio vorrebbe dire una colonia gia'
+stretta prima di essere scesa, mentre una colonia in orbita produce esattamente quello che
+produceva prima che il terreno contasse.
+
+Le colonie atterrate sotto il ruleset 1 si riempiono con `python -m app.sitefill`, che le
+rigenera dal seme: un riempimento ESATTO e non una stima, che e' precisamente il motivo per
+cui il seme era stato salvato.
+
+E il visore li mostra PRIMA dell'atterraggio, perche' e' l'unica cosa che rende la scelta del
+sito una scelta. Il gemello TypeScript li calcola e il riferimento li verifica: se le due
+copie divergessero, il sito che hai pesato e quello che hai preso non sarebbero lo stesso.
+
 ## Via il tick: il mondo e' continuo
 
 Il tick era il momento in cui le cose accadevano: gli ordini si accodavano a mezzanotte, ogni

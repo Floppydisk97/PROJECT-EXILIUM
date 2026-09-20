@@ -59,6 +59,12 @@ def build() -> dict:
             "fertility": list(made.fertility),
             "vegetation": list(made.vegetation),
             "buildable": made.buildable,
+            # The three economic numbers travel with the reference too. They are what the
+            # viewer PROMISES before a landing and what the server writes down after it: if
+            # the two copies computed them differently, the site you weighed and the site you
+            # took would not be the same site, and every cell-for-cell check would still pass.
+            "economy": {"yield": made.economy.yield_, "effort": made.economy.effort,
+                        "room": made.economy.room},
         })
     seeds = [{"world": world, "tile": tile, "seed": seed_for(world, tile)}
              for world, tile in SEEDS]

@@ -38,6 +38,7 @@ ALLUVIUM_REACH = 150.0      # how far from water the ground itself becomes silt
 
 # The ground a cell is made of. Order is the wire format, so append rather than insert.
 GROUNDS = ("deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice")
+DRY = frozenset(GROUNDS.index(name) for name in ("sand", "soil", "gravel", "rock"))
 
 # What a biome does to the ground it is made of. Data, not behaviour -- the same rule as
 # `sim/config.py`, so tuning a world is reading one table instead of chasing literals.
@@ -101,8 +102,41 @@ class CityMap:
 
     @property
     def buildable(self) -> int:
-        dry = {GROUNDS.index(name) for name in ("sand", "soil", "gravel", "rock")}
-        return sum(1 for g in self.ground if g in dry)
+        return sum(1 for g in self.ground if g in DRY)
+
+    @property
+    def economy(self) -> "SiteEconomy":
+        """What this ground is worth, as three integers.
+
+        Three, and computed HERE, because the economy must not carry a map around. A colony
+        is 590.000 cells and takes seconds to grow; production is worked out every time
+        somebody looks at a city. So the map is reduced once, at landing, to the only things
+        the rules ask of it, and those are what the row keeps.
+
+        Integers on purpose: a saved world has to replay identically, and the accrual is
+        integer arithmetic from end to end.
+        """
+        cells = len(self.ground)
+        # Yield is the quality of the land you can actually BUILD ON, not the average of the
+        # whole map. Averaged over everything, a swamp full of water reads as middling -- it
+        # is not middling, it is excellent ground you cannot put a city on, and those are two
+        # different facts that the economy has to keep apart.
+        usable = [f for g, f in zip(self.ground, self.fertility) if g in DRY]
+        site_yield = sum(usable) // len(usable) if usable else 0
+        # Effort is what has to be cleared before anything can be built: standing growth, and
+        # marsh, which has to be drained. It is what stops rich ground from being simply
+        # better -- a rainforest pays more per level and takes far longer to reach the next.
+        marsh = sum(1 for g in self.ground if g == GROUNDS.index("marsh"))
+        effort = sum(self.vegetation) // cells + 100 * marsh // cells
+        return SiteEconomy(yield_=site_yield, effort=effort, room=self.buildable)
+
+
+@dataclass(frozen=True)
+class SiteEconomy:
+    """The three numbers a landed colony keeps instead of its map."""
+    yield_: int     # 0-100: fertility of the buildable land -- drives the production rate
+    effort: int     # 0-200: growth and marsh to clear -- drives how long an upgrade takes
+    room: int       # buildable cells -- how far the colony grows before it starts to crowd
 
 
 def seed_for(world_seed: str, tile_id: int) -> str:

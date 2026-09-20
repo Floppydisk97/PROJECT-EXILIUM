@@ -91,8 +91,17 @@ export default function ColonyPicker({ tileId }: { tileId: number | null }) {
           {ground.site.river_flow > 0 && <span>fiume {ground.site.river_flow}</span>}
           {ground.site.coastal && <span>costa</span>}
           <span className="colony-spacer" />
-          <span>
-            <b>{ground.buildable.toLocaleString("it-IT")}</b> celle edificabili su{" "}
+          {/* Cio' che il sito VALE, non solo com'e' fatto. Sono gli stessi tre numeri che il
+              server scrive sulla riga della colonia quando si atterra -- mostrarli prima e'
+              l'unica cosa che rende la scelta del sito una scelta invece di una formalita'. */}
+          <span title="Fertilità della terra su cui si può costruire: alza la produzione">
+            resa <b>{ground.economy.yield_}</b>
+          </span>
+          <span title="Vegetazione e palude da sgomberare: allunga ogni avanzamento">
+            fatica <b>{ground.economy.effort}</b>
+          </span>
+          <span title="Celle edificabili: quanto cresce la colonia prima di stringersi">
+            spazio <b>{ground.economy.room.toLocaleString("it-IT")}</b> su{" "}
             {(ground.size ** 2).toLocaleString("it-IT")}
           </span>
           <span>{((ground.size * ground.cell_metres) / 1000).toFixed(1)} km di lato</span>

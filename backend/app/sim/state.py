@@ -24,11 +24,21 @@ from app.sim.config import RULESET
 @dataclass(frozen=True)
 class CityState:
     """One settlement. `balance_milli` mirrors the ledger sum, which the database keeps
-    materialised; the rules read it so they never have to scan a ledger to know a balance."""
+    materialised; the rules read it so they never have to scan a ledger to know a balance.
+
+    The three site numbers are what the colony kept of its ground -- see `citygen.SiteEconomy`.
+    They are fixed at landing and never change: the map is a function of the seed, and the
+    seed does not move. Their defaults are what a colony still in orbit has, and they are
+    chosen so that a city without ground produces exactly what it produced before there was
+    any ground at all.
+    """
     id: UUID
     level: int
     balance_milli: int
     settled_at: datetime
+    site_yield: int = 0            # 0 -> the rate is untouched
+    site_effort: int = 0           # 0 -> an upgrade takes its bare duration
+    site_room: int | None = None   # None -> nothing to crowd against
 
 
 @dataclass(frozen=True)
@@ -120,6 +130,8 @@ def snapshot(policy: str, cities: tuple[CityState, ...] | list[CityState]) -> di
                 "level": city.level,
                 "balance_milli": city.balance_milli,
                 "settled_at": city.settled_at.isoformat(),
+                "site": {"yield": city.site_yield, "effort": city.site_effort,
+                         "room": city.site_room},
             }
             for city in cities
         ],
