@@ -1283,6 +1283,35 @@ e al test di equivalenza fra le due strade.
 Delle due prove che la coprivano ne resta una, sull'unica regola che vale ancora: lo stato
 del mondo non si mette in cache, perché cambia.
 
+### Perché il job `containers` era rosso, e perché ci sono voluti due giorni
+
+Con i runner tornati, l'errore si è finalmente letto:
+
+    FileNotFoundError: [Errno 2] No such file or directory: '/.github/workflows/ci.yml'
+    5 failed, 121 passed
+
+Un difetto solo, cinque volte. **L'immagine di prova contiene solo `backend/`** — il
+Dockerfile copia quel contesto e basta — quindi un test che legge un file del REPOSITORY (il
+workflow in `.github/`, il pianeta spedito in `frontend/`) lì dentro non trova niente.
+
+Quattro erano i test scritti poche ore prima per tenere allineate le guardie della CI. Il
+quinto, `test_the_shipped_asset_describes_the_world_the_code_builds`, era lì dal 19 settembre:
+il run 118 — il primo rosso — **è esattamente il commit che lo ha introdotto**, e il 117,
+l'ultimo verde, è quello prima. La CI è stata rossa due giorni per un test che non poteva
+funzionare lì dal minuto in cui è nato.
+
+Il rimedio non è far provare all'immagine cose che non contiene: quei test portano il
+marcatore `repo` e il `CMD` dell'immagine li deseleziona. Non si perde copertura, perché il
+job `backend` ha il repository intero sotto mano e li esegue tutti.
+
+    5/126 raccolti con -m "repo"        i cinque che cadevano
+    121/126 con -m "not repo"           esattamente i 121 che passavano
+
+E la ragione per cui ci sono voluti due giorni è scritta sopra: `docker compose logs` senza
+limite seppelliva l'errore. Anche `--tail 40` non bastava — vale PER SERVIZIO, e con cinque
+servizi fanno duecento righe fra l'errore e la fine del log. Adesso sono quindici, che è
+quanto serve a dire se un container è morto.
+
 ### I fork, e il doppio giro
 
 Un repository pubblico può ricevere PR da un fork, e il push di un fork qui non arriva: senza

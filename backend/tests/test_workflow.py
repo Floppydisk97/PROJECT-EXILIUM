@@ -14,6 +14,12 @@ con il fatto che in YAML 1.1 la chiave `on:` si carica come `True`.
 import re
 from pathlib import Path
 
+import pytest
+
+# Tutto questo file legge il repository, non il pacchetto: dentro all'immagine di prova
+# `.github/` non c'e'. Marcato in blocco, cosi' non si dimentica un test alla volta.
+pytestmark = pytest.mark.repo
+
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
 
 

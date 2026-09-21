@@ -13,4 +13,7 @@ FROM runtime AS test
 USER root
 RUN pip install --no-cache-dir -r requirements-dev.lock.txt
 USER exilium
-CMD ["pytest", "-q", "-p", "no:cacheprovider"]
+# `-m "not repo"`: l'immagine contiene solo `backend/`, quindi i test che leggono file
+# del repository (il workflow, il pianeta spedito in `frontend/`) qui non possono
+# girare. Li esegue il job `backend`, che ha il repository intero sotto mano.
+CMD ["pytest", "-q", "-p", "no:cacheprovider", "-m", "not repo"]

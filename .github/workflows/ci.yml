@@ -103,9 +103,9 @@ jobs:
           bash scripts/backup.sh
           RESTORE_CONFIRM=yes bash scripts/restore.sh "$(ls -t backups/*.dump | head -1)"
           curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:8000/health/ready
-      # `--tail`, e non tutto. I log di quattro servizi seppellivano il motivo del guasto:
-      # quando i test dentro al container sono caduti, in coda al log del job c'erano
-      # millecinquecento righe di avvio di PostgreSQL e zero righe di pytest. Un dump
-      # illimitato al posto dell'errore non e' diagnostica, e' rumore che la nasconde.
+      # `--tail`, e corto. Vale PER SERVIZIO: con cinque servizi, quaranta righe l'uno fanno
+      # duecento righe fra l'errore di pytest e la fine del log, e l'errore resta comunque
+      # irraggiungibile -- e' successo, e sono stati due giorni di diagnosi al buio. Quindici
+      # bastano a dire se un container e' morto, che e' tutto cio' che questo dump deve fare.
       - if: always()
-        run: docker compose logs --tail 40 && docker compose down
+        run: docker compose logs --tail 15 && docker compose down
