@@ -720,10 +720,17 @@ esattamente il layout "odd-r" che `hexgrid.ts` implementa a mano.
 **Il problema aperto, e va detto prima di costruirci sopra.** A 2,36 milioni di esagoni
 GDScript impiegherebbe ~11 s, più il rilevamento: troppo per uno schermo di caricamento.
 La via naturale è il parallelismo — il generatore è puro e ogni cella è indipendente, e
-un'applicazione desktop ha thread veri. **Non è stato possibile misurarlo**: la macchina su
-cui è stato scritto questo è limitata sulla CPU, e anche quattro processi separati ci scalano
-solo 1,5 volte. Va rimisurato su una macchina vera. Se i thread non bastassero, le vie sono
-C# (Godot .NET) o una GDExtension, in quest'ordine.
+un'applicazione desktop ha thread veri. **Non è misurabile sulla macchina su cui questo è
+stato scritto**: è limitata sulla CPU, e anche quattro processi separati ci scalano solo 1,5
+volte. Quindi la misura la fa **la CI**, dove i core sono quattro e non strozzati:
+`tests/bench.gd` gira a ogni giro e stampa il numero nel log, senza far cadere niente. Se i
+thread non bastassero, le vie sono C# (Godot .NET) o una GDExtension, in quest'ordine.
+
+**E il client si può guardare senza editor.** `--headless` non disegna affatto, ma con un
+server grafico finto (xvfb) e OpenGL su Mesa, Godot rende davvero: `tests/shot.gd` fotografa
+una scena in un PNG. Un visore è l'unico posto dove sbagliare non si vede — viene fuori una
+cosa un po' strana, e una cosa un po' strana sembra una scelta — quindi poter guardare senza
+aprire l'editor è la differenza fra verificare e fidarsi.
 
 **Alternative scartate.**
 1. *Restare sul browser e basta.* Il fastidio immediato — i 3,2 s di caricamento — si
