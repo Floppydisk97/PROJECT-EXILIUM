@@ -1,0 +1,20 @@
+; Project Exilium -- il client.
+;
+; Il SERVER non cambia: FastAPI, PostgreSQL, il pianeta, l'economia e le regole restano dove
+; sono. Questo progetto sostituisce solo il modo di GUARDARE e di comandare, e per adesso
+; contiene la sola cosa che deve esistere prima di tutto il resto: il gemello GDScript del
+; generatore del terreno, tenuto cella per cella sullo stesso riferimento delle altre due
+; copie.
+
+config_version=5
+
+[application]
+
+config/name="Project Exilium"
+config/description="Il client di gioco. Il mondo sta sul server; questo lo guarda e lo comanda."
+config/features=PackedStringArray("4.7")
+run/main_scene=""
+
+[rendering]
+
+renderer/rendering_method="forward_plus"

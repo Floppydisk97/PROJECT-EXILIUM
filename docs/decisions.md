@@ -690,3 +690,72 @@ rifiutato una volta, ma non di molto.
 
 **Da rivedere se.** Si comincia a costruire davvero: allora servirà sapere quali esagoni sono
 occupati, e quello è uno strato nuovo — non una proprietà del terreno.
+
+---
+
+## ADR-016 — Il client diventa un'applicazione Godot, e il generatore ha un terzo gemello
+
+**Decisione.** Il client di gioco viene rifatto in **Godot 4**, come **applicazione desktop**.
+Il server non cambia: FastAPI, PostgreSQL, il pianeta, l'economia, il ledger e le regole
+restano dove sono. Godot sostituisce il modo di **guardare** e di **comandare**, non il mondo.
+
+Primo strato, ed è quello che regge tutto il resto: `client/exilium/citygen.gd`, il **terzo
+gemello** del generatore, tenuto cella per cella sullo **stesso** `reference.json` che tiene
+quello TypeScript. `client/tests/run.gd` gira senza finestra e senza editor, e sta in CI.
+
+**Motivazione.** Dove sta andando il gioco — costruire sulle caselle, unità, animazioni — è
+lavoro che in Godot è già risolto e su una tela 2D si fa a mano per sempre. Gli esagoni in
+particolare: `TileSet` ha la forma esagonale con l'asse di sfalsamento scegliibile, cioè
+esattamente il layout "odd-r" che `hexgrid.ts` implementa a mano.
+
+**Misurato, non supposto.**
+
+| | |
+|---|---|
+| i tre gemelli sullo stesso riferimento | **82 verifiche, 20.480 celle identiche** |
+| il PRNG (`seed_int`, `next_uint`, `direction`) | identico **bit per bit** |
+| `generate` 0,59 M celle, JavaScript | 0,62 s |
+| `generate` 0,59 M celle, **GDScript** | **2,79 s — circa 4,5× più lento** |
+
+**Il problema aperto, e va detto prima di costruirci sopra.** A 2,36 milioni di esagoni
+GDScript impiegherebbe ~11 s, più il rilevamento: troppo per uno schermo di caricamento.
+La via naturale è il parallelismo — il generatore è puro e ogni cella è indipendente, e
+un'applicazione desktop ha thread veri. **Non è stato possibile misurarlo**: la macchina su
+cui è stato scritto questo è limitata sulla CPU, e anche quattro processi separati ci scalano
+solo 1,5 volte. Va rimisurato su una macchina vera. Se i thread non bastassero, le vie sono
+C# (Godot .NET) o una GDExtension, in quest'ordine.
+
+**Alternative scartate.**
+1. *Restare sul browser e basta.* Il fastidio immediato — i 3,2 s di caricamento — si
+   aggiusterebbe con un Web Worker, molto più a buon mercato. Scartata perché il motore serve
+   per dove si va, non per dove si è: il posizionamento degli edifici e le unità resterebbero
+   lavoro a mano su una tela 2D per sempre.
+2. *Esportare anche per il web.* Scartata dall'utente. Il `.wasm` di Godot è ~40 MB (~5 MB in
+   Brotli) più il pacchetto del gioco, e servirebbero gli header COOP/COEP su Render: la prima
+   apertura peggiorerebbe rispetto alla pagina statica di oggi.
+3. *Chiedere il terreno al server invece di generarlo.* Scartata per la stessa ragione di
+   sempre: rimetterebbe un'istanza addormentata sulla strada del semplice guardare.
+4. *Un secondo file di riferimento dentro `client/`.* Scartata: due riferimenti che devono
+   coincidere sono precisamente il difetto che il riferimento esiste per impedire. Il test
+   Godot apre quello del frontend per percorso assoluto.
+5. *`latest` come versione di Godot in CI.* Scartata: il motore decide come si arrotondano i
+   numeri in virgola mobile, e questo job esiste per dire che tre lingue danno le stesse
+   celle. Un aggiornamento silenzioso trasformerebbe una verifica in una scommessa.
+
+**Costo.** Una terza copia del generatore — ma sotto la stessa disciplina delle altre due, che
+è la ragione per cui è accettabile. Un quarto job in CI (~1 minuto con la cache del binario),
+su un repository che i minuti li ha contati. E, davanti, la riscrittura del globo (231.042
+poligoni, oggi three.js), della HUD e del client dell'API.
+
+**Rischi e criticità.**
+- **Si perde "apri un link e giochi"**, che è come il gioco viene provato oggi. Per questo il
+  client web **resta vivo** finché quello Godot non lo sostituisce davvero: non deve esistere
+  un periodo senza gioco.
+- **Le prestazioni di GDScript sono un rischio non chiuso** (vedi sopra). È la ragione per cui
+  il generatore è stato portato *per primo*: se la risposta fosse no, si scopre adesso.
+- **Tre copie divergono più facilmente di due.** Il riferimento le tiene, ma solo per quello
+  che copre: le celle, l'economia e i semi. Quel che non è nel riferimento non è protetto.
+- **Il repository ospita due client.** Finché dura, ogni regola del gioco ha due case.
+
+**Da rivedere se.** La misura del parallelismo su una macchina vera dice che i thread non
+bastano: allora la scelta fra C# e GDExtension va fatta prima di scrivere il resto, non dopo.

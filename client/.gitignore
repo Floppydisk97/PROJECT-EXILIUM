@@ -1,0 +1,4 @@
+# Godot tiene qui la cache degli import: si rigenera da sola e non appartiene alla storia.
+.godot/
+export_presets.cfg
+*.translation
