@@ -7,7 +7,7 @@
 // place, it would be a screensaver.
 
 import type { Generated } from "./citygen";
-import { lightOf, shoreCells, type Relief } from "./light";
+import { shoreCells, type Relief } from "./relief";
 
 /** What the drawing needs to know: exactly what the generator produces. The ground is no
  *  longer a file that was baked somewhere else -- it is generated here, from the planet and
@@ -16,9 +16,9 @@ export type ColonyGround = Generated;
 
 /** I colori del terreno e le parole per dirlo. L'ordine segue `citygen.GROUNDS`.
  *
- *  Questi sono i colori SENZA luce: il colore che quella terra ha in se'. Cio' che si vede
- *  passa da `litColor`, che ci mette sopra il rilievo, l'acqua e la riva. Tenere le due cose
- *  separate e' cio' che permette di ritoccare una tavolozza senza rifare un motore di luce.
+ *  Questi sono i colori ASCIUTTI: il colore che quella terra ha in se'. Cio' che si vede passa
+ *  da `litColor`, che ci mette sopra l'acqua e la riva. Tenere le due cose separate e' cio'
+ *  che permette di ritoccare una tavolozza senza rifare il resto.
  */
 export const GROUND_STYLE: Record<string, { color: [number, number, number]; label: string }> = {
   deep_water: { color: [22, 44, 66], label: "Acqua profonda" },
@@ -50,12 +50,6 @@ const DEEP: [number, number, number] = [22, 46, 72];
 const FOAM: [number, number, number] = [156, 190, 188];
 /** La sabbia bagnata: l'orlo scuro che segue ogni riva vera. */
 const DAMP: [number, number, number] = [78, 72, 60];
-
-/** Il colore del sole e quello dell'ombra. L'ombra NON e' nero: e' il cielo che ci arriva
- *  dentro, quindi e' azzurra, ed e' questa la differenza fra un terreno e un disegno
- *  sfumato col grigio. */
-const SUNLIGHT: [number, number, number] = [255, 240, 214];
-const SKYSHADE: [number, number, number] = [58, 76, 104];
 
 function smoothstep(t: number): number {
   const c = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -95,7 +89,7 @@ export function seedNumber(seed: string): number {
   return h >>> 0;
 }
 
-/** Il colore di una cella PRIMA della luce: di che cosa e' fatta quella terra.
+/** Il colore di una cella prima dell'acqua: di che cosa e' fatta quella terra.
  *
  *  La vegetazione ha due fermate invece di una -- prato e bosco -- perche' con una sola un
  *  bosco era un prato scuro, e infatti e' cosi' che si leggeva.
@@ -124,11 +118,13 @@ export function groundInto(ground: ColonyGround, index: number, out: number[]): 
   }
 }
 
-/** Il colore che si VEDE: la terra, piu' la luce che ci batte e l'acqua che la bagna.
+/** Il colore che si VEDE: la terra, piu' l'acqua che la bagna.
  *
  *  Separato da `groundInto` di proposito. Il primo dice cos'e' quel posto, questo dice come
  *  appare adesso: due domande diverse, e la minimappa e la tela devono rispondere alla stessa
- *  seconda domanda o mostrerebbero due colonie diverse. */
+ *  seconda domanda o mostrerebbero due colonie diverse.
+ *
+ *  Qui sopra passava anche l'ombreggiatura del rilievo. Non passa piu': vedi `relief.ts`. */
 export function litInto(
   ground: ColonyGround, relief: Relief, index: number, out: number[],
 ): void {
@@ -151,16 +147,6 @@ export function litInto(
     // seguiva il fiume, che e' esattamente cio' che non deve sembrare.
     const damp = Math.max(0, 1 - edge / 1.6) * 0.30;
     for (let c = 0; c < 3; c++) out[c] += (DAMP[c] - out[c]) * damp;
-  }
-
-  // E il colore della luce, sopra la sua quantita': caldo dove batte, azzurro dove non arriva.
-  const light = lightOf(relief, index);
-  const warm = light >= 1;
-  const tint = warm ? Math.min(0.22, (light - 1) * 0.22) : Math.min(0.34, (1 - light) * 0.34);
-  const toward = warm ? SUNLIGHT : SKYSHADE;
-  for (let c = 0; c < 3; c++) {
-    const lit = out[c] * light;
-    out[c] = lit + (toward[c] - lit) * tint;
   }
 }
 

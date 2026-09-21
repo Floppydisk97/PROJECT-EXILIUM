@@ -30,6 +30,16 @@ export const POOLING_CLIMATE = 0.40;
 export const RIPARIAN_COVER = 0.78;
 export const ALLUVIUM_REACH = 150.0;
 
+// Nessun posto e' del tutto morto -- gemelle di `citygen.OASIS_*`. Una casella senza niente da
+// raccogliere non e' un sito difficile, e' un sito che non si puo' giocare, e il deserto e la
+// roccia nuda erano esattamente quello. A macchie e non uniforme di proposito: un deserto con
+// un velo di verde dappertutto non e' un deserto, e' una steppa.
+export const OASIS_FERTILITY_FLOOR = 12;
+export const OASIS_FERTILITY_PEAK = 20;
+export const OASIS_COVER_FLOOR = 0.18;
+export const OASIS_COVER_PEAK = 0.40;
+export const OASIS_BREAKS_ROCK = 0.55;
+
 export type BiomeRule = {
   ground: string; fertility: number; cover: number; roughness: number; wet: number;
 };
@@ -54,6 +64,13 @@ export type Site = {
   biome: string; elevation: number; temperature: number;
   rainfall: number; river_flow: number; coastal: boolean;
 };
+// `river_flow` e' la portata di un fiume che attraversa DAVVERO questa casella, zero se non ce
+// n'e' nessuno -- e non e' lo stesso numero che il pianeta memorizza. L'accumulo di deflusso da'
+// a ogni casella di terra almeno la sua pioggia, quindi `river_flow` grezzo e' sopra zero quasi
+// ovunque: copiato cosi', disegnava un fiume in mezzo a OGNI colonia del pianeta, ed e' quello
+// che ha fatto finche' nessuno e' sceso a guardare. Chi costruisce un Site confronta la portata
+// con `map.river_min_flow`, la stessa soglia su cui il globo disegna i suoi fiumi, e passa zero
+// quando non la raggiunge.
 
 export type Cells = {
   ground: Uint8Array; height: Int32Array; fertility: Uint8Array; vegetation: Uint8Array;
@@ -144,6 +161,9 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   // La costa serpeggia. Senza, e' una diagonale tirata col righello: a sei chilometri
   // non si legge come una costa, si legge come la sponda di un canale.
   const coast = new PlaneNoise(new Prng(`${seed}:coast`), 3, 5.5);
+  // Le macchie fertili: campo LARGO, perche' cio' che deve produrre e' un'oasi -- una manciata
+  // di posti buoni che si vedono da lontano -- non della polvere verde sparsa.
+  const oasis = new PlaneNoise(new Prng(`${seed}:oasis`), 3, 2.6);
 
   const altitudeRoughness = 0.6 + Math.min(2.0, Math.max(0, site.elevation) / 2200.0);
   const amplitude = 320.0 * rule.roughness * altitudeRoughness;
@@ -231,6 +251,12 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
       else if (metres > bareAbove && rule.ground !== "sand") name = "rock";
       else if (metres < -amplitude * 0.30 && wetness > 0.55) name = "marsh";
       else if (rule.ground === "soil" && grain.at(u, v) > 0.55) name = "gravel";
+      // Quanto questa cella sta dentro una macchia fertile: 0 fuori, 1 nel cuore.
+      const patch = smoothstep((oasis.at(u, v) - 0.05) * 2.4);
+      // La macchia rompe la lastra: pietraia con la terra fra i sassi invece di roccia viva,
+      // e su una pietraia qualcosa cresce. Vale anche in cresta, e non toglie niente alla
+      // montagna -- la pietraia conta come pietra esattamente come la roccia.
+      if (name === "rock" && patch > OASIS_BREAKS_ROCK) name = "gravel";
       if ((name === "sand" || name === "gravel") && bank > -ALLUVIUM_REACH && !frozen) {
         name = "soil";
       }
@@ -244,11 +270,17 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
         fertility += Math.trunc(RIPARIAN_GAIN * riparian * (0.4 + 0.6 * warmth));
         if (index === iMarsh) fertility = Math.trunc(fertility * 1.15);
         if (index === iSand) fertility = Math.trunc(fertility * 0.45);
+        // Il fondo, DOPO le penalita': una duna resta una duna, ma non e' sterile.
+        fertility = Math.max(
+          fertility, Math.trunc(OASIS_FERTILITY_FLOOR + OASIS_FERTILITY_PEAK * patch));
       }
       fertility = Math.max(0, Math.min(100, fertility));
 
       let cover = rule.cover + (RIPARIAN_COVER - rule.cover) * riparian;
       cover *= 0.5 + 0.5 * (0.5 + 0.5 * grain.at(u, v));
+      // E il fondo anche qui: se no la fertilita' minima restava un numero che nessuno vedeva,
+      // cioe' terra buona e pelata.
+      cover = Math.max(cover, OASIS_COVER_FLOOR + OASIS_COVER_PEAK * patch);
       let vegetation = 0;
       if (fertility > 0) {
         vegetation = Math.max(0, Math.min(100,

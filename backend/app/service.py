@@ -23,6 +23,7 @@ from uuid import uuid4
 
 from app import db
 from app import citygen
+from app import worldgen
 from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade
 from app.sim.rules import begin_work
 from app.sim.config import (
@@ -471,20 +472,39 @@ def _site_of(conn, tile_id: int) -> tuple[citygen.Site, dict]:
     """
     row = conn.execute(
         """SELECT t.id, t.biome, t.elevation, t.temperature, t.rainfall, t.river_flow,
-                  t.landmass_size, t.lat, t.lon,
+                  t.landmass_size, t.lat, t.lon, m.frequency,
                   EXISTS (SELECT 1 FROM world_tiles n
                           WHERE n.map_id = t.map_id AND n.id = ANY(t.neighbors)
                             AND n.biome IN ('ocean', 'sea_ice')) AS coastal
-           FROM world_tiles t WHERE t.map_id = 1 AND t.id = %s""",
+           FROM world_tiles t JOIN world_map m ON m.id = t.map_id
+           WHERE t.map_id = 1 AND t.id = %s""",
         (tile_id,),
     ).fetchone()
     if row is None:
         raise DomainError(404, "No such tile on this world")
     site = citygen.Site(
         biome=row["biome"], elevation=row["elevation"], temperature=row["temperature"],
-        rainfall=row["rainfall"], river_flow=row["river_flow"], coastal=row["coastal"],
+        rainfall=row["rainfall"], river_flow=river_of(row["river_flow"], row["frequency"]),
+        coastal=row["coastal"],
     )
     return site, row
+
+
+def river_of(stored_flow: int, frequency: int) -> int:
+    """The flow of a river that really crosses this tile, or zero.
+
+    `world_tiles.river_flow` is accumulated drainage, and every land tile drains at least its
+    own rainfall, so it is above zero almost everywhere. `citygen` took it at face value and
+    put a river through the middle of every colony on the planet -- on a tile carrying a flow
+    of two, which is a wet patch, not a watercourse. The globe has always drawn its rivers
+    above `worldgen.river_min_flow`; this is the same test, so the ground and the globe now
+    say the same thing about the same tile.
+
+    The threshold comes from the size of the map actually stored, via its frequency, and not
+    from a constant: a smaller world generated for a test has a smaller bar, and hard-coding
+    the production number would have quietly drained every river out of the test worlds.
+    """
+    return stored_flow if stored_flow >= worldgen.river_min_flow(10 * frequency**2 + 2) else 0
 
 
 def land(conn, city_id, owner_id, tile_id: int) -> dict:

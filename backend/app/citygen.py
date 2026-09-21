@@ -38,7 +38,21 @@ RIPARIAN_REACH = 260.0      # centimetres of height above the water line
 RIPARIAN_GAIN = 55          # fertility added right at the water's edge
 POOLING_CLIMATE = 0.40      # below this a climate does not fill its hollows, so no banks
 RIPARIAN_COVER = 0.78       # vegetation right at the water's edge, whatever the biome
-ALLUVIUM_REACH = 150.0      # how far from water the ground itself becomes silt
+ALLUVIUM_REACH = 150.0
+
+# Nessun posto e' del tutto morto. Una casella senza niente da raccogliere non e' un sito
+# difficile, e' un sito che non si puo' giocare -- e il deserto e la roccia nuda erano
+# esattamente quello. Queste quattro dicono il minimo che ogni terra asciutta porta comunque:
+# un fondo bassissimo ovunque, piu' delle MACCHIE, che sono cio' che fa l'oasi, la radura in
+# quota, la conca erbosa in mezzo alla ghiaia. A macchie e non uniforme di proposito: un
+# deserto con un velo di verde dappertutto non e' un deserto, e' una steppa.
+OASIS_FERTILITY_FLOOR = 12      # 0-100, su ogni cella asciutta che non sia roccia o ghiaccio
+OASIS_FERTILITY_PEAK = 20       # quanto in piu' nel cuore di una macchia
+OASIS_COVER_FLOOR = 0.18        # quota di suolo coperta comunque
+OASIS_COVER_PEAK = 0.40
+# Sopra questa forza la macchia rompe la roccia di superficie: pietraia con la terra fra i
+# sassi invece di lastra nuda. E' cio' che da' da vivere a chi atterra su una vetta.
+OASIS_BREAKS_ROCK = 0.55      # how far from water the ground itself becomes silt
 
 # The ground a cell is made of. Order is the wire format, so append rather than insert.
 GROUNDS = ("deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice")
@@ -81,7 +95,16 @@ DEFAULT_RULE = BiomeRule("soil", 40, 0.40, 0.60, 0.30)
 @dataclass(frozen=True)
 class Site:
     """What the planet says about where the colony came down. Everything the local generator
-    is allowed to know: no ids, no ownership, nothing about the database."""
+    is allowed to know: no ids, no ownership, nothing about the database.
+
+    `river_flow` is the flow of a river that REALLY crosses this tile, and zero when none
+    does. That is not the same number the planet stores. Flow accumulation gives every land
+    tile at least its own rainfall, so `world_tiles.river_flow` is above zero almost
+    everywhere -- copied in raw, it drew a river across every colony on the planet, which is
+    exactly what it did until somebody landed and looked. Whoever builds a Site compares the
+    stored flow against `worldgen.river_min_flow` (the client reads the same number off the
+    map file) and passes zero when it does not clear the bar. The globe has always drawn its
+    rivers on that test; the ground now agrees with the globe."""
     biome: str
     elevation: int          # metres above sea level, from the planet tile
     temperature: float      # average degrees C
@@ -267,6 +290,10 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     # The coastline wanders. Without this it is a ruled diagonal across the map --
     # at six kilometres that does not read as a coast, it reads as a canal wall.
     coast = PlaneNoise(_rng(seed, "coast"), 3, 5.5)
+    # Le macchie fertili. Campo LARGO -- frequenza 2.6 contro le 9 della grana -- perche' cio'
+    # che deve produrre e' un'oasi, non della polvere verde sparsa: una manciata di posti
+    # buoni che si vedono da lontano e per cui vale la pena attraversare la sabbia.
+    oasis = PlaneNoise(_rng(seed, "oasis"), 3, 2.6)
 
     altitude_roughness = 0.6 + min(2.0, max(0.0, site.elevation) / 2200.0)
     amplitude = 320.0 * rule.roughness * altitude_roughness
@@ -372,6 +399,16 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
                 name = "marsh"
             elif rule.ground == "soil" and grain.at(u, v) > 0.55:
                 name = "gravel"
+            # Quanto questa cella sta dentro una macchia fertile: 0 fuori, 1 nel cuore.
+            patch = _smoothstep((oasis.at(u, v) - 0.05) * 2.4)
+            # La macchia rompe la lastra: dove la terra si e' fatta strada fra i sassi il
+            # terreno e' pietraia, non roccia viva, e su una pietraia qualcosa cresce. Vale
+            # anche in cresta, di proposito: una palude d'alta quota aveva come unica terra
+            # asciutta le sue creste di roccia nuda, quindi `food` zero su trecento celle
+            # edificabili -- un sito che si puo' prendere e non si puo' giocare. E non toglie
+            # niente alla montagna: la pietraia conta come pietra esattamente come la roccia.
+            if name == "rock" and patch > OASIS_BREAKS_ROCK:
+                name = "gravel"
             if name in ("sand", "gravel") and bank > -ALLUVIUM_REACH and not frozen:
                 # What a river leaves on its banks is silt, not the desert it crossed. Without
                 # this the bank kept the biome's sand, which halves fertility AFTER the bank
@@ -402,6 +439,11 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
                     cell_fertility = int(cell_fertility * 1.15)
                 if index == GROUNDS.index("sand"):
                     cell_fertility = int(cell_fertility * 0.45)
+                # Il fondo, DOPO le penalita': una duna resta una duna, ma non e' sterile.
+                cell_fertility = max(
+                    cell_fertility,
+                    int(OASIS_FERTILITY_FLOOR + OASIS_FERTILITY_PEAK * patch),
+                )
             cell_fertility = max(0, min(100, cell_fertility))
 
             # Water brings cover as well as fertility. Without this a desert river was a
@@ -409,6 +451,9 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             # hundredths applied right up to the water's edge.
             cover = rule.cover + (RIPARIAN_COVER - rule.cover) * riparian
             cover *= 0.5 + 0.5 * (0.5 + 0.5 * grain.at(u, v))
+            # E il fondo anche qui, se no la fertilita' minima restava un numero che nessuno
+            # vedeva: terra buona e pelata. Alberi dove la macchia e' forte, ciuffi altrove.
+            cover = max(cover, OASIS_COVER_FLOOR + OASIS_COVER_PEAK * patch)
             cell_vegetation = 0
             if cell_fertility > 0:
                 cell_vegetation = max(0, min(100, int(100 * cover * (cell_fertility / 100.0) ** 0.5)))

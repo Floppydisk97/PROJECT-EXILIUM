@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import type { Generated } from "./citygen";
 import type { Camera } from "./ColonyView";
 import { litColor } from "./ground";
-import { reliefOf } from "./light";
+import { reliefOf } from "./relief";
 
 /** La minimappa: tutta la colonia in un francobollo, col rettangolo di dove stai guardando.
  *

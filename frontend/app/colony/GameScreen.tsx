@@ -85,7 +85,12 @@ export default function GameScreen({ tileId }: { tileId: number | null }) {
         setStage("Ricognizione del terreno…");
         const site: Site = {
           biome: chosen.biome, elevation: chosen.elevation, temperature: chosen.temperature,
-          rainfall: chosen.rainfall, river_flow: chosen.river_flow, coastal: chosen.coastal,
+          rainfall: chosen.rainfall, coastal: chosen.coastal,
+          // La portata memorizzata e' deflusso accumulato, e ogni casella di terra ne ha:
+          // passata cosi' com'e', metteva un fiume in mezzo a OGNI colonia del pianeta. La
+          // soglia e' la stessa su cui il globo disegna i suoi fiumi e viaggia col pianeta,
+          // quindi il terreno e il globo dicono la stessa cosa della stessa casella.
+          river_flow: chosen.river_flow >= map.river_min_flow ? chosen.river_flow : 0,
         };
         const seed = await seedFor(map.seed, chosen.id);
         // Un fotogramma prima, cosi' il messaggio e' a schermo quando il filo principale se ne

@@ -400,6 +400,10 @@ diventa una scheda con delle linguette, non un pannello solo più lungo.
 
 ## ADR-011 — Il rilievo si calcola dall'altezza che il generatore già scrive
 
+> **Superata in parte da ADR-014.** L'ombreggiatura descritta qui è stata rimossa: su un
+> rilievo fatto di poche armoniche produceva fasce diagonali, non colline. Restano la
+> profondità dell'acqua e la distanza dalla riva, e il file ora si chiama `colony/relief.ts`.
+
 **Decisione.** Il terreno della colonia è illuminato: pendenza, conche, profondità dell'acqua e
 distanza dalla riva, tutto derivato da `cells.height` — la colonna che il generatore scriveva
 già e che nessuno leggeva. Il modello sta in `colony/light.ts`, è funzione pura delle celle, è
@@ -527,3 +531,71 @@ immutabilità che per qualche istante è spento.
 
 **Da rivedere se.** Arriva l'abbandono come mossa di gioco: allora il reset resta per
 l'amministrazione e smette di essere l'unico modo di liberare una casella.
+
+---
+
+## ADR-014 — Il fiume viene dal pianeta, e nessun sito è sterile
+
+**Decisione.** Tre cose, viste tutte nella stessa schermata di gioco e tutte con la stessa
+forma: il terreno diceva cose che il pianeta non aveva detto.
+
+1. **Il fiume c'è solo se la casella del mondo ha un fiume.** `citygen` leggeva
+   `world_tiles.river_flow` alla lettera, ma quel numero è *deflusso accumulato* e ogni casella
+   di terra porta almeno la propria pioggia: sulla mappa spedita il 62% delle caselle era sopra
+   zero, e ognuna di quelle si apriva con un fiume in mezzo. Chi costruisce un `Site` ora
+   confronta la portata con `worldgen.river_min_flow` — la **stessa soglia** su cui il globo ha
+   sempre disegnato i suoi fiumi — e passa zero quando non la raggiunge. Sulla mappa spedita si
+   passa dal 62,4% all'1,4%. Gli specchi d'acqua restano: vengono dalle conche, non dal fiume.
+2. **L'ombreggiatura del rilievo è stata tolta**, non spenta con una costante. Il rilievo di
+   una colonia viene da un rumore a poche armoniche, quindi le sue pendenze sono larghe e
+   regolari: ombreggiarle non produceva colline, produceva fasce diagonali chiare e scure lunghe
+   tutta la mappa, sempre nella stessa direzione. L'ombra corta sotto una pianta resta — quella
+   dice che la pianta sta in piedi.
+3. **Nessun posto è del tutto sterile.** Ogni terra asciutta che non sia ghiaccio porta un fondo
+   di fertilità e di copertura, più delle **macchie** larghe che fanno l'oasi, la radura in
+   quota, la conca erbosa in mezzo alla ghiaia. Dove la macchia è forte rompe anche la lastra di
+   roccia in pietraia — che conta come pietra esattamente come la roccia, quindi la montagna
+   resta la montagna e in più ha dove piantare qualcosa.
+
+**Motivazione.** Un fiume su ogni casella toglie al fiume il suo significato: se c'è ovunque
+non è una ragione per scegliere un posto. E una casella con zero cibo e zero legna non è un
+sito difficile, è un sito che non si può giocare — il deserto e la roccia nuda erano
+esattamente quello.
+
+**Alternative scartate.**
+1. *Tenere l'ombreggiatura abbassandone la forza.* Scartata: il difetto non è l'intensità, è la
+   forma. Fasce deboli restano fasce.
+2. *Un secondo numero di soglia dentro `citygen`.* Scartata: sarebbe stata l'ottava coppia di
+   copie che devono essere d'accordo. La regola ha una definizione sola, in `worldgen`, e il
+   client legge lo stesso numero dal file del pianeta.
+3. *Azzerare la portata nella tabella del mondo.* Scartata: la mappa è immutabile, e il
+   deflusso è un dato vero che serve ad altro. Si filtra al confine, dove si costruisce il sito.
+4. *Un velo di verde uniforme su tutto.* Scartata: un deserto con un velo di verde dappertutto
+   non è un deserto, è una steppa. Le macchie sono larghe e rade di proposito.
+5. *Alberi anche sulla calotta polare.* Scartata, ed è l'eccezione dichiarata: su un ghiacciaio
+   non cresce niente. Se un giorno si vorrà colonizzare una calotta, la risposta è un modo di
+   vivere diverso, non un albero sul ghiaccio.
+
+**Costo.** Il gemello TypeScript e quello Python sono cambiati insieme e `reference.json` è
+stato rigenerato: una deriva di una cella fa cadere la build, come sempre. Due test di
+atterraggio dicevano cose che non sono più vere e sono stati riscritti — non rilassati per
+farli passare: il margine fra una sponda di fiume e il deserto intorno **si è davvero
+ristretto**, ed è giusto che il test lo dica.
+
+**Rischi e criticità.**
+- **L'economia di ogni sito si è spostata verso l'alto.** `food` e `timber` non sono più mai
+  zero, quindi il bilanciamento della produzione va riguardato: il deserto era il sito povero
+  di tutto e adesso è solo il più povero.
+- **Il fiume nel deserto vale meno di prima.** Sulla fertilità di punta il vantaggio della
+  sponda è sceso da circa otto volte a circa due. Resta la sola fonte d'acqua corrente — e
+  quella sì, è zero contro novanta — ma se il fiume deve tornare a essere *la* ragione per
+  attraversare la sabbia, la leva è `RIPARIAN_GAIN`, non il fondo.
+- **Un fiume è ora raro: l'1,4% delle caselle.** È voluto — una casella col fiume diventa
+  contesa — ma su un mondo con pochi giocatori significa che quasi nessuno ne vedrà uno.
+- **Il terreno senza ombreggiatura è più piatto da leggere.** Le colline si intuiscono
+  dall'acqua che si raccoglie e dalla roccia che affiora, non dalla luce. Se non basterà, la
+  strada non è rimettere l'ombra: sono le curve di livello o un rilievo con più armoniche.
+
+**Da rivedere se.** Il rilievo della colonia smette di essere un rumore a poche armoniche: con
+una geografia vera — creste, valli scavate dall'acqua — l'ombreggiatura tornerebbe a dire
+qualcosa invece di stampare righe.
