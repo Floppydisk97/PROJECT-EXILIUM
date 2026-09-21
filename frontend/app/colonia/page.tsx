@@ -2,12 +2,12 @@
 
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import ColonyPicker from "../colony/ColonyPicker";
+import GameScreen from "../colony/GameScreen";
 
 function Chosen() {
   const tile = useSearchParams().get("tile");
   const id = tile === null ? null : Number.parseInt(tile, 10);
-  return <ColonyPicker tileId={id === null || Number.isNaN(id) ? null : id} />;
+  return <GameScreen tileId={id === null || Number.isNaN(id) ? null : id} />;
 }
 
 export default function ColonyPage() {

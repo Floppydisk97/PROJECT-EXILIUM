@@ -30,6 +30,18 @@ export function stallNote(seconds: number | null | undefined): string {
   return `pieno fra ${howLong(seconds)}`;
 }
 
+/** Lo stesso di `stallNote`, per la pastiglia stretta della barra di gioco.
+ *
+ *  Vive QUI e non dentro il disegno della barra perche' erano due copie della stessa regola a
+ *  tre stati -- "pieno" a zero, "fermo" a sconosciuto, il tempo altrimenti -- e in questo
+ *  progetto due copie della stessa regola hanno gia' mentito quattro volte.
+ */
+export function stallShort(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "fermo";
+  if (seconds <= 0) return "pieno";
+  return `fra ${howLong(seconds)}`;
+}
+
 /** Cosa manca per iniziare il prossimo livello, o null se si puo' gia'. */
 export function missingFor(
   cost: Record<string, string>,

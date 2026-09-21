@@ -1094,6 +1094,67 @@ compromesso con il primo caricamento, soprattutto su mobile. La mappa non ha anc
 legame con le città: quando esisterà, una migrazione che azzera le caselle non sarà più
 un'operazione innocua e andrà ripensata.
 
+## Lo schermo di gioco
+
+Fino a qui il visore era fatto di PAGINE: il globo, il terreno, la citta'. Tre documenti con
+un titolo e dei paragrafi, buoni per leggere e sbagliati per giocare. Un gioco non si legge:
+si sta dentro. Quindi `/colonia` non e' piu' una pagina con una mappa dentro, e' uno schermo
+-- il terreno occupa tutta la finestra e l'interfaccia ci galleggia sopra.
+
+    barra in alto    risorse, corrente, ora del mondo, livello, menu
+    angolo in basso  minimappa, e i tre modi di uscire da qui
+    pannello destro  i comandi, aperti solo quando servono
+    sotto a tutto    il terreno, che non perde mai spazio
+
+La regola che tiene insieme il disegno e' una sola: **niente ruba spazio alla mappa in modo
+permanente**. La barra e' alta due righe, il pannello si apre e si chiude, la minimappa sta in
+un angolo. Un pannello che occupa sempre un terzo dello schermo e' un pannello che il
+giocatore tiene chiuso, e allora tanto valeva non farlo.
+
+### Il terreno copre, non si inquadra
+
+La prima versione teneva la colonia intera dentro il lato corto della finestra, e su uno
+schermo largo lasciava due bande nere ai fianchi. Corretto per un visore di mappe, sbagliato
+per un gioco: adesso l'ingrandimento minimo e' quello che COPRE la finestra. Vedere tutta la
+colonia in un colpo solo non e' piu' un compito della tela, e' il mestiere della minimappa.
+
+### La minimappa disegna il terreno vero
+
+Non e' un'immagine a parte: campiona la stessa funzione che disegna la tela grande, con lo
+stesso colore per cella, e se la ridisegnasse ad ogni movimento della telecamera costerebbe
+quanto la tela. Quindi il terreno finisce UNA volta in un buffer e resta li'; sopra ci va solo
+il rettangolo dell'inquadratura, che e' quattro numeri. Il rettangolo sparisce quando coincide
+con tutta la mappa, perche' un bordo che ripete il bordo non dice niente.
+
+Un clic sulla minimappa sposta la telecamera. E' l'unico punto in cui un pezzo di interfaccia
+comanda la tela, e passa per una funzione sola (`goTo`) invece che per lo stato di React: una
+panoramica non deve attraversare un ciclo di rendering.
+
+### I comandi hanno DUE case, e una sola definizione
+
+La stessa fonderia si costruisce dalla pagina `/citta` e dal pannello dentro il gioco. Farne
+due copie sarebbe stato il quinto caso di "due elenchi che devono coincidere" di questo
+progetto -- il primo che si fosse aggiornato avrebbe lasciato l'altro a mentire al giocatore.
+Quindi i comandi stanno in `city/CityPanel.tsx`, e le due schermate lo OSPITANO.
+
+Il prezzo e' che un componente deve stare bene in due larghezze molto diverse. Dentro il
+pannello da 30rem la tabella degli impianti smette di essere una tabella: ogni impianto
+diventa un blocco col nome sopra e i comandi sotto. Ed e' per la stessa ragione che il costo
+di costruzione e' uscito dal bottone -- "Costruisci (pietra 120.000, legname 120.000 -- 3.0 h)"
+andava a capo tre volte -- per finire sotto la ricetta, dove serve leggerlo prima di premere.
+
+La stessa trappola era gia' scattata in piccolo: la pastiglia della barra aveva la SUA copia
+della regola a tre stati -- "pieno", "fermo", il tempo che manca -- scritta dentro il disegno.
+Adesso e' `stallShort` accanto a `stallNote`, nello stesso file e sotto lo stesso test: due
+frasi diverse, una regola sola.
+
+### Cosa NON c'e' ancora
+
+Le impostazioni sono l'indirizzo del server e poco altro, perche' non c'e' ancora niente da
+impostare: nessun suono, nessuna velocita' da regolare in un mondo che cammina da solo,
+nessuna scorciatoia. Il menu esiste comunque, perche' e' il posto dove quelle cose andranno e
+inventarlo dopo significa rifare il disegno.
+
 ## Decisioni
 
 Le scelte che vincolano il progetto — il tick da 24 ore, il multiplayer, il confine della

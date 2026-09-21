@@ -203,10 +203,113 @@ html, body {
 .city-works td { padding: 0.4rem 0.3rem; border-top: 1px solid #1b242f; vertical-align: middle; }
 .city-works tr:first-child td { border-top: none; }
 .city-dim { color: #8497a7; }
+.city-price { display: block; color: #7d8fa0; font-size: 0.76rem; margin-top: 0.15rem; }
 .city-count { white-space: nowrap; color: #dbe6ef; text-align: right; }
 .city-buttons { display: flex; gap: 0.3rem; flex-wrap: wrap; justify-content: flex-end; }
 .city-buttons button { padding: 0.3rem 0.55rem; font-size: 0.8rem; }
 @media (max-width: 860px) {
   .city-works td { display: block; text-align: left; }
   .city-buttons { justify-content: flex-start; }
+}
+
+/* ---- Lo schermo di gioco ---------------------------------------------------------------- */
+/* Il terreno riempie la finestra e l'interfaccia ci galleggia sopra: un gioco non ha margini,
+   e un pannello che RUBA spazio alla mappa e' un pannello che si chiude e basta. */
+.game { position: fixed; inset: 0; background: #0b1016; overflow: hidden; }
+.game-stage { position: absolute; inset: 0; }
+.game-stage .colony-stage, .game-stage canvas { width: 100%; height: 100%; display: block; }
+
+.hud-top {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 3;
+  display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem;
+  background: linear-gradient(to bottom, rgba(8, 13, 18, 0.94), rgba(8, 13, 18, 0.72));
+  border-bottom: 1px solid #1d2733; backdrop-filter: blur(6px);
+}
+.hud-resources { display: flex; gap: 0.4rem; flex-wrap: wrap; flex: 1; align-items: center; }
+.hud-right { display: flex; gap: 0.5rem; align-items: center; }
+.hud-pill {
+  display: inline-flex; align-items: baseline; gap: 0.35rem;
+  background: rgba(18, 26, 35, 0.9); border: 1px solid #243040; border-radius: 999px;
+  padding: 0.22rem 0.6rem; font-size: 0.82rem; white-space: nowrap;
+}
+.hud-glyph { font-size: 0.9rem; }
+.hud-value { color: #eaf2f8; font-variant-numeric: tabular-nums; }
+.hud-rate { color: #8497a7; font-size: 0.74rem; }
+.hud-full { color: #e2b04a; font-size: 0.74rem; }
+.hud-warn { border-color: #6b4a1e; background: rgba(48, 34, 14, 0.9); }
+.hud-clock, .hud-level { color: #9fb0bf; font-size: 0.78rem; white-space: nowrap; }
+.hud-scout-title { color: #dbe6ef; font-size: 0.9rem; font-weight: 600; padding-right: 0.3rem; }
+.hud-icon {
+  background: rgba(18, 26, 35, 0.9); border: 1px solid #243040; border-radius: 6px;
+  color: #eaf2f8; font: inherit; font-size: 1rem; line-height: 1;
+  padding: 0.3rem 0.5rem; cursor: pointer;
+}
+.hud-icon:hover { border-color: #3d5c79; }
+
+.hud-corner {
+  position: absolute; left: 0.7rem; bottom: 0.7rem; z-index: 3;
+  display: flex; align-items: flex-end; gap: 0.6rem;
+}
+.hud-minimap {
+  width: 160px; height: 160px; display: block; cursor: crosshair;
+  border: 1px solid #2b3a4a; border-radius: 4px; background: #0b1016;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+}
+.hud-buttons { display: flex; flex-direction: column; gap: 0.35rem; }
+.hud-buttons button {
+  background: rgba(18, 26, 35, 0.92); border: 1px solid #243040; border-radius: 6px;
+  color: #eaf2f8; font: inherit; font-size: 0.82rem; padding: 0.38rem 0.7rem;
+  cursor: pointer; text-align: left; white-space: nowrap;
+}
+.hud-buttons button:hover { border-color: #3d5c79; }
+
+.game-panel {
+  position: absolute; top: 3rem; right: 0.7rem; bottom: 0.7rem; z-index: 3;
+  width: min(30rem, calc(100vw - 1.4rem)); overflow-y: auto;
+  background: rgba(11, 16, 22, 0.96); border: 1px solid #1f2b38; border-radius: 8px;
+  padding: 0.8rem; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+}
+.game-panel .city-actions { grid-template-columns: 1fr; }
+/* Dentro il pannello stretto la tabella degli impianti non e' piu' una tabella: ogni impianto
+   diventa un blocco, col suo nome sopra e i comandi sotto in una riga sola. La stessa regola
+   della pagina larga, applicata a 30rem invece che a 860px di finestra. */
+.game-panel .city-works tr { display: block; border-top: 1px solid #1b242f; padding: 0.45rem 0; }
+.game-panel .city-works tr:first-child { border-top: none; padding-top: 0; }
+.game-panel .city-works td { display: block; border-top: none; padding: 0 0 0.25rem; text-align: left; }
+.game-panel .city-works td:last-child { padding-bottom: 0; }
+.game-panel .city-count { text-align: left; }
+.game-panel .city-count:empty { display: none; }
+.game-panel .city-buttons { justify-content: flex-start; }
+
+.hud-menu-back {
+  position: absolute; inset: 0; z-index: 5; display: grid; place-items: center;
+  background: rgba(4, 7, 10, 0.7);
+}
+.hud-menu {
+  width: min(26rem, calc(100vw - 2rem));
+  background: #121a23; border: 1px solid #1f2b38; border-radius: 8px; padding: 1rem;
+  display: flex; flex-direction: column; gap: 0.45rem;
+}
+.hud-menu h2 { margin: 0 0 0.2rem; font-size: 1rem; }
+.hud-menu h3 { margin: 0.3rem 0 0; font-size: 0.86rem; color: #9fb0bf; }
+.hud-menu hr { border: none; border-top: 1px solid #1f2b38; margin: 0.4rem 0 0; }
+.hud-menu button {
+  background: #2b4258; color: #eaf2f8; border: 1px solid #3d5c79; border-radius: 4px;
+  padding: 0.45rem 0.7rem; font: inherit; font-size: 0.86rem; cursor: pointer; text-align: left;
+}
+.hud-menu button:hover { background: #35506b; }
+.hud-menu-close { background: #1b2530 !important; border-color: #243040 !important; }
+.hud-menu-note { color: #9fb0bf; font-size: 0.8rem; margin: 0; line-height: 1.5; }
+.hud-menu-note code { color: #dbe6ef; }
+
+@media (max-width: 720px) {
+  .hud-minimap { width: 108px; height: 108px; }
+  .hud-pill { font-size: 0.76rem; padding: 0.18rem 0.45rem; }
+  .game-panel { top: auto; height: 55vh; left: 0.7rem; width: auto; }
+  /* Su un telefono sei pastiglie a capo mangiavano un quarto dello schermo: restano su una
+     riga sola e si scorrono di lato, perche' la barra deve COSTARE due righe sempre. */
+  .hud-resources { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .hud-resources::-webkit-scrollbar { display: none; }
+  /* L'ora del mondo e' la cosa meno utile della barra: su uno schermo stretto cede il posto. */
+  .hud-clock { display: none; }
 }

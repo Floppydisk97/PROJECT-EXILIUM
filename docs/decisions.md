@@ -349,3 +349,49 @@ il sito povero di tutto, ed è il posto migliore del pianeta per il sole.
 
 **Da rivedere se.** Arrivano il ciclo giorno/notte o il nucleare: entrambi cambiano il senso di
 «quanta ne produco adesso», e il primo rende finalmente utile un accumulo.
+
+---
+
+## ADR-010 — Il gioco è uno schermo, e i comandi hanno una definizione sola
+
+**Decisione.** `/colonia` diventa uno schermo di gioco: terreno a tutta finestra, barra delle
+risorse in alto, minimappa e pulsanti in basso a sinistra, pannello dei comandi a scomparsa a
+destra. I comandi della colonia (costruire, impianti, voto) vivono in **un solo componente**,
+`city/CityPanel.tsx`, usato sia dalla pagina `/citta` sia dal pannello di gioco.
+
+**Motivazione.** Un gioco non si legge, ci si sta dentro: finché l'interfaccia era fatta di
+pagine con titoli e paragrafi, ogni azione costava una navigazione e il terreno — la cosa che
+il giocatore guarda — era un riquadro fra due blocchi di testo. E i comandi duplicati sarebbero
+stati il **quinto** caso di «due elenchi che devono coincidere» di questo progetto: i primi
+quattro sono costati un difetto ciascuno, tre dei quali trovati solo provando il gioco.
+
+**Alternative scartate.**
+1. *Pannello sempre aperto a lato* (stile foglio di calcolo). Scartata: ruba un terzo dello
+   schermo per sempre a ciò che dovrebbe dominarlo.
+2. *Duplicare i comandi nel pannello, semplificati.* Scartata per la ragione sopra; «tanto è
+   una copia piccola» è esattamente come sono nati gli altri quattro casi.
+3. *Sostituire `/citta` con lo schermo di gioco.* Scartata per ora: la pagina larga resta il
+   posto dove si legge tutto insieme, e serve da riscontro quando il pannello mente.
+4. *Minimappa come immagine generata a parte.* Scartata: due disegni dello stesso terreno
+   divergono. Campiona la stessa funzione, in un buffer disegnato una volta sola.
+
+**Costo.** Un componente che deve stare bene in due larghezze molto diverse: dentro il
+pannello la tabella degli impianti si impagina a blocchi, e il costo di costruzione è dovuto
+uscire dal bottone per finire sotto la ricetta.
+
+**Rischi e criticità.**
+- **L'interfaccia non è sotto test come lo sono i calcoli.** `city/format.ts` è testato perché
+  un numero sbagliato si legge come plausibile; il disegno invece è verificato a schermate, a
+  mano, su una finestra sola. Un difetto di impaginazione su un telefono stretto oggi non lo
+  vedrebbe nessuno prima del giocatore.
+- **La minimappa è un buffer in memoria per colonia.** Con una sola colonia non si vede; se un
+  giorno si passasse fra colonie senza ricaricare la pagina, andrà invalidato.
+- **Le impostazioni sono quasi vuote** (indirizzo del server e poco altro). Il menu esiste per
+  avere il posto dove metterle, non perché ci sia già qualcosa da regolare: se resta vuoto a
+  lungo è un guscio, e un guscio nel menu principale è rumore.
+- **L'aggiornamento è un sondaggio ogni 30 secondi.** Va bene per un mondo che cammina in ore,
+  ma due schede aperte sulla stessa colonia possono mostrare due verità per mezzo minuto.
+
+**Da rivedere se.** Arriva il gioco su telefono come bersaglio serio (l'impaginazione a mano
+non basta più), oppure il pannello cresce al punto da avere sezioni proprie: a quel punto
+diventa una scheda con delle linguette, non un pannello solo più lungo.

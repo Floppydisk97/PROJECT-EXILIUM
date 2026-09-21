@@ -2,7 +2,7 @@
 // -- sono aritmetica, e l'aritmetica sbagliata dentro un componente non si vede: si legge
 // come un numero plausibile.
 import { describe, expect, it } from "vitest";
-import { howLong, missingFor, stallNote, units } from "./format";
+import { howLong, missingFor, stallNote, stallShort, units } from "./format";
 
 describe("i numeri in parole", () => {
   it("conta in unita', non in milli", () => {
@@ -31,6 +31,14 @@ describe("quando la colonia si ferma", () => {
     // l'altro dice che quella risorsa qui non arriva.
     expect(stallNote(0)).toBe("pieno");
     expect(stallNote(null)).toBe("fermo");
+  });
+
+  it("dice le stesse TRE cose anche nella pastiglia stretta", () => {
+    // La barra di gioco aveva la sua copia della regola. Una copia e' un posto in piu' dove
+    // "fermo" e "pieno" si possono scambiare senza che nessun test se ne accorga.
+    expect(stallShort(7200)).toBe("fra 2.0 h");
+    expect(stallShort(0)).toBe("pieno");
+    expect(stallShort(undefined)).toBe("fermo");
   });
 });
 

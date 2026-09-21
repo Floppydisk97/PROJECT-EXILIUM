@@ -10,7 +10,19 @@ import { makeGrain, paintProps, paintTerrain } from "./draw";
 // cell, and a fixed floor of three would have made a third of the map unreachable.
 const MAX_SCALE = 42;
 
-export default function ColonyView({ ground }: { ground: Generated }) {
+/** Dove sta guardando la camera, in celle. La minimappa lo disegna, e il click sulla
+ *  minimappa lo sposta -- quindi deve uscire da qui invece di restare in una chiusura. */
+export type Camera = { x0: number; y0: number; x1: number; y1: number };
+
+export default function ColonyView(
+  { ground, onCamera, goTo }: {
+    ground: Generated;
+    onCamera?: (camera: Camera) => void;
+    /** Un contenitore che la minimappa riempie con "portami qui". Non uno stato di React:
+     *  una panoramica non deve passare da un render. */
+    goTo?: { current: ((x: number, y: number) => void) | null };
+  },
+) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hover, setHover] = useState<string | null>(null);
 
@@ -45,11 +57,15 @@ export default function ColonyView({ ground }: { ground: Generated }) {
       schedule();
     }
 
-    /** The widest the camera goes: the whole colony inside the shorter side of the window. */
+    /** The widest the camera goes: the ground COVERS the window, never letterboxed.
+     *
+     *  Taking the shorter side instead would fit the whole colony on screen and leave black
+     *  bars beside it -- correct for a map viewer, wrong for a game screen. Seeing the whole
+     *  colony at once is the minimap's job; this canvas is the ground you stand on. */
     function minScale(): number {
       const width = canvas!.clientWidth;
       const height = canvas!.clientHeight;
-      return Math.min(width, height) / ground.size;
+      return Math.max(width, height) / ground.size;
     }
 
     function clampOrigin() {
@@ -64,7 +80,16 @@ export default function ColonyView({ ground }: { ground: Generated }) {
 
     function schedule() {
       if (frame) return;
-      frame = requestAnimationFrame(() => { frame = 0; paint(); });
+      frame = requestAnimationFrame(() => { frame = 0; paint(); report(); });
+    }
+
+    function report() {
+      if (!onCamera) return;
+      onCamera({
+        x0: originX, y0: originY,
+        x1: originX + canvas!.clientWidth / scale,
+        y1: originY + canvas!.clientHeight / scale,
+      });
     }
 
     function paint() {
@@ -139,6 +164,15 @@ export default function ColonyView({ ground }: { ground: Generated }) {
       schedule();
     };
 
+    if (goTo) {
+      goTo.current = (x: number, y: number) => {
+        originX = x - canvas!.clientWidth / (2 * scale);
+        originY = y - canvas!.clientHeight / (2 * scale);
+        clampOrigin();
+        schedule();
+      };
+    }
+
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(canvas);
@@ -148,6 +182,7 @@ export default function ColonyView({ ground }: { ground: Generated }) {
     canvas.addEventListener("pointerleave", () => setHover(null));
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => {
+      if (goTo) goTo.current = null;
       observer.disconnect();
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerup", onUp);
@@ -155,7 +190,7 @@ export default function ColonyView({ ground }: { ground: Generated }) {
       canvas.removeEventListener("wheel", onWheel);
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [ground]);
+  }, [ground, onCamera, goTo]);
 
   return (
     <div className="colony-stage">
