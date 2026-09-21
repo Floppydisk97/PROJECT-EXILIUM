@@ -719,12 +719,32 @@ esattamente il layout "odd-r" che `hexgrid.ts` implementa a mano.
 
 **Il problema aperto, e va detto prima di costruirci sopra.** A 2,36 milioni di esagoni
 GDScript impiegherebbe ~11 s, più il rilevamento: troppo per uno schermo di caricamento.
-La via naturale è il parallelismo — il generatore è puro e ogni cella è indipendente, e
-un'applicazione desktop ha thread veri. **Non è misurabile sulla macchina su cui questo è
-stato scritto**: è limitata sulla CPU, e anche quattro processi separati ci scalano solo 1,5
-volte. Quindi la misura la fa **la CI**, dove i core sono quattro e non strozzati:
-`tests/bench.gd` gira a ogni giro e stampa il numero nel log, senza far cadere niente. Se i
-thread non bastassero, le vie sono C# (Godot .NET) o una GDExtension, in quest'ordine.
+La via naturale sembrava il parallelismo — il generatore è puro e ogni cella è indipendente,
+e un'applicazione desktop ha thread veri. **Misurato in CI, su quattro core non strozzati: non
+serve a niente.**
+
+```
+core dichiarati dal sistema: 4
+una sola passata, 0,59 M celle  -> 2.56 s
+quattro blocchi in fila         -> 2.63 s
+gli stessi quattro in parallelo -> 2.64 s   (1.0x)
+```
+
+Quattro blocchi indipendenti su quattro thread impiegano **esattamente** quanto in fila.
+GDScript, per questo carico, è di fatto serializzato. La proiezione a 2,36 milioni di esagoni
+resta **~10,5 s, con o senza thread**.
+
+La misura la continua a fare la CI: `tests/bench.gd` gira a ogni giro e stampa il numero nel
+log, senza far cadere niente. Serve perché il numero cambierà — con una versione nuova del
+motore, o con una di queste tre strade:
+
+1. **Non generare tutto al caricamento.** Il disegno può crescere a pezzi, man mano che la
+   telecamera si sposta; il rilevamento dell'economia sta già a 768 e costa 2,5 s. È la via
+   che non cambia linguaggio, e va provata per prima.
+2. **C#** (Godot .NET): stesso motore, thread veri, un runtime in più da spedire.
+3. **Una GDExtension** in C++ o Rust: la più veloce e la più complicata da costruire.
+
+Quel che NON va fatto è tenersi i dieci secondi sperando che passino.
 
 **E il client si può guardare senza editor.** `--headless` non disegna affatto, ma con un
 server grafico finto (xvfb) e OpenGL su Mesa, Godot rende davvero: `tests/shot.gd` fotografa
@@ -764,5 +784,6 @@ poligoni, oggi three.js), della HUD e del client dell'API.
   che copre: le celle, l'economia e i semi. Quel che non è nel riferimento non è protetto.
 - **Il repository ospita due client.** Finché dura, ogni regola del gioco ha due case.
 
-**Da rivedere se.** La misura del parallelismo su una macchina vera dice che i thread non
-bastano: allora la scelta fra C# e GDExtension va fatta prima di scrivere il resto, non dopo.
+**Da rivedere se.** Già rivisto: i thread non bastano (vedi sopra). La prossima decisione è
+fra generare a pezzi e cambiare linguaggio, e va presa prima di costruirci sopra il resto del
+client — non dopo.
