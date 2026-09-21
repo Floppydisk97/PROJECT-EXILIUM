@@ -685,8 +685,7 @@ rifiutato una volta, ma non di molto.
 - **La colonia già fondata ha numeri scritti con la griglia vecchia.** Il disegno cambia, i
   numeri memorizzati no: per vederli coerenti serve un soft reset e un nuovo atterraggio.
 - **Il bake delle colonie di esempio era rotto da mesi** e non se n'era accorto nessuno,
-  perché `ColonyPicker` non sta su nessuna pagina. Sistemato e rimpicciolito, ma è codice
-  morto in attesa di una decisione.
+  perché `ColonyPicker` non sta su nessuna pagina. *(Chiuso in ADR-018: tolto.)*
 
 **Da rivedere se.** Si comincia a costruire davvero: allora servirà sapere quali esagoni sono
 occupati, e quello è uno strato nuovo — non una proprietà del terreno.
@@ -876,3 +875,86 @@ caso, "questo file non si carica", e adesso lo dicono così.
 
 **Da rivedere se.** `worldgen` diventa parsimonioso: allora l'istanza potrebbe tornare a
 generare da sola, e questo resterebbe utile solo per traslocare.
+
+---
+
+## ADR-018 — Il visore di esempio delle colonie viene tolto
+
+**Decisione.** Spariscono `backend/app/colonyexport.py`, `frontend/app/colony/ColonyPicker.tsx`,
+`frontend/app/lib/colony.ts` e i file cotti in `frontend/public/colony/`.
+
+**Motivazione.** Servivano a mostrare una colonia senza un server, quando il terreno era un
+file cotto a tempo di build. Non è più così: il gioco genera il terreno nel browser dal seme
+che il server gli dà, e il client Godot fa lo stesso. Il visore di esempio non sta su nessuna
+pagina, nessuno script lo lancia, nessun workflow lo nomina — verificato, non supposto.
+
+Ed era **rotto**. `seed_for` ha perso un argomento quando il seme è diventato una proprietà
+della casella, e quella riga è rimasta indietro: il bake non girava più da mesi. Se n'è
+accorto qualcuno solo perché ho provato a lanciarlo per un'altra ragione.
+
+**È il pezzo di prova che conta più della decisione.** Il codice morto non resta fermo: marcisce,
+e marcisce in silenzio. Tenerlo "per ogni evenienza" significa che il giorno in cui servisse
+non funzionerebbe comunque — e nel frattempo ogni modifica alla forma di una cella deve
+attraversarlo. Questo ha già pagato quel prezzo una volta, quando gli esagoni hanno cambiato
+la metratura e ho dovuto sistemare anche lui.
+
+**Alternative scartate.**
+1. *Tenerlo e ridargli una pagina.* Sarebbe una pagina che mostra una colonia finta accanto a
+   una che mostra quella vera. Due strade per la stessa cosa, e una sola provata.
+2. *Tenerlo senza pagina, "per riferimento".* È quel che si è fatto finora, ed è come si è
+   rotto senza che nessuno se ne accorgesse.
+
+**Costo.** Se un giorno servisse mostrare una colonia senza server, si riscrive — e si
+riscrive più in fretta di quanto si aggiusterebbe questo, perché il terreno adesso si genera
+in tre lingue e tutte e tre sanno farlo da un seme.
+
+**Rischi e criticità.**
+- **Restano altri moduli senza test** e senza chiamanti automatici: `cityshots`, `worldshots`,
+  `worldreport`, `sitefill`, `cli`, `resetcli`, `colonyref`. Sono strumenti da riga di comando
+  che qualcuno lancia a mano, il che è legittimo — ma è la stessa condizione in cui
+  `colonyexport` è marcito. **`colonyref` è il più pericoloso**: scrive il riferimento su cui
+  poggiano i tre gemelli, ed è per questo che ADR-019 gli mette un test attorno.
+
+---
+
+## ADR-019 — Il cerchio della fiducia fra i tre gemelli si chiude
+
+**Decisione.** `backend/tests/test_colonyref.py` confronta **quel che Python genera adesso**
+con il `reference.json` che sta nel commit. Marcato `repo`, perché legge `frontend/`.
+
+**Motivazione.** Il confronto fra le tre copie del generatore era a **stella, non a cerchio**.
+TypeScript e GDScript guardano il file; **nessuno guardava se il file dice ancora quel che
+Python fa**. Bastava cambiare una regola in `citygen.py` e dimenticare di rilanciare
+`python -m app.colonyref`: i due gemelli continuavano a combaciare col file vecchio, tutto
+restava verde, e intanto avevano smesso di combaciare con Python — cioè con l'unica copia che
+decide davvero, perché è quella che gira sul server quando qualcuno atterra.
+
+**Dimostrato, non supposto.** Cambiando `OASIS_FERTILITY_FLOOR` da 12 a 13 senza rigenerare:
+
+```
+test_colonyref  FAILED  'nilo' / fertility: la cella 0 vale 33 adesso e 32 nel file.
+                        Rilancia `python -m app.colonyref` [...]
+citygen.test.ts  9 passed
+```
+
+Il gemello TypeScript resta verde su un pianeta che Python non fa più. Ora il cerchio è
+chiuso: **Python → file** (qui), **file → TypeScript** (`citygen.test.ts`), **file → GDScript**
+(`client/tests/run.gd`).
+
+**Gli altri due test** chiudono una trappola già scattata una volta: un campo nuovo in
+`SiteEconomy` o in `Site` che il riferimento non scrive lascerebbe i gemelli a generare da un
+sito incompleto — e a generarlo **uguale fra loro**, quindi verdi, e diverso da quel che
+genera il server. È successo con le quattro attitudini energetiche.
+
+**Alternative scartate.**
+1. *Far rigenerare il riferimento alla CI e confrontare il risultato.* Sposterebbe il problema:
+   un riferimento rigenerato automaticamente non è più un riferimento, è un'eco.
+2. *Un gancio di commit.* Funziona finché qualcuno non lo salta, e non gira in CI.
+
+**Costo.** `build()` rigenera cinque siti a ogni giro: 0,7 secondi.
+
+**Rischi e criticità.**
+- **Il test dice "rigenera", non rigenera.** È voluto: rimettere il file nel commit è una
+  decisione — il riferimento cambia solo quando qualcuno ha deciso di cambiare una regola.
+- **Non copre le cose che il riferimento non porta.** Il disegno, la luce, la resa: lì la
+  divergenza fra le copie resta possibile e nessun test la vedrebbe.
