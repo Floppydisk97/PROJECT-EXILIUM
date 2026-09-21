@@ -132,3 +132,38 @@ def test_the_shipped_asset_describes_the_world_the_code_builds():
     assert manifest["name"] == worldgen.WORLD_NAME
     assert manifest["tile_count"] == 10 * worldgen.PRODUCTION_FREQUENCY**2 + 2
     assert (Path(__file__).parents[2] / "frontend/public/map" / manifest["file"]).exists()
+
+
+@pytest.mark.repo
+def test_the_database_planet_can_say_which_planet_it_is(database):
+    """La terza copia del pianeta.
+
+    Il pianeta vive in due posti: la tabella, che decide DOVE si atterra, e il file spedito
+    col visore, che decide COSA si vede. Il test qui sopra confronta il file col codice; il
+    database non lo guardava nessuno -- e un pianeta diverso nel database vuol dire scegliere
+    una casella guardandone un'altra, in silenzio.
+
+    Questo non li allinea: fa in modo che l'identita' del pianeta del database sia una cosa
+    che si puo' LEGGERE, e all'avvio finisce nel log del servizio.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from app.mapbuild import map_identity
+
+    with transaction() as conn:
+        assert map_identity(conn) is None, "senza mappa non si inventa un'identita'"
+        generate_and_store(conn, "Church", frequency=6)
+        identity = map_identity(conn)
+
+    assert identity["seed"] == "Church"
+    assert identity["frequency"] == 6
+    assert identity["generator_version"] == worldgen.GENERATOR_VERSION
+    assert identity["tile_count"] == 10 * 6**2 + 2
+
+    # E le stesse chiavi che il manifesto spedito usa, cosi' il confronto e' un confronto e
+    # non una traduzione.
+    manifest = _json.loads(
+        (_Path(__file__).resolve().parents[2] / "frontend/public/map/manifest.json").read_text()
+    )
+    assert set(identity) <= set(manifest), (set(identity) - set(manifest))
