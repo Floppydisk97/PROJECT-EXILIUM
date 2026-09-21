@@ -1325,6 +1325,41 @@ che devono coincidere" di questo progetto, e il rimedio che funziona è sempre l
 Verificato che i tre controlli cadono davvero, separando una guardia, togliendo un tetto di
 tempo e facendo divergere i due `paths-ignore`.
 
+## Il mondo online, e due servizi morti
+
+Il gioco e' in piedi su due servizi e un database:
+
+    exilium-web   sito statico   il pianeta, il terreno, lo schermo di gioco
+    exilium-api   web service    l'autorita': citta', ordini, ledger        OREGON
+    exilium-db    PostgreSQL     il mondo                                   OREGON
+
+### La regione non e' un dettaglio
+
+Il primo servizio API e' rimasto MORTO dal 18 settembre e nessuno se n'era accorto: zero
+righe di log, tutti i deploy falliti in compilazione perche' puntava a un `./Dockerfile` che
+alla radice non esiste. Ma sotto quel guasto ce n'era un secondo, che non si sarebbe visto
+nemmeno correggendo il primo: il servizio stava a **Frankfurt** e il database a **Oregon**, e
+l'indirizzo interno di un database Render non attraversa le regioni.
+
+Il guasto di una regione sbagliata non si presenta come "regione sbagliata": si presenta come
+un servizio che non parte. Per questo il servizio nuovo e' nato dove sta il database, e
+`render.yaml` adesso lo dice.
+
+### Le tre copie del pianeta, finalmente confrontabili
+
+Il pianeta vive nella tabella, che decide DOVE si atterra, e nel file spedito col visore, che
+decide COSA si vede. Un test confronta il file col codice; il database era la terza copia e
+non la guardava nessuno -- e un pianeta diverso nel database significa scegliere una casella
+guardandone un'altra, in silenzio.
+
+Adesso l'API scrive nel log, all'avvio, di quale pianeta si tratta. La prima volta che l'ha
+fatto, la risposta e' stata quella che serviva:
+
+    database   Hesperia - Erebo-01 - freq 152 - gen 8 - 231.042 caselle
+    file       Hesperia - Erebo-01 - freq 152 - gen 8 - 231.042 caselle
+
+Non allinea le copie: rende leggibile la terza, che e' la condizione per accorgersi.
+
 ## Decisioni
 
 Le scelte che vincolano il progetto — il tick da 24 ore, il multiplayer, il confine della

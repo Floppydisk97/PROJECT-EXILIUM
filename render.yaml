@@ -15,10 +15,17 @@ databases:
 
 services:
   # API autoritativa. Migra e genera la mappa all'avvio, poi serve FastAPI.
+  # LA REGIONE NON E' UN DETTAGLIO, ed e' costata un servizio.
+  #
+  # Il primo servizio API stava a Frankfurt e il database a Oregon: l'indirizzo interno di un
+  # database Render non attraversa le regioni, quindi non si sarebbero mai parlati -- e il
+  # guasto non si presenta come "regione sbagliata", si presenta come un servizio che non
+  # parte. Chi ricrea questi servizi li metta DOVE STA IL DATABASE.
   - type: web
     runtime: python
     name: exilium-api
     plan: free
+    region: oregon
     rootDir: backend
     healthCheckPath: /health/live
     buildCommand: pip install -r requirements.lock.txt
@@ -105,6 +112,6 @@ services:
       # Dove sta il server autoritativo. Cotto nel bundle, perche' un export statico non ha
       # un server a cui chiedere a runtime: cambiarlo e' una ricostruzione, ed e' giusto cosi'
       # -- l'indirizzo dell'autorita' non e' una cosa che debba potersi spostare da sola.
-      # In sviluppo si scavalca da console: localStorage.setItem("exilium.api", "http://...").
+      # In sviluppo si scavalca dal campo "Server", nella pagina della colonia e nel menu.
       - key: NEXT_PUBLIC_API_URL
-        value: https://project-exilium.onrender.com
+        value: https://exilium-api.onrender.com
