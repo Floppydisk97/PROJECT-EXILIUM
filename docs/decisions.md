@@ -787,3 +787,76 @@ poligoni, oggi three.js), della HUD e del client dell'API.
 **Da rivedere se.** Già rivisto: i thread non bastano (vedi sopra). La prossima decisione è
 fra generare a pezzi e cambiare linguaggio, e va presa prima di costruirci sopra il resto del
 client — non dopo.
+
+---
+
+## ADR-017 — Il pianeta si genera dove c'è memoria, non dove viene servito
+
+**Decisione.** Il pianeta diventa un **file portatile**. `python -m app.mapfile dump` lo genera
+dove c'è memoria — un portatile, un runner di CI, qualunque cosa — e `python -m app.mapfile
+load` lo rimette dentro un PostgreSQL qualunque **a memoria costante**, via `COPY`. Il server
+che serve l'API non genera più niente.
+
+**Motivazione.** Finora il pianeta lo costruiva l'istanza dell'API, all'avvio. Misurato:
+**358 MB di picco** alla dimensione di oggi, su un'istanza gratuita che ne ha **512**. Siamo
+al soffitto, e il pianeta non può crescere — non perché manchi lo spazio su disco, ma perché
+la macchina che lo **serve** non ha la RAM per **farlo**. Sono due cose diverse tenute insieme
+da un dettaglio di implementazione, e questo le separa.
+
+**Misurato, su un pianeta ×4 (924.162 caselle):**
+
+| | |
+|---|---|
+| generarlo e scriverlo | 153 s, **picco 1.407 MB** |
+| il file | 71 MB compressi |
+| **caricarlo** | 36 s, **picco 36 MB** |
+| in tabella | 475 MB |
+
+I 36 MB non crescono col pianeta: si legge una riga per volta e si scrive in un canale.
+
+**La cosa che il file deve garantire**, e che non è "il caricamento funziona": un database
+riempito dal file e uno riempito dal generatore devono essere **lo stesso database**. C'è un
+test che lo misura — carica, fotografa, cancella, genera, fotografa di nuovo e confronta
+casella per casella, colonna per colonna. Se le due strade divergessero avremmo due pianeti
+con lo stesso nome, e di copie-che-devono-coincidere questo progetto ne ha già pagate sette.
+Per questo `mapservice.TILE_COLUMNS` e `as_database_row` sono **una definizione sola**: la
+generazione e il caricamento vestono le caselle con la stessa funzione.
+
+**Alternative scartate.**
+1. *Aprire il database alle connessioni esterne e caricarlo da fuori.* È la via rapida, e
+   resta possibile — ma espone il database con la sola password per la durata dell'operazione,
+   e non toglie il problema: al prossimo pianeta si riparte da capo.
+2. *Alzare l'istanza a pagamento per il tempo della costruzione.* Funziona, costa pochi
+   centesimi, e non lascia niente dietro di sé. Questo invece vale per sempre e per qualunque
+   provider.
+3. *Rendere `worldgen` parsimonioso* (colonne invece di oggetti). È il lavoro giusto un giorno
+   — 1,5 KB per casella sono quasi tutti ingombro di Python — ma è un refactor del file più
+   delicato del progetto per risolvere un problema che si può togliere di mezzo senza toccarlo.
+4. *Un formato binario.* Scartato: una riga JSON per casella si guarda con `zcat` quando
+   qualcosa non torna, e non ha bisogno di una libreria. A 71 MB compressi il risparmio non
+   vale l'opacità.
+5. *Scrivere e leggere in due file separati.* Scartato: le due metà di un formato separate
+   sono il modo in cui un formato comincia a non essere d'accordo con se stesso.
+
+**Il sigillo sta in fondo**, non in testa, perché chi scrive non può conoscere la somma prima
+di aver finito. Chi legge lo verifica **dentro la transazione**: un file troncato o corrotto
+non lascia mezzo pianeta nel database, non lascia niente. Ci sono i test per tutti e tre i
+casi — troncato, corrotto, e scritto quando una casella aveva altre colonne (il peggiore:
+riempirebbe le colonne sbagliate con valori giusti, senza nessun errore).
+
+**Costo.** Un formato in più da mantenere, e un file da qualche decina di megabyte da spostare
+a mano quando si cambia pianeta.
+
+**Rischi e criticità.**
+- **Non è ancora collegato al deploy.** Il comando di avvio genera ancora il pianeta se manca.
+  Collegarlo dipende da dove si finisce per ospitare, e indovinare sarebbe peggio che aspettare.
+- **Il file non è versionato nel repository** e non deve esserlo: decine di megabyte di dati
+  rigenerabili dal seme. Ma questo vuol dire che **qualcuno deve conservarlo**, o rigenerarlo.
+- **Un pianeta più grande di frequenza 160 non entra comunque**: c'è un vincolo nello schema
+  (`world_map_frequency_check`) e una guardia in `worldgen`. Alzarli è una migrazione, come
+  già fatto in 0004 e 0006 — questo ADR non lo fa.
+- **Il database gratuito di Render scade il 17 ottobre 2026** e accetta solo connessioni
+  interne. Questo comando rende indolore il trasloco, ma il trasloco va deciso.
+
+**Da rivedere se.** `worldgen` diventa parsimonioso: allora l'istanza potrebbe tornare a
+generare da sola, e questo resterebbe utile solo per traslocare.
