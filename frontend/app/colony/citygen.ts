@@ -13,8 +13,24 @@
 // built, who owns what. This copy is for looking.
 import { Prng } from "./prng";
 
-export const SIZE = 768;          // cells a side: ~590k cells, about six kilometres across
-export const CELL_METRES = 8;
+// La colonia e' una griglia di ESAGONI con la punta in alto, e un esagono e' un metro quadro:
+// la scala a cui si cammina e si costruisce. Gli esagoni stanno nello stesso vettore
+// rettangolare di prima -- colonna e riga, righe dispari sfalsate di mezzo esagono
+// ("odd-r") -- quindi il confronto cella per cella col gemello Python regge ancora.
+export const SIZE = 1536;         // esagoni per lato: 2,36 milioni, circa 1,65 km di larghezza
+export const HEX_AREA_M2 = 1.0;
+export const HEX_SIDE_M = Math.sqrt(2.0 / (3.0 * Math.sqrt(3.0)));    // 0,620 m
+export const HEX_WIDTH_M = Math.sqrt(3.0) * HEX_SIDE_M;               // 1,075 m piatto-piatto
+
+/** Quanto distano due righe, in larghezze di esagono: radice di tre mezzi, per un esagono con
+ *  la punta in alto. E' l'unica costante geometrica che entra nel generatore -- il resto e'
+ *  metratura. Calcolata e non trascritta: una costante scritta a mano in due lingue e' la
+ *  forma piu' pura del difetto che questo progetto ha gia' avuto sei volte. */
+export const ROW_RATIO = Math.sqrt(3.0) / 2.0;
+
+/** A quanti campioni si MISURA un sito, che non e' a quanti lo si disegna. Gemella di
+ *  `citygen.SURVEY_SIZE`. */
+export const SURVEY_SIZE = 768;
 
 export const GROUNDS = [
   "deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice",
@@ -140,9 +156,35 @@ export type SiteEconomy = {
 };
 
 export type Generated = {
-  seed: string; size: number; cell_metres: number; site: Site;
+  seed: string; size: number; hex_width_m: number; site: Site;
   ground_names: string[]; cells: Cells; buildable: number; economy: SiteEconomy;
 };
+
+/** Quanti METRI QUADRI di questa colonia si possono costruire.
+ *
+ *  `economy.room` conta le celle del RILEVAMENTO, non gli esagoni della mappa: e' il numero
+ *  su cui gira la simulazione ed e' giusto che resti quello -- cambiarlo sposterebbe il
+ *  bilanciamento di tutte le colonie gia' fondate. Ma mostrarlo a chi gioca sarebbe dirgli un
+ *  numero che non corrisponde a niente che possa contare sullo schermo.
+ *
+ *  Qui diventa la cosa che si puo' contare: la quota edificabile, riportata sugli esagoni
+ *  veri. E siccome un esagono e' un metro quadro, il conto degli esagoni E' la superficie. */
+export function buildableArea(economy: SiteEconomy): number {
+  return Math.round((economy.room / (SURVEY_SIZE * SURVEY_SIZE)) * SIZE * SIZE);
+}
+
+/** Quanto vale questo posto. L'unica risposta, e la stessa che da' il server.
+ *
+ *  Il rilevamento ha una risoluzione FISSA, che non e' quella a cui la colonia si disegna: il
+ *  numero che questo visore MOSTRA prima di un atterraggio e quello che il server SCRIVE dopo
+ *  devono essere lo stesso, o scegliere un sito sarebbe una promessa che il gioco non
+ *  mantiene. Fissando la risoluzione lo sono per costruzione. Gemella di `citygen.survey`.
+ *
+ *  `Generated.economy` resta l'economia della griglia che si ha in mano -- vera, ma di quella
+ *  griglia -- e serve al confronto fra i gemelli. Chi mostra un'economia chiama questa. */
+export function survey(seed: string, site: Site): SiteEconomy {
+  return generate(seed, site, SURVEY_SIZE).economy;
+}
 
 /** The colony's ground, from a seed and what the planet said about the site. */
 export function generate(seed: string, site: Site, size: number = SIZE): Generated {
@@ -214,10 +256,16 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   let oreCells = 0;
   let heatCells = 0;
 
+  // Il centro di un esagono, in larghezze di esagono: le righe dispari stanno mezzo passo a
+  // destra e distano ROW_RATIO invece di uno. Le due coordinate si normalizzano sulla STESSA
+  // meta' mappa, se no il rumore si schiaccerebbe in verticale e una collina tonda uscirebbe
+  // ovale. Il prezzo e' che `v` arriva a 0,866: la mappa e' un rettangolo largo.
+  const half = (size - 1) / 2;
   for (let y = 0; y < size; y++) {
-    const v = (y / (size - 1)) * 2 - 1;
+    const shift = 0.5 * (y & 1);
+    const v = ((y - half) * ROW_RATIO) / half;
     for (let x = 0; x < size; x++) {
-      const u = (x / (size - 1)) * 2 - 1;
+      const u = (x + shift - half) / half;
       const at = y * size + x;
       let metres = (relief.at(u, v) + 0.35 * detail.at(u, v)) * amplitude;
 
@@ -325,7 +373,7 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   };
 
   return {
-    seed, size, cell_metres: CELL_METRES, site,
+    seed, size, hex_width_m: HEX_WIDTH_M, site,
     ground_names: [...GROUNDS], cells, buildable, economy,
   };
 }

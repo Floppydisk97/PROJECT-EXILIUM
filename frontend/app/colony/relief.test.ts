@@ -21,7 +21,7 @@ function colony(size: number, at: (x: number, y: number) => { ground: number; he
     }
   }
   return {
-    seed: "seed", size, cell_metres: 8, buildable: 0,
+    seed: "seed", size, hex_width_m: 1.0745699318235418, buildable: 0,
     economy: { food: 0, timber: 0, stone: 0, ore: 0, wind: 0, sun: 0, water: 0, heat: 0, effort: 0, room: 0 },
     site: { biome: "temperate_forest", elevation: 100, temperature: 10, rainfall: 900, river_flow: 0, coastal: false },
     ground_names: NAMES,

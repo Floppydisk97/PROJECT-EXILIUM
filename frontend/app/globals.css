@@ -272,6 +272,11 @@ html, body {
   cursor: pointer; text-align: left; white-space: nowrap;
 }
 .hud-buttons button:hover { border-color: #3d5c79; }
+/* Un comando che sta acceso deve VEDERSI acceso: un interruttore che non dice in che stato e'
+   si preme due volte per scoprirlo. */
+.hud-buttons button.hud-on {
+  background: rgba(38, 62, 84, 0.95); border-color: #5b86ad; color: #f2f8fd;
+}
 
 .game-panel {
   position: absolute; top: 3rem; right: 0.7rem; bottom: 0.7rem; z-index: 3;

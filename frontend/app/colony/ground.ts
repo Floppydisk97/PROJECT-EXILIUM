@@ -8,6 +8,7 @@
 
 import type { Generated } from "./citygen";
 import { shoreCells, type Relief } from "./relief";
+import { ROW_RATIO, centreX, centreY } from "./hexgrid";
 
 /** What the drawing needs to know: exactly what the generator produces. The ground is no
  *  longer a file that was baked somewhere else -- it is generated here, from the planet and
@@ -175,16 +176,22 @@ export type Prop =
  *  carta da parati. Le macchie aprono radure e infittiscono boschetti senza toccare il dato. */
 const GROVE_SPAN = 9;
 
-/** What stands on a cell. Position is in cell units, so the caller scales it; the jitter is
- *  hashed so a tree never moves between frames, zoom levels or sessions. */
+/** What stands on a cell. La posizione esce in LARGHEZZE DI ESAGONO -- non in indici di
+ *  cella -- perche' su una griglia sfalsata le due cose non coincidono: una riga dispari sta
+ *  mezzo esagono a destra, e un albero piazzato all'indice invece che al centro cadrebbe
+ *  mezzo esagono fuori dal suo, a righe alterne. Il tremolio e' hashato, cosi' un albero non
+ *  si sposta fra un fotogramma e l'altro, fra uno zoom e l'altro o fra una sessione e l'altra.
+ *
+ *  Il tremolio resta dentro l'esagono: mezza unita' di ampiezza attorno al centro, che su un
+ *  esagono largo uno e' quanto basta perche' un bosco non sia una scacchiera di alberi. */
 export function propAt(ground: ColonyGround, seed: number, x: number, y: number): Prop | null {
   const index = y * ground.size + x;
   const name = ground.ground_names[ground.cells.ground[index]];
   if (WATER.has(name) || name === "ice") return null;
 
   const roll = hash(seed, x, y, 1);
-  const jx = x + 0.15 + hash(seed, x, y, 2) * 0.7;
-  const jy = y + 0.15 + hash(seed, x, y, 3) * 0.7;
+  const jx = centreX(x, y) + (hash(seed, x, y, 2) - 0.5) * 0.5;
+  const jy = centreY(y) + (hash(seed, x, y, 3) - 0.5) * 0.5 * ROW_RATIO;
   const hue = hash(seed, x, y, 4);
   // Tre tiri diversi invece di uno riciclato: con un solo numero la pianta grande era sempre
   // anche la piu' chiara e sempre inclinata allo stesso modo, ed e' cosi' che un bosco

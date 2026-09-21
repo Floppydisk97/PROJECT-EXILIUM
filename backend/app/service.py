@@ -525,10 +525,15 @@ def land(conn, city_id, owner_id, tile_id: int) -> dict:
 
     now = db.database_now(conn)
     seed = citygen.seed_for(world_seed(conn), tile_id)
-    # The map is grown ONCE, here, and reduced to the three numbers the economy asks of it.
-    # Nowhere else may this happen: 590.000 cells is seconds of work, and production is
-    # computed every time anybody looks at a city.
-    economy = citygen.generate(seed, site).economy
+    # Il sito viene RILEVATO una volta sola, qui, e ridotto ai numeri che l'economia chiede.
+    # Da nessun'altra parte: il rilevamento e' mezzo milione di campioni, cioe' secondi, e la
+    # produzione si ricalcola ogni volta che qualcuno guarda una colonia.
+    #
+    # `survey` e non `generate`: la mappa che si guarda e' fatta di 2,36 milioni di esagoni da
+    # un metro quadro, e generarla qui sarebbe sedici secondi dentro questa richiesta. Il
+    # rilevamento ha una risoluzione sua, fissa, ed e' la stessa che il visore usa per mostrare
+    # i numeri prima dell'atterraggio -- che e' il motivo per cui i due non possono divergere.
+    economy = citygen.survey(seed, site)
     if economy.room == 0:
         # Dry by elevation and yet nothing to build on: an ice cap, a glacier, a mountain that
         # is frozen end to end. Landing is IRREVERSIBLE -- a trigger refuses to move a colony
@@ -589,7 +594,7 @@ def city_ground(conn, city_id, owner_id) -> dict:
     site, _tile = _site_of(conn, city["tile_id"])
     return {
         "city_id": city["id"], "tile_id": city["tile_id"], "seed": city["map_seed"],
-        "size": citygen.SIZE, "cell_metres": citygen.CELL_METRES,
+        "size": citygen.SIZE, "hex_width_m": citygen.HEX_WIDTH_M,
         "site": {
             "biome": site.biome, "elevation": site.elevation,
             "temperature": site.temperature, "rainfall": site.rainfall,

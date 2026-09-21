@@ -6,107 +6,107 @@ import {
   ColonyGround, Prop, ROUGHNESS, WATER, hash, litInto, patches, propAt,
 } from "./ground";
 import { reliefOf } from "./relief";
+import { CORNERS, ROW_RATIO, centreX, centreY, mapHeight } from "./hexgrid";
 
-/** Pixels per cell in the terrain buffer. More than one, because a flat square per cell reads
- *  as a spreadsheet: the blended edges between two grounds need somewhere to live. Two rather
- *  than four, because a colony is 768 cells a side now -- four would be a 3072x3072 buffer,
- *  9.4 megapixels, past what Safari on a phone will allocate. The fine texture is laid over
- *  the top at screen resolution anyway, so the buffer only owes us the blending.
+/** Quanti pixel del buffer occupa un esagono in orizzontale, e quante righe di buffer una
+ *  riga di esagoni. Due e uno, e non e' una scelta di qualita': e' l'unica coppia che tiene
+ *  ALLINEATO lo sfalsamento.
  *
- *  Below this many pixels per cell nothing standing on the ground is drawn: at a wide zoom a
- *  viewport covers a hundred thousand cells, and a hundred thousand sprites a frame is a
- *  slideshow. The terrain already carries the vegetation in its colour. */
-export const SUB = 2;
+ *  Le righe dispari stanno mezzo esagono a destra. Con un pixel per esagono quel mezzo non ha
+ *  dove stare, e il buffer tornerebbe una scacchiera dritta: il colore starebbe mezza cella
+ *  fuori dalle linee, a righe alterne, ed e' proprio la cosa che si vedrebbe. Con due pixel,
+ *  mezzo esagono e' UN pixel esatto -- niente arrotondamenti, niente ricerca di quale esagono
+ *  sta sotto un punto, solo indici interi.
+ *
+ *  In verticale una riga per riga e basta: le righe non sono sfalsate fra loro, e il buffer
+ *  viene poi steso a 0,866 di altezza quando si disegna. A 1536 esagoni sono 3072x1536 pixel,
+ *  cioe' 4,7 megapixel -- il doppio di prima e ancora sotto quel che Safari su telefono
+ *  alloca (i 9,4 megapixel provati a suo tempo, no).
+ *
+ *  Sotto questa scala non si disegna niente di quel che sta IN PIEDI sul terreno: a zoom largo
+ *  l'inquadratura copre centomila celle, e centomila sagome per fotogramma sono una
+ *  presentazione. Il colore del terreno la vegetazione ce l'ha gia' dentro. */
+export const SUB_X = 2;
 export const PROP_ZOOM = 7;
+
+/** Da quanto vicino si accendono le linee della griglia, se sono accese. Sotto, gli esagoni
+ *  sono piu' piccoli dello spessore del tratto: si vedrebbe un velo grigio uniforme, non una
+ *  griglia, e a 2,36 milioni di contorni sarebbe anche fermo. */
+export const GRID_ZOOM = 9;
 
 /** Paint the ground into an offscreen buffer, once. It never changes, so panning and zooming
  *  are one `drawImage` rather than half a million fills.
  *
- *  Due cose succedono qui: il CONFINE fra due terreni (prima un mezzatinta a caso, adesso un
- *  campionamento bilineare con il bordo spostato a caso, che e' frastagliato senza essere
- *  sporco) e la GRANA (prima puntinio bianco a tutte le scale, adesso macchie larghe quanto il
+ *  Due cose succedono qui: il CONFINE fra due terreni e la GRANA (macchie larghe quanto il
  *  terreno, che stanno nel buffer e quindi si ingrandiscono insieme a lui).
+ *
+ *  Non c'e' piu' il campionamento bilineare con il bordo spostato a caso che sfumava fra una
+ *  cella e l'altra. Non e' una rinuncia: adesso la cella e' un ESAGONO, e il confine fra due
+ *  esagoni e' una linea che il gioco tratta come netta -- ci si costruisce sopra. Sfumarlo
+ *  sarebbe disegnare una cosa diversa da quella su cui si gioca.
  */
 export function paintTerrain(ground: ColonyGround, seed: number): HTMLCanvasElement {
   const size = ground.size;
   const relief = reliefOf(ground);
   const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = size * SUB;
+  canvas.width = size * SUB_X;
+  canvas.height = size;
   const context = canvas.getContext("2d")!;
-  const image = context.createImageData(size * SUB, size * SUB);
+  const image = context.createImageData(canvas.width, canvas.height);
   const data = image.data;
 
-  const red = new Float32Array(size * size);
-  const green = new Float32Array(size * size);
-  const blue = new Float32Array(size * size);
-  const wet = new Uint8Array(size * size);
-  const leaf = new Uint8Array(size * size);
-  const rough = new Float32Array(size * size);
   const tint = [0, 0, 0];
-  for (let i = 0; i < size * size; i++) {
-    litInto(ground, relief, i, tint);
-    red[i] = tint[0]; green[i] = tint[1]; blue[i] = tint[2];
-    const name = ground.ground_names[ground.cells.ground[i]];
-    wet[i] = WATER.has(name) ? 1 : 0;
-    leaf[i] = ground.cells.vegetation[i];
-    rough[i] = ROUGHNESS[name] ?? 1;
-  }
+  for (let row = 0; row < size; row++) {
+    const odd = row & 1;
+    // La grana si campiona su due assi alla STESSA densita'. Il buffer non ce l'ha -- due
+    // pixel per esagono in orizzontale, uno per riga in verticale -- quindi una macchia
+    // presa sugli indici del buffer verrebbe fuori stirata, e un terreno a strisce
+    // orizzontali e' esattamente il difetto da cui siamo appena usciti.
+    const ny = Math.round(row * SUB_X * ROW_RATIO);
+    for (let col = 0; col < size; col++) {
+      const index = row * size + col;
+      litInto(ground, relief, index, tint);
+      const name = ground.ground_names[ground.cells.ground[index]];
+      const wet = WATER.has(name);
+      const grit = ROUGHNESS[name] ?? 1;
+      const leaf = ground.cells.vegetation[index];
 
-  const span = size * SUB;
-  for (let sy = 0; sy < span; sy++) {
-    for (let sx = 0; sx < span; sx++) {
-      // Dove cade questo sottopixel, in celle, spostato a caso di una frazione di cella: e'
-      // lo spostamento che rende il confine fra sabbia e terra un orlo invece di un righello.
-      const wobbleX = (hash(seed, sx, sy, 7) - 0.5) * 0.9;
-      const wobbleY = (hash(seed, sx, sy, 11) - 0.5) * 0.9;
-      const fx = (sx + 0.5) / SUB - 0.5 + wobbleX;
-      const fy = (sy + 0.5) / SUB - 0.5 + wobbleY;
-      const x0 = Math.max(0, Math.min(size - 1, Math.floor(fx)));
-      const y0 = Math.max(0, Math.min(size - 1, Math.floor(fy)));
-      const x1 = Math.min(size - 1, x0 + 1);
-      const y1 = Math.min(size - 1, y0 + 1);
-      const tx = Math.max(0, Math.min(1, fx - x0));
-      const ty = Math.max(0, Math.min(1, fy - y0));
-      const i00 = y0 * size + x0, i10 = y0 * size + x1;
-      const i01 = y1 * size + x0, i11 = y1 * size + x1;
-      const w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty);
-      const w01 = (1 - tx) * ty, w11 = tx * ty;
-
-      let r = red[i00] * w00 + red[i10] * w10 + red[i01] * w01 + red[i11] * w11;
-      let g = green[i00] * w00 + green[i10] * w10 + green[i01] * w01 + green[i11] * w11;
-      let b = blue[i00] * w00 + blue[i10] * w10 + blue[i01] * w01 + blue[i11] * w11;
-
-      const here = ty < 0.5 ? (tx < 0.5 ? i00 : i10) : (tx < 0.5 ? i01 : i11);
-
-      if (wet[here]) {
-        // L'acqua non ha grana: ha onde, lunghe e quasi diritte come il vento le fa. La
-        // prima versione mescolava
-        // l'onda con una macchia larga e veniva fuori un corallo cerebrale.
-        const wave = Math.sin((sx * 0.35 + sy) * 0.075
-                              + patches(seed, sx, sy, 31, 40) * 2.2);
-        const lift = wave * 2.6 + (patches(seed, sx, sy, 32, 14) - 0.5) * 3.0;
-        r += lift * 0.7; g += lift; b += lift * 1.15;
-      } else {
-        // Macchie larghe, nel buffer, cosi' crescono col terreno invece di restare polvere
-        // sullo schermo. Due frequenze: chiazze di suolo, e sotto di esse il puntinio fine.
-        const grit = rough[here];
-        const broad = (patches(seed, sx, sy, 12, 13) - 0.5) * 17 * grit;
-        const fine = (hash(seed, sx, sy, 8) - 0.5) * 9 * grit;
-        r += broad + fine; g += broad * 0.96 + fine; b += broad * 0.82 + fine;
-        // E la chioma: dove c'e' bosco, la macchia scurisce in verde invece che in grigio --
-        // un bosco visto dall'alto e' fatto di masse e di buchi, non di tinta unita.
-        if (leaf[here] > 30) {
-          const canopy = (patches(seed, sx, sy, 13, 7) - 0.5)
-                       * Math.min(1, (leaf[here] - 30) / 45) * 19;
-          r -= canopy * 0.85; g -= canopy * 0.55; b -= canopy * 0.80;
+      for (let half = 0; half < SUB_X; half++) {
+        // Mezzo esagono di scostamento sulle righe dispari, che qui e' un pixel esatto.
+        const sx = col * SUB_X + half + odd;
+        if (sx >= canvas.width) continue;
+        let r = tint[0], g = tint[1], b = tint[2];
+        if (wet) {
+          // L'acqua non ha grana: ha onde, lunghe e quasi diritte come il vento le fa.
+          const wave = Math.sin((sx * 0.35 + ny) * 0.0375 + patches(seed, sx, ny, 31, 80) * 2.2);
+          const lift = wave * 2.6 + (patches(seed, sx, ny, 32, 28) - 0.5) * 3.0;
+          r += lift * 0.7; g += lift; b += lift * 1.15;
+        } else {
+          const broad = (patches(seed, sx, ny, 12, 26) - 0.5) * 17 * grit;
+          const fine = (hash(seed, sx, ny, 8) - 0.5) * 9 * grit;
+          r += broad + fine; g += broad * 0.96 + fine; b += broad * 0.82 + fine;
+          // E la chioma: dove c'e' bosco la macchia scurisce in verde invece che in grigio --
+          // un bosco visto dall'alto e' fatto di masse e di buchi, non di tinta unita.
+          if (leaf > 30) {
+            const canopy = (patches(seed, sx, ny, 13, 14) - 0.5) * Math.min(1, (leaf - 30) / 45) * 19;
+            r -= canopy * 0.85; g -= canopy * 0.55; b -= canopy * 0.80;
+          }
         }
+        const at = (row * canvas.width + sx) * 4;
+        data[at] = clamp(r);
+        data[at + 1] = clamp(g);
+        data[at + 2] = clamp(b);
+        data[at + 3] = 255;
       }
-
-      const at = (sy * span + sx) * 4;
-      data[at] = clamp(r);
-      data[at + 1] = clamp(g);
-      data[at + 2] = clamp(b);
-      data[at + 3] = 255;
+    }
+    // Il primo pixel di una riga dispari resta scoperto: lo sfalsamento ha spinto tutto di
+    // uno. Prende il colore del suo vicino invece di restare nero -- mezzo esagono di bordo,
+    // e un bordo nero lungo un lato sì e uno no si vedrebbe da qualunque distanza.
+    if (odd) {
+      const from = (row * canvas.width + 1) * 4;
+      const to = row * canvas.width * 4;
+      data[to] = data[from]; data[to + 1] = data[from + 1];
+      data[to + 2] = data[from + 2]; data[to + 3] = 255;
     }
   }
   context.putImageData(image, 0, 0);
@@ -152,10 +152,13 @@ export function paintProps(
 ): number {
   const size = ground.size;
   if (view.scale < PROP_ZOOM) return 0;
-  const x0 = Math.max(0, Math.floor(view.x0) - 1);
+  // L'inquadratura arriva in unita'; le righe pero' distano 0,866, quindi la riga piu' alta
+  // visibile non e' `y0` -- e prenderla per tale lascerebbe una striscia di alberi mancanti
+  // lungo il bordo superiore, che in panoramica si legge come un lampeggio.
+  const x0 = Math.max(0, Math.floor(view.x0) - 2);
   const x1 = Math.min(size - 1, Math.ceil(view.x1) + 1);
-  const y0 = Math.max(0, Math.floor(view.y0) - 1);
-  const y1 = Math.min(size - 1, Math.ceil(view.y1) + 1);
+  const y0 = Math.max(0, Math.floor(view.y0 / ROW_RATIO) - 2);
+  const y1 = Math.min(size - 1, Math.ceil(view.y1 / ROW_RATIO) + 2);
   let drawn = 0;
 
   for (let y = y0; y <= y1; y++) {
@@ -166,6 +169,51 @@ export function paintProps(
       drawn++;
     }
   }
+  return drawn;
+}
+
+/** Le linee della griglia, sopra il terreno e sotto le cose che ci stanno in piedi.
+ *
+ *  Disegnate come VETTORI a risoluzione dello schermo, non cotte dentro il buffer del
+ *  terreno. E' quello che le rende accendibili e spegnibili senza rigenerare niente, e anche
+ *  quello che le tiene nitide a qualunque ingrandimento: un contorno cotto nel buffer, a due
+ *  pixel per esagono, sarebbe una sbavatura grigia.
+ *
+ *  Un solo `Path2D` per tutta l'inquadratura invece di un tratto per esagono: a diecimila
+ *  esagoni visibili, diecimila `stroke()` sono diecimila cambi di stato della tela. */
+export function paintHexGrid(
+  context: CanvasRenderingContext2D,
+  size: number,
+  view: { x0: number; y0: number; x1: number; y1: number; scale: number },
+): number {
+  if (view.scale < GRID_ZOOM) return 0;
+  const x0 = Math.max(0, Math.floor(view.x0) - 2);
+  const x1 = Math.min(size - 1, Math.ceil(view.x1) + 1);
+  const y0 = Math.max(0, Math.floor(view.y0 / ROW_RATIO) - 1);
+  const y1 = Math.min(size - 1, Math.ceil(view.y1 / ROW_RATIO) + 1);
+
+  const path = new Path2D();
+  let drawn = 0;
+  for (let row = y0; row <= y1; row++) {
+    const cy = centreY(row) * view.scale;
+    for (let col = x0; col <= x1; col++) {
+      const cx = centreX(col, row) * view.scale;
+      for (let i = 0; i < 6; i++) {
+        const [dx, dy] = CORNERS[i];
+        const px = cx + dx * view.scale;
+        const py = cy + dy * view.scale;
+        if (i === 0) path.moveTo(px, py); else path.lineTo(px, py);
+      }
+      path.closePath();
+      drawn++;
+    }
+  }
+  // Piu' si sta vicini, piu' la linea si fa vedere: da lontano una griglia satura e' una
+  // rete grigia appoggiata sul terreno, da vicino serve che si legga su cosa si costruisce.
+  const closeness = Math.min(1, (view.scale - GRID_ZOOM) / 16);
+  context.strokeStyle = `rgba(16, 22, 30, ${0.16 + 0.26 * closeness})`;
+  context.lineWidth = Math.max(0.6, view.scale * 0.035);
+  context.stroke(path);
   return drawn;
 }
 

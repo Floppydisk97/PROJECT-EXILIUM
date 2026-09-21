@@ -609,3 +609,84 @@ Riprodotto apposta (un secondo di attesa in mezzo alla preparazione: stesso nume
 e chiuso alla radice — l'età si scrive come un **istante**, e invecchiare e fermare escono da
 **una sola** lettura dell'orologio. C'è un test che fa girare il secondo di proposito: senza la
 correzione cade sempre, non una volta su venti.
+
+---
+
+## ADR-015 — La colonia è una griglia di esagoni, e un esagono è un metro quadro
+
+**Decisione.** Il terreno della colonia smette di essere una scacchiera di celle quadrate da
+otto metri e diventa una griglia di **esagoni con la punta in alto**, uno per metro quadro,
+righe sfalsate di mezzo esagono. Le linee si accendono e si spengono da un comando. Con
+1.536 esagoni di lato la colonia è **1,65 km × 1,43 km**.
+
+Gli esagoni restano nello stesso vettore rettangolare di prima — colonna e riga, sfalsamento
+"odd-r" — quindi il confronto cella per cella fra i due gemelli regge senza cambiare forma.
+La geometria (dov'è un esagono, quale sta sotto un punto, chi è vicino a chi) ha **una sola
+definizione**, in `colony/hexgrid.ts`: a quelle domande rispondono in tre — il pittore del
+terreno, il puntatore e la griglia — e mezzo esagono di scarto fra il colore e la linea
+sarebbe invisibile a qualunque test ma evidente a chiunque guardi.
+
+**L'economia diventa un rilevamento a risoluzione fissa.** `citygen.survey` misura il sito su
+768 campioni; `generate` disegna la mappa su 1.536. Il server chiama `survey`, e il client
+chiama **lo stesso** `survey` per i numeri che mostra prima dell'atterraggio.
+
+**Motivazione.** Un metro quadro è la scala a cui si costruisce: un edificio da dieci metri
+per dieci occupa cento esagoni e si può disporre. Con la cella da otto metri ne occupava uno
+e mezzo, cioè non c'era niente da disporre. Ed è la scala dell'immagine di riferimento.
+
+**Numeri, misurati e non stimati.** Un esagono da 1 m² per coprire i 37,7 km² di prima sono
+**37,7 milioni di esagoni e 264 MB** di soli dati: non è lento, è impossibile in un browser.
+Quindi o l'esagono è un metro quadro e la colonia si restringe, o la colonia resta regionale
+e l'esagono non è un metro quadro. Scelta la prima.
+
+| | oggi (0,59 M celle) | ora (2,36 M esagoni) |
+|---|---|---|
+| `generate` (TypeScript) | 0,62 s | 1,51 s |
+| `survey` | — | 0,37 s |
+| pittura del terreno | ~0,8 s | 1,31 s |
+| **totale, caricamento** | **~1,4 s** | **~3,2 s** |
+| `generate` (Python, server) | 4,04 s | **3,96 s** — invariato, grazie a `survey` |
+
+**Alternative scartate.**
+1. *Rilevare l'economia alla risoluzione del disegno.* Scartata misurandola: sedici secondi
+   dentro la richiesta di atterraggio, su un'istanza gratuita con un worker solo. Sarebbe un
+   timeout, e per cambiare la terza cifra decimale di numeri poi arrotondati a intero.
+2. *Far calcolare al client l'economia sulla mappa che disegna.* Scartata, ed è la più
+   pericolosa perché funzionerebbe: darebbe numeri veri e **diversi** da quelli memorizzati.
+   Scegliere un sito è una decisione presa sui numeri del visore.
+3. *Un pixel per esagono nel buffer del terreno.* Scartata: mezzo esagono di sfalsamento non
+   avrebbe dove stare e il buffer tornerebbe una scacchiera dritta, col colore mezza cella
+   fuori dalle linee a righe alterne. Con due pixel, mezzo esagono è **un** pixel esatto —
+   indici interi, nessun arrotondamento.
+4. *Cuocere le linee dentro il buffer.* Scartata: non si potrebbero spegnere senza
+   rigenerarlo, e a due pixel per esagono sarebbero una sbavatura grigia.
+5. *Esagono a lato piatto.* Scartata per somiglianza con l'immagine di riferimento; è una
+   riga di geometria, si cambia in un pomeriggio.
+6. *Tenere i 37,7 km² con un esagono da 64 m².* Scartata dall'utente: salterebbe il metro
+   quadro, che è la cosa che rende la griglia utile a costruirci sopra.
+
+**Costo.** Il caricamento passa da ~1,4 s a ~3,2 s misurati su questa macchina. Il buffer del
+terreno passa da 2,4 a 4,7 megapixel (19 MB) — sotto i 9,4 che Safari su telefono ha già
+rifiutato una volta, ma non di molto.
+
+**Rischi e criticità.**
+- **Su telefono il caricamento può arrivare a dieci secondi.** Il messaggio di avanzamento
+  c'è, ma è una attesa vera. Se diventa insopportabile, la strada è generare in un
+  `Web Worker`, non ridurre la griglia.
+- **La colonia si restringe da 37,7 km² a 2,4 km².** È la conseguenza diretta del metro
+  quadro. Non c'è modo di avere tutti e due.
+- **`room` non è più un numero che si possa contare sullo schermo**: conta le celle del
+  rilevamento. A chi gioca si mostra la superficie edificabile in ettari, che è la stessa
+  informazione in una forma verificabile. Ma nel codice resta un conteggio, e chi lo legge
+  senza sapere questo lo interpreterebbe male.
+- **Il terreno nel buffer è fatto di rettangoli, non di esagoni.** A due pixel per esagono i
+  colori stanno nel posto giusto ma la forma la danno le linee sopra. Da vicino, con le linee
+  spente, il confine fra due terreni è squadrato invece che a nido d'ape.
+- **La colonia già fondata ha numeri scritti con la griglia vecchia.** Il disegno cambia, i
+  numeri memorizzati no: per vederli coerenti serve un soft reset e un nuovo atterraggio.
+- **Il bake delle colonie di esempio era rotto da mesi** e non se n'era accorto nessuno,
+  perché `ColonyPicker` non sta su nessuna pagina. Sistemato e rimpicciolito, ma è codice
+  morto in attesa di una decisione.
+
+**Da rivedere se.** Si comincia a costruire davvero: allora servirà sapere quali esagoni sono
+occupati, e quello è uno strato nuovo — non una proprietà del terreno.

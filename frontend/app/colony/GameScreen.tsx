@@ -8,7 +8,7 @@ import {
   CityView, NotAuthorised, apiBase, call, myCities, readCity, saveToken, savedToken,
 } from "../lib/api";
 import CityPanel from "../city/CityPanel";
-import { Generated, Site, generate, seedFor } from "./citygen";
+import { Generated, Site, SiteEconomy, buildableArea, generate, seedFor, survey } from "./citygen";
 import ColonyView, { Camera } from "./ColonyView";
 import MiniMap from "./MiniMap";
 import { Menu, ResourceBar, ScoutBar } from "./Hud";
@@ -23,7 +23,12 @@ import { Menu, ResourceBar, ScoutBar } from "./Hud";
  *      /colonia            la tua colonia, con le risorse e i comandi
  *      /colonia?tile=N     una casella qualunque, in ricognizione
  */
-type Ground = { made: Generated; name: string; scouting: boolean };
+// L'economia viaggia ACCANTO al terreno, non dentro. Sono due domande diverse e a due
+// risoluzioni diverse: `made` e' la mappa da guardare, 2,36 milioni di esagoni da un metro
+// quadro; `economy` e' il rilevamento del sito, a risoluzione fissa, ed e' lo stesso numero
+// che il server scrive quando si atterra. Leggere `made.economy` darebbe un numero vero ma
+// DIVERSO da quello memorizzato -- cioe' una promessa che il gioco non mantiene.
+type Ground = { made: Generated; economy: SiteEconomy; name: string; scouting: boolean };
 
 export default function GameScreen({ tileId }: { tileId: number | null }) {
   const [stage, setStage] = useState("Lettura del pianeta…");
@@ -33,6 +38,9 @@ export default function GameScreen({ tileId }: { tileId: number | null }) {
   const [camera, setCamera] = useState<Camera | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
+  // Le linee della griglia. Spente all'inizio: quel che si guarda per primo e' il terreno,
+  // e una rete grigia sopra un bosco e' la prima cosa che si vorrebbe togliere.
+  const [grid, setGrid] = useState(false);
   const goTo = useRef<((x: number, y: number) => void) | null>(null);
 
   const onCamera = useCallback((next: Camera) => setCamera(next), []);
@@ -59,7 +67,8 @@ export default function GameScreen({ tileId }: { tileId: number | null }) {
           await new Promise((resolve) => requestAnimationFrame(resolve));
           const made = generate(seat.seed, seat.site, seat.size);
           if (cancelled) return;
-          setGround({ made, name: mine[0].name, scouting: false });
+          const economy = survey(seat.seed, seat.site);
+          setGround({ made, economy, name: mine[0].name, scouting: false });
           setCity(await readCity(mine[0].id));
           return;
         }
@@ -97,7 +106,11 @@ export default function GameScreen({ tileId }: { tileId: number | null }) {
         // va per mezzo secondo: un blocco silenzioso somiglia a un crollo.
         await new Promise((resolve) => requestAnimationFrame(resolve));
         const made = generate(seed, site);
-        if (!cancelled) setGround({ made, name: `Casella ${chosen.id}`, scouting: true });
+        if (cancelled) return;
+        setStage("Rilevamento del sito…");
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const economy = survey(seed, site);
+        if (!cancelled) setGround({ made, economy, name: `Casella ${chosen.id}`, scouting: true });
       } catch (error) {
         if (!cancelled) {
           setFailure(String((error as Error).message ?? error));
@@ -146,7 +159,7 @@ export default function GameScreen({ tileId }: { tileId: number | null }) {
   }
 
   const site = ground.made.site;
-  const economy = ground.made.economy;
+  const economy = ground.economy;
 
   return (
     <main className="game">
@@ -164,19 +177,29 @@ export default function GameScreen({ tileId }: { tileId: number | null }) {
             { label: "minerale", value: String(economy.ore) },
             { label: "vento/sole/acqua/calore",
               value: `${economy.wind}/${economy.sun}/${economy.water}/${economy.heat}` },
-            { label: "edificabili", value: economy.room.toLocaleString("it-IT") },
+            // Ettari e non "celle": un esagono e' un metro quadro, quindi la superficie
+            // edificabile e' una misura vera che si puo' confrontare con qualcosa di noto.
+            { label: "edificabile",
+              value: `${Math.round(buildableArea(economy) / 10000).toLocaleString("it-IT")} ha` },
           ]}
         />
       )}
 
       <div className="game-stage">
-        <ColonyView ground={ground.made} onCamera={onCamera} goTo={goTo} />
+        <ColonyView ground={ground.made} grid={grid} onCamera={onCamera} goTo={goTo} />
       </div>
 
       <div className="hud-corner">
         <MiniMap ground={ground.made} camera={camera} goTo={goTo} />
         <div className="hud-buttons">
           <button onClick={planet} title="Il pianeta">🌍 Pianeta</button>
+          <button
+            onClick={() => setGrid((on) => !on)}
+            className={grid ? "hud-on" : undefined}
+            title="Le caselle: un esagono è un metro quadro. Si vedono da vicino."
+          >
+            ⬡ Caselle{grid ? " ▸ on" : ""}
+          </button>
           {city && (
             <button onClick={() => setPanelOpen((open) => !open)} title="Governo della colonia">
               🏛 {panelOpen ? "Chiudi" : "Governo"}

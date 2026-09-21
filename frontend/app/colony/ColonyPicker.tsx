@@ -63,7 +63,7 @@ export default function ColonyPicker() {
           {ground.site.river_flow > 0 && <span>fiume {ground.site.river_flow}</span>}
           {ground.site.coastal && <span>costa</span>}
           <span className="colony-spacer" />
-          <span><b>{ground.buildable.toLocaleString("it-IT")}</b> celle edificabili su {(ground.size ** 2).toLocaleString("it-IT")}</span>
+          <span><b>{ground.buildable.toLocaleString("it-IT")}</b> esagoni edificabili su {(ground.size ** 2).toLocaleString("it-IT")}</span>
         </footer>
       )}
     </main>

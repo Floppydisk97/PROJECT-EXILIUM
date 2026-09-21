@@ -25,8 +25,37 @@ from dataclasses import dataclass
 
 from app.prng import Prng
 
-SIZE = 768                  # cells per side: ~590k cells, about six kilometres across
-CELL_METRES = 8
+# La colonia e' una griglia di ESAGONI con la punta in alto, e un esagono e' un metro
+# quadrato: la scala a cui si cammina e si costruisce, non quella a cui si guarda un
+# continente. Quella la tiene il pianeta.
+#
+# Gli esagoni stanno nello stesso vettore rettangolare di prima -- colonna e riga, con le
+# righe dispari sfalsate di mezzo esagono ("odd-r"). Cambia dove sta il centro di una cella,
+# non come si indirizza: il gemello TypeScript puo' restare un confronto cella per cella.
+SIZE = 1536                 # esagoni per lato: 2,36 milioni, circa 1,65 km di larghezza
+HEX_AREA_M2 = 1.0           # un esagono e' un metro quadrato: e' la definizione, non una misura
+HEX_SIDE_M = math.sqrt(2.0 / (3.0 * math.sqrt(3.0)))   # 0,620 m
+HEX_WIDTH_M = math.sqrt(3.0) * HEX_SIDE_M              # 1,075 m da piatto a piatto
+
+# Quanto distano due righe, in larghezze di esagono. Per un esagono con la punta in alto e'
+# radice di tre mezzi, e questa e' l'UNICA costante geometrica che entra nel generatore: il
+# resto e' metratura, cioe' come si chiama quello che si e' generato.
+#
+# Calcolata e non trascritta di proposito. Una costante scritta a mano in due lingue e' la
+# forma piu' pura del difetto che questo progetto ha gia' avuto sei volte; `sqrt(3)/2` invece
+# da' lo stesso identico numero in virgola mobile di qua e di la'.
+ROW_RATIO = math.sqrt(3.0) / 2.0
+
+# Quanti campioni servono per DIRE QUANTO VALE un sito, che non e' quanti ne servono per
+# disegnarlo. L'economia e' una decina di interi -- medie e proporzioni -- e su 590.000
+# campioni sono gia' stabili: rilevarla su 2,36 milioni costerebbe al server quattro volte
+# tanto (sedici secondi dentro la richiesta di atterraggio, misurati) per cambiare la terza
+# cifra decimale di numeri che poi vengono arrotondati a intero.
+#
+# Il punto non e' il risparmio: e' che il server e il client devono dire lo STESSO numero.
+# Fissando la risoluzione del rilevamento, lo dicono per costruzione, qualunque sia la
+# risoluzione a cui il client poi disegna. Chi mostra o memorizza un'economia chiama `survey`.
+SURVEY_SIZE = 768
 
 # How far a bank stays fertile, and by how much. A river or a shore is the strongest thing a
 # site can have: it is what makes a desert worth landing on at all.
@@ -120,7 +149,7 @@ class CityMap:
     the ground itself."""
     seed: str
     size: int
-    cell_metres: int
+    hex_width_m: float      # da piatto a piatto: quanto e' largo un esagono di un metro quadro
     site: Site
     ground_names: tuple[str, ...]
     ground: tuple[int, ...]
@@ -271,6 +300,27 @@ def _smoothstep(t: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
+def survey(seed: str, site: Site) -> "SiteEconomy":
+    """Quanto vale questo posto. L'unica risposta, per il server e per il client.
+
+    Il rilevamento ha una risoluzione FISSA, che non e' quella a cui la colonia si disegna.
+    Sono due domande diverse: "quanto rende questa terra" e' fatta di medie e proporzioni, e
+    su 590.000 campioni sono gia' ferme; "che aspetto ha" vuole un esagono per metro quadro,
+    cioe' quattro volte tanto. Rilevare alla risoluzione del disegno costerebbe al server
+    sedici secondi dentro la richiesta di atterraggio -- misurati -- per cambiare cifre che
+    poi vengono arrotondate a intero.
+
+    Ma il motivo vero non e' il costo. Il numero che il visore MOSTRA prima di un atterraggio
+    e quello che il server SCRIVE dopo devono essere lo stesso, o scegliere un sito sarebbe
+    una promessa che il gioco non mantiene. Fissando qui la risoluzione, lo sono per
+    costruzione: il client disegna a 1536 e chiama questa per i numeri, come fa il server.
+
+    Chi mostra o memorizza un'economia chiama questa. `CityMap.economy` resta l'economia della
+    griglia che ha in mano -- vera, ma di quella griglia -- e serve al confronto fra i gemelli.
+    """
+    return generate(seed, site, SURVEY_SIZE).economy
+
+
 def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     """The colony's ground, from a seed and what the planet said about the site."""
     rule = BIOME_RULES.get(site.biome, DEFAULT_RULE)
@@ -335,12 +385,17 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     water_index, deep_index = GROUNDS.index("water"), GROUNDS.index("deep_water")
     marsh_index, ice_index = GROUNDS.index("marsh"), GROUNDS.index("ice")
 
+    # Il centro di un esagono, in larghezze di esagono: le righe dispari stanno mezzo passo a
+    # destra e distano ROW_RATIO invece di uno. Entrambe le coordinate si normalizzano sulla
+    # STESSA meta' mappa -- e non ciascuna sulla propria -- se no il rumore verrebbe schiacciato
+    # in verticale e una collina tonda uscirebbe ovale. Il prezzo e' che `v` arriva a 0,866
+    # invece che a 1: la mappa e' un rettangolo largo, ed e' giusto che il rumore lo sappia.
+    half = (size - 1) / 2.0
     for y in range(size):
+        shift = 0.5 * (y & 1)
+        v = (y - half) * ROW_RATIO / half
         for x in range(size):
-            # Normalised to [-1, 1] so the noise is sampled over a fixed patch whatever the
-            # size, and a map rendered at a different resolution is the same place.
-            u = (x / (size - 1)) * 2.0 - 1.0
-            v = (y / (size - 1)) * 2.0 - 1.0
+            u = (x + shift - half) / half
             h = relief.at(u, v) + 0.35 * detail.at(u, v)
             metres = h * amplitude
 
@@ -464,7 +519,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             vegetation.append(cell_vegetation)
 
     return CityMap(
-        seed=seed, size=size, cell_metres=CELL_METRES, site=site,
+        seed=seed, size=size, hex_width_m=HEX_WIDTH_M, site=site,
         ground_names=GROUNDS, ground=tuple(ground), height=tuple(height),
         fertility=tuple(fertility), vegetation=tuple(vegetation),
         ore=100 * ore_cells // (size * size),

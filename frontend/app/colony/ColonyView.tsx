@@ -3,11 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { Generated } from "./citygen";
 import { describe, seedNumber } from "./ground";
-import { makeGrain, paintProps, paintTerrain } from "./draw";
+import { makeGrain, paintHexGrid, paintProps, paintTerrain } from "./draw";
+import { hexAt, mapHeight } from "./hexgrid";
 
 // Zoomed all the way out means the whole colony on screen, so the floor is not a constant:
-// at 768 cells a side, six kilometres of ground in an 800-pixel window is about one pixel per
-// cell, and a fixed floor of three would have made a third of the map unreachable.
+// a 1536 esagoni di lato, un chilometro e mezzo di terreno in una finestra da 800 pixel e'
+// mezzo pixel per esagono, e un minimo fisso renderebbe irraggiungibile meta' della mappa.
+//
+// UNITA'. La telecamera lavora in LARGHEZZE DI ESAGONO, non in metri e non in indici di
+// cella: `scale` e' quanti pixel dello schermo occupa un esagono. Un'unita' e' 1,075 m, e le
+// righe distano 0,866 unita' -- quindi la mappa e' un rettangolo largo, e tutto quel che la
+// inquadra deve chiedere l'altezza a `mapHeight` invece di assumerla uguale alla larghezza.
 const MAX_SCALE = 42;
 
 /** Dove sta guardando la camera, in celle. La minimappa lo disegna, e il click sulla
@@ -15,8 +21,12 @@ const MAX_SCALE = 42;
 export type Camera = { x0: number; y0: number; x1: number; y1: number };
 
 export default function ColonyView(
-  { ground, onCamera, goTo }: {
+  { ground, grid = false, onCamera, goTo }: {
     ground: Generated;
+    /** Se le linee della griglia sono accese. In un `ref` invece che fra le dipendenze
+     *  dell'effetto: accenderle non deve ridipingere il buffer del terreno, che e' 4,7
+     *  megapixel e mezzo secondo di lavoro. */
+    grid?: boolean;
     onCamera?: (camera: Camera) => void;
     /** Un contenitore che la minimappa riempie con "portami qui". Non uno stato di React:
      *  una panoramica non deve passare da un render. */
@@ -25,6 +35,13 @@ export default function ColonyView(
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hover, setHover] = useState<string | null>(null);
+  const gridRef = useRef(grid);
+  const repaintRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    gridRef.current = grid;
+    repaintRef.current?.();
+  }, [grid]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -32,6 +49,7 @@ export default function ColonyView(
     const context = canvas.getContext("2d")!;
     const seed = seedNumber(ground.seed);
     const terrain = paintTerrain(ground, seed);
+    const mapH = mapHeight(ground.size);
     const grain = context.createPattern(makeGrain(seed), "repeat")!;
     const coarse = context.createPattern(makeGrain(seed ^ 0x9e3779b9, 96), "repeat")!;
 
@@ -52,7 +70,7 @@ export default function ColonyView(
       if (scale === 0) {
         scale = minScale();
         originX = ground.size / 2 - width / (2 * scale);
-        originY = ground.size / 2 - height / (2 * scale);
+        originY = mapH / 2 - height / (2 * scale);
       }
       clampOrigin();
       schedule();
@@ -66,7 +84,7 @@ export default function ColonyView(
     function minScale(): number {
       const width = canvas!.clientWidth;
       const height = canvas!.clientHeight;
-      return Math.max(width, height) / ground.size;
+      return Math.max(width / ground.size, height / mapH);
     }
 
     function clampOrigin() {
@@ -74,9 +92,9 @@ export default function ColonyView(
       const height = canvas!.clientHeight / scale;
       // Never show anything that is not ground: a colony has edges and they are real.
       originX = Math.max(-0.5, Math.min(ground.size - width + 0.5, originX));
-      originY = Math.max(-0.5, Math.min(ground.size - height + 0.5, originY));
+      originY = Math.max(-0.5, Math.min(mapH - height + 0.5, originY));
       if (width >= ground.size) originX = (ground.size - width) / 2;
-      if (height >= ground.size) originY = (ground.size - height) / 2;
+      if (height >= mapH) originY = (mapH - height) / 2;
     }
 
     function schedule() {
@@ -103,7 +121,9 @@ export default function ColonyView(
       context.fillRect(0, 0, width, height);
       context.save();
       context.translate(-originX * scale, -originY * scale);
-      context.drawImage(terrain, 0, 0, ground.size * scale, ground.size * scale);
+      // Il buffer ha una riga per riga di esagoni: steso a 0,866 di altezza, le righe
+      // cadono esattamente dove cadono gli esagoni.
+      context.drawImage(terrain, 0, 0, ground.size * scale, mapH * scale);
       // The fine texture, at screen resolution and therefore the same crispness at every zoom.
       // La grana fine e' una cosa da VICINO. A tutta mappa sono seicentomila celle sotto un
       // velo di puntini: si legge come carta vetrata, non come terra. Il terreno larga scala
@@ -125,19 +145,27 @@ export default function ColonyView(
         }
         context.restore();
       }
-      paintProps(context, ground, seed, {
+      const view = {
         x0: originX, y0: originY,
         x1: originX + width / scale, y1: originY + height / scale, scale,
-      });
+      };
+      // Le linee PRIMA delle cose che stanno in piedi: una griglia disegnata sopra un albero
+      // lo taglia a fette, e quel che deve dire e' dove si posa una cosa, non sopra cosa.
+      if (gridRef.current) paintHexGrid(context, ground.size, view);
+      paintProps(context, ground, seed, view);
       context.restore();
     }
 
+    /** Quale esagono sta sotto il puntatore. Non un troncamento a griglia: gli esagoni non
+     *  si incastrano a scacchiera, e troncare darebbe la cella sbagliata lungo ogni bordo
+     *  obliquo -- cioe' proprio dove si guarda per capire dove si sta puntando. */
     function cellAt(event: PointerEvent): [number, number] | null {
       const rect = canvas!.getBoundingClientRect();
-      const x = Math.floor(originX + (event.clientX - rect.left) / scale);
-      const y = Math.floor(originY + (event.clientY - rect.top) / scale);
-      if (x < 0 || y < 0 || x >= ground.size || y >= ground.size) return null;
-      return [x, y];
+      return hexAt(
+        originX + (event.clientX - rect.left) / scale,
+        originY + (event.clientY - rect.top) / scale,
+        ground.size,
+      );
     }
 
     let dragging = false;
@@ -190,6 +218,7 @@ export default function ColonyView(
     }
 
     fit();
+    repaintRef.current = schedule;
     const observer = new ResizeObserver(fit);
     observer.observe(canvas);
     canvas.addEventListener("pointerdown", onDown);
@@ -198,6 +227,7 @@ export default function ColonyView(
     canvas.addEventListener("pointerleave", () => setHover(null));
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => {
+      repaintRef.current = null;
       if (goTo) goTo.current = null;
       observer.disconnect();
       canvas.removeEventListener("pointerdown", onDown);

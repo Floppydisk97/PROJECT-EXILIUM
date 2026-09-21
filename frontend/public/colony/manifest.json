@@ -2,57 +2,57 @@
   "colonies": [
     {
       "biome": "tropical_swamp",
-      "file": "colony-delta-d718564cf4e8.bin",
+      "file": "colony-delta-147b065a905d.bin",
       "label": "Delta tropicale",
       "name": "delta",
-      "packed_bytes": 19346,
-      "raw_bytes": 178536,
-      "size": 128
+      "packed_bytes": 84397,
+      "raw_bytes": 1589523,
+      "size": 384
     },
     {
       "biome": "desert",
-      "file": "colony-nilo-03bb2611cba0.bin",
+      "file": "colony-nilo-21b64c2b7407.bin",
       "label": "Fiume nel deserto",
       "name": "nilo",
-      "packed_bytes": 20670,
-      "raw_bytes": 163179,
-      "size": 128
+      "packed_bytes": 95925,
+      "raw_bytes": 1562639,
+      "size": 384
     },
     {
       "biome": "temperate_forest",
-      "file": "colony-foresta-697111175ce1.bin",
+      "file": "colony-foresta-00441189266e.bin",
       "label": "Foresta temperata",
       "name": "foresta",
-      "packed_bytes": 29786,
-      "raw_bytes": 180884,
-      "size": 128
+      "packed_bytes": 148503,
+      "raw_bytes": 1673330,
+      "size": 384
     },
     {
       "biome": "boreal_forest",
-      "file": "colony-costa-ce4a8e80aa35.bin",
+      "file": "colony-costa-4eeb959c2fa4.bin",
       "label": "Costa boreale",
       "name": "costa",
-      "packed_bytes": 28046,
-      "raw_bytes": 181277,
-      "size": 128
+      "packed_bytes": 135386,
+      "raw_bytes": 1637302,
+      "size": 384
     },
     {
       "biome": "arid_shrubland",
-      "file": "colony-altopiano-6774e5507c5a.bin",
+      "file": "colony-altopiano-cd9a693d579d.bin",
       "label": "Altopiano arido",
       "name": "altopiano",
-      "packed_bytes": 27315,
-      "raw_bytes": 176216,
-      "size": 128
+      "packed_bytes": 139855,
+      "raw_bytes": 1694503,
+      "size": 384
     },
     {
       "biome": "ice_sheet",
-      "file": "colony-ghiaccio-2a0957a01779.bin",
+      "file": "colony-ghiaccio-1e2b3260ed9b.bin",
       "label": "Calotta polare",
       "name": "ghiaccio",
-      "packed_bytes": 15722,
-      "raw_bytes": 152507,
-      "size": 128
+      "packed_bytes": 57344,
+      "raw_bytes": 1349746,
+      "size": 384
     }
   ],
   "world_seed": "Erebo-01"
