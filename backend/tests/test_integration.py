@@ -9,6 +9,7 @@ These tests are about the seam, not the rules: locking, idempotency, the clock, 
 constraints the database is asked to enforce on its own.
 """
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from datetime import timedelta
 from uuid import uuid4
 
@@ -22,10 +23,23 @@ from app.db import database_now, transaction
 from app.main import app
 from app.mapservice import generate_and_store, read_map
 from app.service import (
-    DomainError, balance, cast_vote, current_policy, provision, read_city, start_upgrade,
+    DomainError, balance, cast_vote, current_policy, land, provision, read_city,
+    start_upgrade, stock,
 )
-from app.sim.config import upgrade_cost, upgrade_duration
+from app.sim.config import (
+    RESOURCES, RULESET, STARTING_STOCK, WORK_KINDS, harvest_rate, store_cap,
+    upgrade_cost, upgrade_duration,
+)
 from app.worker import sweep
+
+
+INVARIANT_SQL = (Path(__file__).resolve().parents[1] / "sql" / "stock_matches_ledger.sql").read_text()
+
+
+def divergent_stock(conn) -> int:
+    """Quante coppie (citta', risorsa) divergono dal ledger. La STESSA query che gira dopo
+    un ripristino: se questa dovesse smettere di descrivere lo schema, smette qui."""
+    return int(conn.execute(INVARIANT_SQL).fetchone()["count"])
 
 
 def player(name="Exilium"):
@@ -93,8 +107,11 @@ def test_an_upgrade_spends_now_and_arrives_later(database, monkeypatch):
         commitment = start_upgrade(conn, p["city_id"], p["player_id"], uuid4())
     assert commitment["completes_at"] == now + upgrade_duration(0)
     with transaction() as conn:
-        # Paid, but not yet arrived.
-        assert balance(conn, p["city_id"]) == 100_000 - upgrade_cost(0)
+        # Paid, but not yet arrived. Paid in MATERIALS: what a level costs is stone and
+        # timber, and both leave the stores the moment the work starts.
+        held = stock(conn, p["city_id"])
+        for resource, amount in upgrade_cost(0).items():
+            assert held[resource] == STARTING_STOCK[resource] - amount
         assert conn.execute("SELECT level FROM cities").fetchone()["level"] == 0
         view = read_city(conn, p["city_id"], p["player_id"])
     assert view["busy_until"] == commitment["completes_at"] and view["busy_with"] == "upgrade"
@@ -133,7 +150,9 @@ def test_a_retried_commitment_spends_only_once(database, monkeypatch):
         first = start_upgrade(conn, p["city_id"], p["player_id"], key)
     with transaction() as conn:
         second = start_upgrade(conn, p["city_id"], p["player_id"], key)
-        assert balance(conn, p["city_id"]) == 100_000 - upgrade_cost(0)
+        held = stock(conn, p["city_id"])
+        for resource, amount in upgrade_cost(0).items():
+            assert held[resource] == STARTING_STOCK[resource] - amount
     assert second["id"] == first["id"]
 
 
@@ -181,11 +200,13 @@ def test_a_policy_change_does_not_repay_the_past(database, monkeypatch):
         assert current_policy(conn) == "industrial"
     with transaction() as conn:
         view = read_city(conn, p["city_id"], p["player_id"])
-    earned = int(view["alloy_milli"]) - 100_000
-    # Sixty seconds at 10/s is 600; sixty at 20/s would be 1200. The truth is in between,
-    # because the switch happened partway: anything outside that band means the timeline was
-    # ignored in one direction or the other.
-    assert 600 <= earned < 1200, earned
+    earned = int(view["stock_milli"]["stone"]) - STARTING_STOCK["stone"]
+    # Sessanta secondi al tasso bilanciato sono il minimo, sessanta a quello industriale il
+    # massimo: la verita' sta in mezzo, perche' il cambio e' avvenuto a meta'. Fuori da quella
+    # fascia significa che la linea temporale e' stata ignorata in una delle due direzioni.
+    slow = 60 * harvest_rate("stone", 0, 0, "balanced")
+    fast = 60 * harvest_rate("stone", 0, 0, "industrial")
+    assert slow <= earned < fast, (earned, slow, fast)
 
 
 def test_the_majority_is_continuous_and_a_tie_keeps_the_incumbent(database):
@@ -214,8 +235,16 @@ def test_the_timeline_records_a_move_and_collapses_one_that_took_no_time(databas
     told apart from the one it replaced -- and, left alone, it would collide with the
     uniqueness of `from_at` and fail the request outright.
     """
-    first, second = player("A"), player("B")
+    # Il fermo dell'orologio va PRIMA dei giocatori, come in ogni altra prova qui.
+    #
+    # Messo dopo, questa prova dipendeva dal caso: `database_now` tronca al secondo, e il
+    # primo periodo di politica nasce insieme ai giocatori. Se la loro creazione scavalcava
+    # un secondo intero -- cosa che succede quando la macchina e' carica -- il periodo
+    # iniziale aveva lunghezza positiva, non si accorpava, e l'asserzione trovava due righe
+    # invece di una. Non un difetto del gioco: un difetto della prova, che falliva una volta
+    # ogni tanto e si sarebbe presa la colpa di qualcos'altro.
     now = freeze_clock(monkeypatch)
+    first, second = player("A"), player("B")
     with transaction() as conn:
         cast_vote(conn, first["city_id"], first["player_id"], "industrial")
         cast_vote(conn, second["city_id"], second["player_id"], "industrial")
@@ -251,12 +280,18 @@ def test_an_unaffordable_upgrade_has_no_partial_effects(database, monkeypatch):
     freeze_clock(monkeypatch)
     p = player()
     with transaction() as conn:
-        service.entry(conn, p["city_id"], -100000, "upgrade", "fixture-spend", database_now(conn))
+        # Svuota la pietra: il legname resta, quindi un avanzamento a meta' sarebbe possibile
+        # solo se qualcuno spendesse cio' che c'e' prima di accorgersi che manca il resto.
+        service.entry(conn, p["city_id"], -STARTING_STOCK["stone"], "upgrade",
+                      "fixture-spend", database_now(conn), "stone")
     with pytest.raises(DomainError) as error, transaction() as conn:
         start_upgrade(conn, p["city_id"], p["player_id"], uuid4())
-    assert error.value.detail == "insufficient_alloy"
+    assert error.value.detail == "insufficient_stone"
     with transaction() as conn:
-        assert balance(conn, p["city_id"]) == 0
+        held = stock(conn, p["city_id"])
+        assert held["stone"] == 0
+        # E il legname NON e' stato toccato: un rifiuto non lascia meta' conto pagato.
+        assert held["timber"] == STARTING_STOCK["timber"]
         assert conn.execute("SELECT count(*) AS n FROM orders").fetchone()["n"] == 0
 
 
@@ -286,12 +321,19 @@ def test_api_authorization_validation_idempotency_and_ledger(database):
 
         state = client.get(path, headers=headers).json()
         ledger = client.get(path + "/ledger", headers=headers).json()
-        assert int(state["alloy_milli"]) == sum(int(row["amount"]) for row in ledger)
+        # Il magazzino che l'API mostra e' esattamente la somma del ledger, risorsa per
+        # risorsa: e' l'invariante di sempre, vista da fuori invece che dal database.
+        from collections import Counter
+        summed = Counter()
+        for row in ledger:
+            summed[row["resource"]] += int(row["amount"])
+        for resource, total in summed.items():
+            assert int(state["stock_milli"][resource]) == total, resource
         assert state["busy_with"] == "upgrade"
         assert client.get(path + "/ledger?limit=201", headers=headers).status_code == 422
         assert client.get(path + "/commitments", headers=headers).json()[0]["id"] == first.json()["id"]
         # Every ledger row records which rules produced it, now that no tick does.
-        assert all(row["ruleset"] == 1 for row in ledger)
+        assert all(row["ruleset"] == RULESET for row in ledger)
 
 
 def test_simultaneous_reads_never_duplicate_production(database, monkeypatch):
@@ -305,11 +347,19 @@ def test_simultaneous_reads_never_duplicate_production(database, monkeypatch):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         views = list(pool.map(read, range(4)))
-    assert {view["alloy_milli"] for view in views} == {"100370"}
+    # Tutti e quattro vedono lo stesso magazzino...
+    assert len({tuple(sorted(view["stock_milli"].items())) for view in views}) == 1
     with transaction() as conn:
-        assert conn.execute(
-            "SELECT count(*) AS n FROM resource_ledger WHERE reason='production'"
-        ).fetchone()["n"] == 1
+        # ... e la produzione e' stata scritta UNA volta per risorsa, non quattro.
+        by_resource = conn.execute(
+            "SELECT resource, count(*) AS n FROM resource_ledger"
+            " WHERE reason='production' GROUP BY resource"
+        ).fetchall()
+        # Una riga per risorsa che si e' MOSSA, e nessuna scritta due volte. La lega non
+        # compare: senza una fonderia nessuno la produce, ed e' esattamente il punto.
+        written = {row["resource"]: int(row["n"]) for row in by_resource}
+        assert set(written) <= set(RESOURCES) and written
+        assert set(written.values()) == {1}
 
 
 def test_distinct_cities_settle_concurrently_without_any_global_lock(database, monkeypatch):
@@ -331,8 +381,11 @@ def test_distinct_cities_settle_concurrently_without_any_global_lock(database, m
                 "SELECT count(*) AS n FROM resource_ledger WHERE city_id=%s AND reason='production'",
                 (p["city_id"],),
             ).fetchone()["n"]
-            assert n == 1                       # 60s at rate 10 -> one entry, no duplicates
-            assert balance(conn, p["city_id"]) == 100000 + 600
+            # Una riga per risorsa che si e' mossa, non sei letture che scrivono sei volte.
+            # Senza opere la lega non si muove, quindi il conto e' minore dell'elenco.
+            assert 0 < n <= len(RESOURCES)
+            held = stock(conn, p["city_id"])
+            assert held["stone"] == STARTING_STOCK["stone"] + 60 * harvest_rate("stone", 0, 0)
 
 
 def test_materialized_balance_equals_ledger_sum(database, monkeypatch):
@@ -345,34 +398,44 @@ def test_materialized_balance_equals_ledger_sum(database, monkeypatch):
     sweep()
     with transaction() as conn:
         read_city(conn, second["city_id"], second["player_id"])
-        cities = conn.execute("SELECT id, balance_milli FROM cities ORDER BY id").fetchall()
-        for city in cities:
-            ledger_sum = int(conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) AS s FROM resource_ledger WHERE city_id = %s",
-                (city["id"],),
-            ).fetchone()["s"])
-            assert int(city["balance_milli"]) == ledger_sum
-            assert balance(conn, city["id"]) == ledger_sum
-            assert ledger_sum > 0
+        # L'invariante che regge tutto, ora per RISORSA: ogni cursore materializzato e'
+        # esattamente la somma del ledger di quella risorsa. Il ledger resta l'unica fonte
+        # di verita' e resta immutabile; le scorte sono un cursore ricostruibile.
+        #
+        # La query sta in un FILE, la stessa che `scripts/restore.sh` esegue dopo un
+        # ripristino. Erano due scritture diverse della stessa regola, e quella del restore
+        # e' marcita alla migrazione 0019 senza che nessuno potesse accorgersene.
+        assert divergent_stock(conn) == 0
+        # ... e non e' vera per vuoto: ci sono scorte, e qualcuna e' positiva.
+        held = conn.execute("SELECT amount_milli FROM city_stock").fetchall()
+        assert held, "nessuna scorta da verificare"
+        assert any(int(row["amount_milli"]) > 0 for row in held)
+
+
 def test_ledger_enforces_no_overdraft_and_duplicate_event(database):
     p = player()
+    # Lo scoperto e' rifiutato PER RISORSA: avere legname non autorizza a spendere pietra.
     with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
-        service.entry(conn, p["city_id"], -100001, "upgrade", "bad-debit", database_now(conn))
+        service.entry(conn, p["city_id"], -STARTING_STOCK["stone"] - 1, "upgrade",
+                      "bad-debit", database_now(conn), "stone")
     with pytest.raises(psycopg.errors.UniqueViolation), transaction() as conn:
-        service.entry(conn, p["city_id"], 1, "genesis", f"genesis:{p['city_id']}", database_now(conn))
+        service.entry(conn, p["city_id"], 1, "genesis", f"genesis:{p['city_id']}:stone",
+                      database_now(conn), "stone")
 
 
 def test_materialized_balance_rejects_overdraft_without_scanning_ledger(database):
     p = player()
     with transaction() as conn:
-        service.entry(conn, p["city_id"], -100000, "upgrade", "spend-all", database_now(conn))
-        assert balance(conn, p["city_id"]) == 0
+        service.entry(conn, p["city_id"], -STARTING_STOCK["timber"], "upgrade",
+                      "spend-all", database_now(conn), "timber")
+        assert stock(conn, p["city_id"])["timber"] == 0
     with pytest.raises(psycopg.errors.CheckViolation), transaction() as conn:
-        service.entry(conn, p["city_id"], -1, "upgrade", "overdraft", database_now(conn))
+        service.entry(conn, p["city_id"], -1, "upgrade", "overdraft", database_now(conn), "timber")
     with transaction() as conn:
         assert int(conn.execute(
-            "SELECT balance_milli FROM cities WHERE id = %s", (p["city_id"],)
-        ).fetchone()["balance_milli"]) == 0
+            "SELECT amount_milli FROM city_stock WHERE city_id = %s AND resource = 'timber'",
+            (p["city_id"],),
+        ).fetchone()["amount_milli"]) == 0
 
 
 def test_world_map_generates_persists_and_is_immutable(database):
@@ -425,37 +488,12 @@ def test_world_map_generates_persists_and_is_immutable(database):
         conn.execute("DELETE FROM world_map")
 
 
-def test_world_map_endpoint_serves_geography_or_404(database):
+def test_live_world_state_is_never_cached(database):
+    """Cio' che resta di due prove sulla mappa servita dall'API: la rotta non c'e' piu' --
+    il pianeta e' un file statico -- ma la regola sulle intestazioni vale ancora per lo
+    stato del mondo, che cambia e non deve essere tenuto da parte da nessuno."""
     with TestClient(app) as client:
-        # Before generation: 404, not an empty map.
-        assert client.get("/world/map").status_code == 404
-        with transaction() as conn:
-            generate_and_store(conn, "Church", frequency=6)
-        body = client.get("/world/map").json()
-        assert body["tile_count"] == 362 and body["name"] == "Hesperia"
-        assert body["land_count"] <= body["tile_count"]
-
-
-def test_world_map_is_cached_and_revalidates(database):
-    with TestClient(app) as client:
-        with transaction() as conn:
-            generate_and_store(conn, "Church", frequency=6)
-        first = client.get("/world/map")
-        assert first.status_code == 200
-        etag = first.headers["ETag"]
-        # Immutable geography may be cached; live state elsewhere may not.
-        assert "immutable" in first.headers["Cache-Control"]
         assert client.get("/world").headers["Cache-Control"] == "no-store"
-
-        # A second call is served from the process cache: same bytes, same tag.
-        second = client.get("/world/map")
-        assert second.headers["ETag"] == etag
-        assert second.content == first.content
-
-        # And a client that already has it gets told so instead of the payload again.
-        revalidated = client.get("/world/map", headers={"If-None-Match": etag})
-        assert revalidated.status_code == 304
-        assert revalidated.content == b""
 
 
 def test_rate_limit_counts_per_address_and_spares_health():
@@ -473,3 +511,273 @@ def test_rate_limit_counts_per_address_and_spares_health():
     # throttled health check would take the service down.
     with TestClient(app) as client:
         assert client.get("/health/live").status_code == 200
+
+
+def test_two_colonies_on_different_ground_do_not_earn_the_same(database, monkeypatch):
+    """Ruleset 2, end to end -- through the database and the service, not the rules alone.
+
+    This is the assertion the whole change exists for: before it, a colony on forest soil and
+    a colony on bare desert produced identical alloy, and choosing a site was a formality with
+    a scenery.
+    """
+    with transaction() as conn:
+        generate_and_store(conn, "Approdo", 12)
+
+    def a_tile(biome):
+        with transaction() as conn:
+            row = conn.execute(
+                """SELECT id FROM world_tiles WHERE map_id = 1 AND biome = %s
+                     AND elevation >= 0 AND temperature > -8 ORDER BY id LIMIT 1""",
+                (biome,),
+            ).fetchone()
+        return row["id"] if row else None
+
+    rich_tile, poor_tile = a_tile("temperate_forest"), a_tile("desert")
+    if rich_tile is None or poor_tile is None:
+        pytest.skip("this test world has neither a forest nor a desert")
+
+    rich, poor = player("Fertile"), player("Arida")
+    names = {rich["city_id"]: "Fertile", poor["city_id"]: "Arida"}
+    with transaction() as conn:
+        land(conn, rich["city_id"], rich["player_id"], rich_tile)
+        land(conn, poor["city_id"], poor["player_id"], poor_tile)
+
+    rewind(3600)
+    now = freeze_clock(monkeypatch)
+    earned = {}
+    for who in (rich, poor):
+        with transaction() as conn:
+            row = conn.execute("SELECT * FROM cities WHERE id = %s",
+                               (who["city_id"],)).fetchone()
+            before = stock(conn, who["city_id"])["food"]
+            service.advance(conn, row, now)
+            after = stock(conn, who["city_id"])["food"]
+        earned[names[who["city_id"]]] = (after - before, row["site_food"])
+
+    (rich_grown, rich_food), (poor_grown, poor_food) = earned["Fertile"], earned["Arida"]
+    assert rich_food > poor_food, earned
+    # La terra grassa NUTRE di piu': e' il cibo a portare il tetto della colonia, quindi e'
+    # qui che la scelta del sito si sente prima che altrove.
+    assert rich_grown > poor_grown, earned
+
+
+def test_a_colony_says_when_it_will_stop_earning(database, monkeypatch):
+    """La meta' che rende vivibile lo stallo alla Anno in un mondo che cammina mentre dormi.
+
+    Fermarsi e' la tensione voluta; fermarsi a sorpresa e' una punizione per chi ha un lavoro.
+    Quindi il momento va detto PRIMA, e va detto dall'API -- non solo calcolabile in teoria.
+    """
+    p = player()
+    freeze_clock(monkeypatch)
+    with transaction() as conn:
+        view = read_city(conn, p["city_id"], p["player_id"])
+
+    forecast = view["stalls_in_seconds"]
+    assert set(forecast) == set(RESOURCES)
+    assert all(seconds is None or seconds > 0 for seconds in forecast.values())
+
+    # E la previsione e' quella vera: portando avanti l'orologio di quel tanto, il magazzino
+    # e' pieno e la colonia ha davvero smesso di guadagnare.
+    when = forecast["stone"]
+    assert when is not None
+    with transaction() as conn:
+        clock = db.database_now(conn)
+    monkeypatch.setattr(db, "database_now", lambda conn: clock + timedelta(seconds=when + 60))
+    with transaction() as conn:
+        later = read_city(conn, p["city_id"], p["player_id"])
+    assert int(later["stock_milli"]["stone"]) == store_cap(later["level"])
+    # Zero, non None: "gia' fermo" e "non si fermera' mai" sono due stati diversi, e
+    # confonderli farebbe leggere un magazzino pieno come una risorsa che non arriva.
+    assert later["stalls_in_seconds"]["stone"] == 0
+
+
+def test_the_browser_is_told_which_pages_may_spend_a_token(database, monkeypatch):
+    """Il visore e' un sito statico su un altro host, quindi la schermata della citta' e'
+    cross-origin per progetto. Il permesso va dato per NOME, mai a chiunque.
+
+    Con un token in un header `Authorization` -- e non in un cookie -- un permesso aperto non
+    verrebbe rifiutato dal browser: lascerebbe semplicemente che qualsiasi pagina di internet
+    spenda un token di cui sia venuta in possesso. E' un difetto peggiore proprio perche'
+    silenzioso.
+    """
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://visore.test")
+    import importlib
+
+    from app import main as main_module
+    reloaded = importlib.reload(main_module)
+    assert reloaded.ALLOWED_ORIGINS == ["https://visore.test"]
+    assert "*" not in reloaded.ALLOWED_ORIGINS
+
+    with TestClient(reloaded.app) as client:
+        allowed = client.options(
+            "/me/cities",
+            headers={"Origin": "https://visore.test",
+                     "Access-Control-Request-Method": "GET"},
+        )
+        assert allowed.headers.get("access-control-allow-origin") == "https://visore.test"
+
+        # Una pagina qualunque non riceve il permesso.
+        stranger = client.options(
+            "/me/cities",
+            headers={"Origin": "https://altrove.test",
+                     "Access-Control-Request-Method": "GET"},
+        )
+        assert stranger.headers.get("access-control-allow-origin") is None
+
+    monkeypatch.delenv("ALLOWED_ORIGINS")
+    importlib.reload(main_module)
+
+
+def test_every_resource_the_rules_can_produce_is_a_resource_the_ledger_accepts(database):
+    """Un difetto trovato costruendo, e che nessun test prendeva: il minerale e' stato
+    aggiunto alle regole e alla riga della citta', ma l'elenco delle risorse ammesse nel
+    ledger e' rimasto quello di prima. Si poteva produrre e non si poteva scrivere -- e non si
+    vede finche' qualcuno non estrae il primo grammo.
+
+    Questo confronta i due elenchi invece di fidarsi che restino allineati.
+    """
+    p = player()
+    with transaction() as conn:
+        now = database_now(conn)
+        for resource in RESOURCES:
+            # Se il CHECK non conosce la risorsa, questo alza CheckViolation e il test cade.
+            service.entry(conn, p["city_id"], 1, "genesis",
+                          f"allineamento:{resource}", now, resource)
+        held = stock(conn, p["city_id"])
+    for resource in RESOURCES:
+        assert held[resource] >= 1, resource
+
+
+def test_the_api_accepts_every_plant_the_rules_know(database):
+    """Lo stesso difetto del minerale nel ledger, in un altro punto: un impianto aggiunto alle
+    regole e al database, e rifiutato dall'API perche' lassu' l'elenco era un altro. Scoperto
+    costruendo -- il solare tornava "Input should be 'smelter'".
+
+    Questo confronta i due elenchi invece di sperare che restino allineati.
+    """
+    p = player()
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {p['token']}"}
+        for kind in WORK_KINDS:
+            answer = client.post(
+                f"/cities/{p['city_id']}/works",
+                headers={**headers, "Idempotency-Key": str(uuid4())},
+                json={"kind": kind},
+            )
+            # Puo' rifiutare per mancanza di materiale o perche' la colonia e' occupata --
+            # quelle sono risposte del gioco. Non deve rifiutare perche' NON SA cosa sia.
+            assert answer.status_code != 422, (kind, answer.json())
+            if answer.status_code == 409:
+                assert answer.json()["detail"] != "unknown_work", kind
+
+    # E un impianto che non esiste resta rifiutato, o il test sopra passerebbe per vuoto.
+    with TestClient(app) as client:
+        answer = client.post(
+            f"/cities/{p['city_id']}/works",
+            headers={"Authorization": f"Bearer {p['token']}", "Idempotency-Key": str(uuid4())},
+            json={"kind": "reattore-a-fusione"},
+        )
+    assert answer.status_code == 422
+
+
+def landed_player(name="Colono"):
+    """Un giocatore la cui colonia e' DAVVERO a terra: senza atterrare, le attitudini del
+    sito sono nulle e una centrale solare non produce niente -- che e' corretto, e rende il
+    fixture in orbita inadatto a provare l'energia."""
+    with transaction() as conn:
+        if not conn.execute("SELECT 1 FROM world_map WHERE id = 1").fetchone():
+            generate_and_store(conn, "Approdo", 12)
+    who = player(name)
+    with transaction() as conn:
+        tile = conn.execute(
+            """SELECT id FROM world_tiles WHERE map_id = 1 AND elevation >= 0
+                 AND biome NOT IN ('ocean', 'lake', 'sea_ice') AND temperature > -8
+                 AND id NOT IN (SELECT tile_id FROM cities WHERE tile_id IS NOT NULL)
+               ORDER BY rainfall LIMIT 1"""
+        ).fetchone()
+        land(conn, who["city_id"], who["player_id"], tile["id"])
+    return who
+
+
+def test_a_plant_can_be_paused_resumed_and_pulled_down(database, monkeypatch):
+    """La cosa che mancava, e che rendeva una fonderia una condanna: senza un modo di dire
+    "non adesso", un solo impianto poteva mangiare il legname per sempre -- e il legname serve
+    anche a costruire.
+
+    Accendere e spegnere NON occupano la colonia: sono un interruttore, non un lavoro, e
+    chiedere un impegno di tre ore per cambiare idea sarebbe stato punire il ripensamento.
+    """
+    p = landed_player("Assolata")
+    freeze_clock(monkeypatch)
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO city_works (city_id, kind, count) VALUES (%s, 'solar', 2)",
+            (p["city_id"],),
+        )
+
+    with transaction() as conn:
+        view = service.set_work_running(conn, p["city_id"], p["player_id"], "solar", 1)
+    assert view["works"]["solar"] == 2 and view["works_idle"]["solar"] == 1
+    # Una spenta non produce: la corrente e' un flusso, e cio' che e' fermo non ne fa.
+    with transaction() as conn:
+        both = service.set_work_running(conn, p["city_id"], p["player_id"], "solar", 2)
+    assert both["power_made"] > view["power_made"]
+
+    # Non si possono accendere impianti che non si hanno.
+    with pytest.raises(DomainError) as error, transaction() as conn:
+        service.set_work_running(conn, p["city_id"], p["player_id"], "solar", 9)
+    assert error.value.detail == "out_of_range"
+
+    # Abbattere toglie uno e non chiede permesso al tempo: e' istantaneo.
+    with transaction() as conn:
+        after = service.demolish_work(conn, p["city_id"], p["player_id"], "solar")
+    assert after["works"]["solar"] == 1
+    with transaction() as conn:
+        service.demolish_work(conn, p["city_id"], p["player_id"], "solar")
+    with pytest.raises(DomainError) as error, transaction() as conn:
+        service.demolish_work(conn, p["city_id"], p["player_id"], "solar")
+    assert error.value.detail == "no_such_work"
+
+
+def test_pausing_settles_first_so_the_last_hour_is_not_rewritten(database, monkeypatch):
+    """Spegnere un impianto non deve riscrivere cio' che la colonia ha gia' prodotto: quelle
+    ore le ha prodotte col vecchio assetto, e il cursore va portato al presente PRIMA che
+    l'assetto cambi."""
+    p = landed_player("Paziente")
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO city_works (city_id, kind, count) VALUES (%s, 'solar', 1)",
+            (p["city_id"],),
+        )
+    rewind(600)
+    freeze_clock(monkeypatch)
+
+    with transaction() as conn:
+        before = stock(conn, p["city_id"])["stone"]
+        service.set_work_running(conn, p["city_id"], p["player_id"], "solar", 0)
+        after = stock(conn, p["city_id"])["stone"]
+    # I dieci minuti di raccolto sono stati incassati, non persi nel cambio di assetto.
+    assert after > before
+
+
+def test_the_invariant_query_actually_catches_a_divergence(database):
+    """Uno zero non dimostra niente se la query non sa vedere un uno.
+
+    E' esattamente come il controllo del restore e' potuto marcire: interrogava una colonna
+    che non c'era piu', quindi non tornava zero -- falliva -- ma per mesi nessuno l'ha
+    eseguito. Qui lo zero viene messo alla prova sporcando davvero una scorta.
+    """
+    p = player("Guasta")
+    with transaction() as conn:
+        assert divergent_stock(conn) == 0
+        conn.execute(
+            "UPDATE city_stock SET amount_milli = amount_milli + 1 WHERE city_id = %s",
+            (p["city_id"],),
+        )
+        assert divergent_stock(conn) > 0
+
+    # E una scorta che sparisce mentre il ledger resta e' una divergenza quanto un numero
+    # sbagliato: e' la meta' che un JOIN semplice avrebbe lasciato passare.
+    with transaction() as conn:
+        conn.execute("DELETE FROM city_stock WHERE city_id = %s", (p["city_id"],))
+        assert divergent_stock(conn) > 0

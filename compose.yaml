@@ -52,9 +52,11 @@ services:
     restart: unless-stopped
 
   web:
-    build: ./frontend
-    environment:
-      API_INTERNAL_URL: http://api:8000
+    build:
+      context: ./frontend
+      args:
+        # Il browser di chi gioca raggiunge l'API su localhost, non sulla rete di compose.
+        NEXT_PUBLIC_API_URL: http://localhost:8000
     ports: ["127.0.0.1:3000:3000"]
     depends_on:
       api:

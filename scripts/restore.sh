@@ -3,7 +3,9 @@
 # database. Ferma api/worker, ricrea il database vuoto e ricarica il dump con
 # --disable-triggers (i trigger di immutabilità e il cursore del saldo non devono
 # rifirare durante il caricamento). Al termine verifica l'invariante fondamentale:
-# per ogni città balance_milli == SUM(resource_ledger.amount). Aborta se diverge.
+# per ogni (città, risorsa) la scorta materializzata == SUM(resource_ledger.amount).
+# La query sta in backend/sql/stock_matches_ledger.sql e non qui: la stessa invariante la
+# verifica anche un test, e due copie di una regola in due lingue sono gia' marcite una volta.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -39,8 +41,8 @@ docker compose exec -T db pg_restore -U "$USER" --disable-triggers --exit-on-err
 docker compose exec -T db rm -f /tmp/exilium-restore.dump
 
 echo "Verifica invariante saldo == somma ledger..."
-BAD="$(docker compose exec -T db psql -U "$USER" -d "$DB" -tAc \
-  "SELECT count(*) FROM cities c WHERE c.balance_milli <> (SELECT COALESCE(SUM(amount),0) FROM resource_ledger r WHERE r.city_id = c.id)")"
+INVARIANT="$(dirname "$0")/../backend/sql/stock_matches_ledger.sql"
+BAD="$(docker compose exec -T db psql -U "$USER" -d "$DB" -tAc "$(cat "$INVARIANT")")"
 if [ "$(echo "$BAD" | tr -d '[:space:]')" != "0" ]; then
     echo "ERRORE: restore incoerente; il saldo materializzato diverge dal ledger. Non avviare api/worker." >&2
     exit 1

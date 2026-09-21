@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -7,16 +8,18 @@ from uuid import UUID
 
 import psycopg
 from fastapi import Depends, FastAPI, Header, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app import gameclock, mapbuild, mapservice
+from app import bootstrap, gameclock, mapbuild, mapservice
+from app.sim.config import WORK_KINDS
 from app.db import transaction
 from app.service import (
     DomainError, cast_vote, city_ground, current_policy, land, owned_city, read_city,
-    start_upgrade, token_hash,
+    demolish_work, set_work_running, start_upgrade, start_work, token_hash,
 )
 
 
@@ -27,19 +30,47 @@ async def lifespan(_app: FastAPI):
     Generating the world is minutes of CPU on a small instance. Doing it before the server
     exists means the port stays closed for those minutes, and Render gives up on a service
     that never binds -- which is what happened. Here the server comes up immediately and,
-    only if the map is missing, hands the build to a separate process. Until that finishes
-    `/world/map` answers 404 and the client already says so in as many words.
+    only if the map is missing, hands the build to a separate process. Atterrare vuole le
+    caselle nel database, quindi la mappa si costruisce ancora: cio' che non c'e' piu' e' la
+    rotta che la SERVIVA, perche' il visore legge il pianeta da un file statico.
 
     Does nothing unless MAP_BUILD=background, so a deployment still generating from its
     start command is untouched.
     """
     print(json.dumps({"mapbuild": mapbuild.start_background_build()}), flush=True)
+    # E, se il proprietario del servizio l'ha chiesto, la prima colonia. Una sola volta:
+    # vedi `app/bootstrap.py` per le due guardie che lo rendono innocuo.
+    print(json.dumps({"bootstrap": bootstrap.bootstrap_first_colony()}), flush=True)
     yield
 
 
 app = FastAPI(title="Project Exilium", version="0.1.0", lifespan=lifespan)
-# The world map is several MB of JSON; compress it (and any other large payload).
+# Le risposte grandi vengono compresse. Non ce n'e' piu' nessuna da molti MB -- il pianeta
+# e' un file statico -- ma un elenco lungo di movimenti lo e' abbastanza da valerne la pena.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# The viewer is a static site on its own host, so the city screen is cross-origin BY DESIGN:
+# the planet ships as a file and only the authoritative state comes from here. That is the
+# shape the downloadable client wants too, so the browser has to be told it is allowed.
+#
+# Named origins, never "*". Credentials travel in an Authorization header rather than a
+# cookie, so a wildcard would not be refused by the browser -- it would simply let any page
+# on the internet spend a token it had got hold of, which is a worse failure for being quiet.
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+    max_age=600,
+)
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -152,31 +183,6 @@ def world_state():
     return {**world, "policy": policy}
 
 
-@app.get("/world/map")
-def world_map(request: Request):
-    # Public, immutable geography: the geodesic tiles the client renders as the planet.
-    # Built once per process and served as bytes; only a cache miss touches the database.
-    payload = mapservice.cached_payload()
-    if payload is None:
-        with transaction() as conn:
-            payload = mapservice.build_payload(conn)
-    headers = {
-        "ETag": payload["etag"],
-        # Immutable for the life of this world: a new map only ever arrives with a deploy,
-        # and the ETag changes with it.
-        "Cache-Control": "public, max-age=86400, immutable",
-    }
-    if request.headers.get("if-none-match") == payload["etag"]:
-        return Response(status_code=304, headers=headers)
-    if "gzip" in request.headers.get("accept-encoding", ""):
-        # Pre-compressed, so the gzip middleware passes it through untouched rather than
-        # spending CPU on twelve megabytes per request.
-        return Response(payload["gzip"], media_type="application/json",
-                        headers={**headers, "Content-Encoding": "gzip",
-                                 "Vary": "Accept-Encoding"})
-    return Response(payload["raw"], media_type="application/json", headers=headers)
-
-
 @app.get("/me/cities")
 def my_cities(owner: Owner):
     with transaction() as conn:
@@ -212,10 +218,55 @@ def land_colony(city_id: UUID, landing: Landing, owner: Owner):
 
 @app.get("/cities/{city_id}/ground")
 def colony_ground(city_id: UUID, owner: Owner):
-    """The colony's local map, regenerated from its seed. Not stored: a pure function of the
-    seed and of what the planet says about the site."""
+    """The seed the colony's ground grows from, and what the planet says about the site.
+
+    Not the cells: they are a pure function of these few numbers, and whoever asked can grow
+    them faster than this instance can serialise them."""
     with transaction() as conn:
         return city_ground(conn, city_id, owner)
+
+
+class Work(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Non un Literal scritto a mano: l'elenco vive in `sim/config`, e un secondo elenco qui
+    # significherebbe poter aggiungere un impianto alle regole e al database e vederselo
+    # rifiutare dall'API con un messaggio che parla di un tipo solo. E' gia' successo.
+    kind: str
+
+    @field_validator("kind")
+    @classmethod
+    def known(cls, value: str) -> str:
+        if value not in WORK_KINDS:
+            raise ValueError(f"unknown work: {value}")
+        return value
+
+
+@app.post("/cities/{city_id}/works")
+def build_work(city_id: UUID, work: Work, owner: Owner,
+               idempotency_key: Annotated[UUID, Header()]):
+    """Mettere in piedi un'opera. Consuma e produce di continuo: e' cio' che trasforma un
+    magazzino che sale in una catena che puo' restare a secco."""
+    with transaction() as conn:
+        return commitment_view(start_work(conn, city_id, owner, work.kind, idempotency_key))
+
+
+class Running(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    running: int = Field(ge=0, le=64)
+
+
+@app.put("/cities/{city_id}/works/{kind}")
+def set_running(city_id: UUID, kind: str, wanted: Running, owner: Owner):
+    """Quanti impianti di questo tipo tenere accesi. Istantaneo: e' un interruttore."""
+    with transaction() as conn:
+        return set_work_running(conn, city_id, owner, kind, wanted.running)
+
+
+@app.delete("/cities/{city_id}/works/{kind}")
+def remove_work(city_id: UUID, kind: str, owner: Owner):
+    """Abbattere un impianto di questo tipo. Senza rimborso."""
+    with transaction() as conn:
+        return demolish_work(conn, city_id, owner, kind)
 
 
 @app.put("/cities/{city_id}/vote")

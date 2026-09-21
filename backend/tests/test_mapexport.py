@@ -9,6 +9,8 @@ checked rather than assumed, and checked on the whole model rather than on a sum
 """
 import gzip
 import json
+
+import pytest
 import math
 from pathlib import Path
 
@@ -109,6 +111,7 @@ def _store(seed: str):
         generate_and_store(conn, seed, FREQUENCY)
 
 
+@pytest.mark.repo          # legge frontend/, che nell'immagine di prova non c'e'
 def test_the_shipped_asset_describes_the_world_the_code_builds():
     """The viewer's planet is a committed file, so it can silently fall behind.
 

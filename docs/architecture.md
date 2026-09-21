@@ -234,7 +234,7 @@ continente subtropicale — e un interno equatoriale o temperato resta umido.
 
 ### Il render model
 
-`GET /world/map` non è un dump della tabella ma ciò che il client disegna: le terre, la
+`mapservice.read_map` non è un dump della tabella ma ciò che il client disegna: le terre, la
 banchisa che forma le calotte polari, un anello di piattaforma continentale attorno a ogni
 costa (l'oceano oltre la piattaforma è un guscio liscio lato client, quindi le sue polilinee
 sarebbero peso morto) e la rete idrografica già risolta in segmenti. Latitudine e longitudine
@@ -319,18 +319,80 @@ E il server statico locale non risolveva gli URL puliti: l'export scrive `coloni
 visitatore chiede `/colonia`. Un host statico vero lo fa da se', il nostro no, e la pagina
 dava 404 col file li' accanto.
 
-### Da dove arriva il terreno
+### Da dove arriva il terreno: dal client
 
-Da un file cucinato, oggi, perche' il visore e' statico e non ha un'API davanti. Il renderer
-pero' non lo sa: prende un payload e disegna. Il giorno che il client del gioco chiedera' gli
-stessi byte a `GET /cities/{id}/ground`, del disegno non cambia una riga.
+Prima era un file cucinato dal backend e messo accanto alla pagina. Sei mappe, sempre quelle
+sei: non si poteva guardare la casella che si stava scegliendo, che e' l'unica cosa per cui
+serve guardare. Ora il terreno lo genera IL CLIENT, dal pianeta che ha gia' in mano.
+
+    globo -> "Scendi sul terreno" -> /colonia?tile=N -> il pianeta (file) -> generate(seme, sito)
+
+Niente API, niente asset per colonia, niente nulla di sveglio da nessuna parte: il pianeta e'
+gia' un file statico, e la colonia e' una funzione pura di quel file. Il server resta l'autorita'
+su tutto cio' che viene DECISO -- atterrare, costruire, votare; questo e' per GUARDARE.
+
+E lo stesso vale per l'API: `GET /cities/{id}/ground` non spedisce piu' le celle. Con la mappa
+a 768 erano 9 MB di JSON e quasi tre secondi di CPU dentro una transazione, su un'istanza che
+di CPU ne ha un decimo -- centoventi richieste al minuto dallo stesso indirizzo bastavano a
+spegnerla. Ora manda il SEME e il sito: chi ha chiesto fa crescere il terreno in quattro
+decimi di secondo, piu' in fretta di quanto il server riesca a serializzarlo. Il server tiene
+il proprio generatore perche' deve poter dire dove si puo' costruire -- che e' una domanda
+piccola su una cella, non un motivo per spedire tutta la mappa.
+
+Il prezzo e' una definizione in due lingue, che di solito e' come si scrive un bug silenzioso:
+due generatori che divergono di un valore e il client mostra un posto che sul server non
+esiste. Due cose lo impediscono.
+
+**Il generatore e' portabile per costruzione.** Niente `random` di Python, niente Mersenne
+Twister da reimplementare in JavaScript: `app/prng.py` e `colony/prng.ts` sono mulberry32 su
+interi a 32 bit, con il seme da FNV-1a e le direzioni prese per campionamento sulla sfera --
+scelto perche' non usa logaritmi, dove due linguaggi possono differire sull'ultimo bit.
+
+**E l'equivalenza e' un test.** `python -m app.colonyref` scrive `colony/reference.json`
+-- cinque siti scelti per i loro RAMI (un fiume, un deserto attraversato da un grande fiume,
+una costa con delta, tutto gelato, pietra nuda in quota), 64x64 celle ciascuno -- e
+`citygen.test.ts` confronta CELLA PER CELLA terreno, quota, fertilita' e vegetazione.
+Cambiare una costante da una parte sola fa cadere la suite: verificato mutando `0,30` in
+`0,31` nel solo TypeScript, due test cadono.
+
+Il file contiene anche i SEMI che Python deriva. Il seme e' cio' che le due copie hanno in
+comune -- il client lo ricava dal mondo e dalla casella, il server conserva quello che ha
+ricavato LUI -- e se divergessero il client disegnerebbe un posto che la mappa autoritativa
+non ha, mentre ogni confronto cella per cella continuerebbe a passare. Era verificato solo
+contro se' stesso.
 
 ## Atterrare: la casella smette di essere scenografia
 
 Il pianeta decide una cosa sola: quale esagono. E' la scala a cui il mondo condiviso viene
 deciso, e non e' la scala a cui una colonia si gioca. Atterrare apre una seconda mappa -- un
-quadrato di terreno da 128x128 celle, circa un chilometro di lato, generato per quella colonia
-e per nessun'altra.
+quadrato di terreno da 768x768 celle -- 590.000 celle, circa SEI chilometri di lato -- che la
+casella si porta dietro.
+
+### Sei chilometri, non uno
+
+Un chilometro di lato era il terreno di una scenetta, non di una colonia: ci si costruisce per
+mezz'ora e i bordi sono gia' li'. Sei chilometri sono 590.000 celle, trentasei volte l'area di
+prima, e il costo si vede in tre punti -- tutti e tre misurati, non stimati.
+
+    generazione            2,5 s in Python (una volta, poi la mappa e' in memoria)
+    buffer del terreno     1536x1536 px a 2 px per cella -- 9 MB, dentro il limite di Safari su iPhone
+    sprite a schermo       nessuna sotto i 7 px per cella
+
+Il buffer e' sceso da quattro pixel per cella a due: quattro avrebbero voluto 3072x3072, 9,4
+megapixel, oltre quello che un telefono alloca. Non si perde nulla, perche' la grana fine si
+stende sopra alla risoluzione dello schermo e al buffer resta solo la sfumatura tra due terreni.
+
+E sotto i sette pixel per cella non si disegna piu' niente di eretto: da lontano una finestra
+copre centomila celle, e centomila sprite per fotogramma sono una presentazione. La vegetazione
+a quella distanza la porta gia' il colore del terreno.
+
+### Si guarda prima di scendere
+
+Il seme di una casella non mescola piu' la colonia che ci arriva: lo decide LA CASELLA. Prima
+il dado si tirava nell'istante dell'atterraggio, quindi nessuno poteva sapere su cosa stesse
+scendendo finche' non era sceso. Scegliere un sito e poi prenderlo e' un gioco migliore di
+prenderlo e poi scoprirlo, e non costa niente: con una colonia per casella non esiste il caso
+in cui due colonie vorrebbero terreni diversi dallo stesso posto.
 
 ### Casuale una volta, poi per sempre
 
@@ -339,11 +401,11 @@ persistente: due giocatori vedrebbero posti diversi e quello che hai costruito i
 altrove oggi. Quindi il dado si tira UNA volta, all'atterraggio, e cio' che si conserva e' il
 SEME.
 
-    16.384 celle per colonia, salvate  ->  80 milioni di righe per il mondo da 5000 giocatori
-    il seme che le genera              ->  32 caratteri
+    590.000 celle per colonia, salvate  ->  3 miliardi di righe per il mondo da 5000 giocatori
+    il seme che le genera               ->  32 caratteri
 
-La mappa e' una funzione pura del seme e di cosa il pianeta dice del sito, e si rigenera in sei
-centesimi di secondo. Quando le colonie potranno modificare il terreno, le modifiche saranno
+La mappa e' una funzione pura del seme e di cosa il pianeta dice del sito, e si rigenera in due
+secondi e mezzo in Python -- meno nel browser, che e' dove ora viene generata davvero. Quando le colonie potranno modificare il terreno, le modifiche saranno
 righe a parte sopra questa base: come un salvataggio di gioco, che non riscrive il mondo ma
 cio' che gli e' stato fatto.
 
@@ -354,13 +416,13 @@ copertura vegetale, asprezza del rilievo, quanto volentieri le conche si riempio
 temperatura e la quota del pianeta muovono poi quei valori, quindi due deserti non sono lo
 stesso deserto. Su tre caselle vere di un pianeta vero:
 
-    palude tropicale, fiume grande, costa      526 celle edificabili su 16.384, fertilita' 25
-    deserto a 1450 m                        16.021 celle edificabili,           fertilita'  0
-    macchia arida sulla costa               10.854 celle edificabili,           fertilita' 12
+    palude tropicale, fiume grande, costa    19.180 celle edificabili su 589.824, fertilita' 43
+    deserto a 1450 m                        589.287 celle edificabili,            fertilita'  2
+    macchia arida sulla costa               393.232 celle edificabili,            fertilita' 20
 
 Spazio o cibo. E' questo che rende la scelta del sito una decisione invece di una formalita'.
 
-### Tre cose che si sono viste solo guardando le immagini
+### Quattro cose che si sono viste solo guardando le immagini
 
 **Qualunque valore positivo diventava acqua.** La soglia di ristagno era fissa (40 cm), quindi
 anche un deserto con piovosita' tre centesimi allagava ogni conca. Ora la soglia e' una frazione
@@ -375,7 +437,20 @@ piu' le conche, ma solo nei climi che le riempiono davvero.
 dimezzato dal moltiplicatore della sabbia applicato DOPO, proprio dove contava di piu'. Ora la
 riva diventa limo: il solo motivo per atterrare in un deserto vale quello che la regola dice.
 
-Nessuna delle tre si vedeva leggendo il codice, e tutte e tre si sono viste al primo sguardo
+**La roccia nuda non guardava il bioma.** La soglia era una frazione fissa del rilievo
+(`0,62`), quindi OGNI bioma riceveva lo stesso 16,3% di pietra scoperta: una foresta pluviale
+con continenti grigi dentro. Cio' che copre la roccia e' la vegetazione, e il bioma dichiara
+gia' quanta ne ha, quindi ora e' la copertura ad alzare la linea.
+
+    prima: identico ovunque    dopo: foresta pluviale  3,0%   (copertura 0,95)
+                                     foresta temperata 4,3%   (copertura 0,80)
+                                     tundra           13,9%   (copertura 0,12)
+                                     roccia nuda      98,6%   (copertura 0,02)
+
+A 128 celle era un puntino e non si notava. A 768 era meta' mappa: ingrandire non ha creato il
+difetto, lo ha reso impossibile da ignorare.
+
+Nessuna delle quattro si vedeva leggendo il codice, e tutte si sono viste al primo sguardo
 alle immagini di `app/cityshots.py` -- che scrive PNG a mano con zlib, perche' un generatore
 che non si puo' guardare e' un generatore su cui si sta tirando a indovinare.
 
@@ -386,6 +461,332 @@ lo spazio abbonda, ma la scarsita' non e' nel numero: e' nella qualita'. Un fium
 una casella sola. E atterrare e' irreversibile -- un trigger rifiuta di spostare o riseminare
 una colonia gia' a terra, cosi' se un giorno esistera' il trasferimento sara' una regola scritta
 apposta e non un UPDATE distratto.
+
+## Il terreno entra nell'economia
+
+Fino a ieri atterrare su un delta o su un deserto produceva la STESSA lega: dove scendevi
+cambiava la vista e nient'altro, quindi scegliere il sito era una formalita' con un panorama.
+
+### Perche' non bastava un numero
+
+La cosa ovvia era una manopola sola -- la fertilita' alza la produzione -- ed e' stata scartata
+misurandola. Con un numero solo esiste un sito migliore in assoluto, e scegliere diventa
+cercarlo: una classifica, non una decisione. Peggio, i due candidati ovvi non erano nemmeno in
+tensione: la foresta pluviale batte il deserto sia in fertilita' sia in spazio.
+
+### Tre numeri che tirano in direzioni diverse
+
+    cibo     fertilita' della terra EDIFICABILE  ->  alza il tasso di produzione
+    legname  verde in piedi, palude esclusa       ->  cio' che lo sgombero restituisce
+    pietra   quota di roccia e ghiaia             ->  cio' che c'e' sotto
+    fatica   verde da sgomberare PIU' la palude   ->  allunga ogni avanzamento
+    spazio   celle edificabili                    ->  quanto cresci prima di stringerti
+
+Legname e fatica sono due numeri e non uno: una palude va prosciugata prima di costruirci --
+quindi costa -- ma di legname non ne ha. Sarebbero stati lo stesso numero solo per caso.
+
+E la distribuzione non e' decorazione: e' cio' che fara' servire una colonia a un'altra.
+
+    foresta pluviale   cibo  86   legname  55   pietra   4
+    macchia arida      cibo  20   legname   6   pietra  99
+    tundra             cibo  41   legname  27   pietra  15
+    deserto            cibo   2   legname   0   pietra   0
+
+Nessuno puo' fare tutto in casa.
+
+La resa si misura sulla terra su cui si puo' costruire, non sulla media della mappa: annacquata
+dall'acqua, una palude legge come mediocre -- e non e' mediocre, e' ottima terra su cui non ci
+sta una citta', che sono due fatti diversi e l'economia li deve tenere separati.
+
+Simulando un anno di tempo di mondo, giocando ovunque allo stesso modo:
+
+    lega accumulata      10 giorni   30 giorni   90 giorni     1 anno
+    pluviale                57.511     305.934   1.602.138  13.147.513
+    foresta temperata       56.111     298.369   1.565.233  12.853.542
+    deserto                 41.284     262.081   1.518.775  13.251.161  <- sorpassa
+    tundra                  46.057     258.868   1.418.098  11.964.478
+    palude tropicale        31.492     143.591     575.507   3.280.694
+
+**C'e' il sorpasso**, ed e' il punto: a dieci giorni la terra grassa e' avanti del 37%, fra i
+novanta giorni e l'anno il deserto la passa. Nessun sito e' la risposta a tutti gli orizzonti,
+quindi la domanda «parto forte o cresco per sempre?» ha davvero due risposte.
+
+### Il tetto e' morbido perche' atterrare e' definitivo
+
+Oltre il proprio spazio una colonia non si ferma: ogni livello costa e dura molto di piu'.
+Un muro condannerebbe per sempre chi ha scelto un delta, in un mondo dove non si ricomincia.
+
+Per la stessa ragione un sito con ZERO celle edificabili adesso viene rifiutato: una calotta a
+3637 metri e' asciutta per quota e ghiacciata da parte a parte, e scenderci significherebbe
+non poter costruire mai piu' niente. Terra difficile e' una scelta; nessuna terra e' una
+trappola.
+
+### Dove vivono i tre numeri
+
+Sulla riga della citta', scritti UNA volta all'atterraggio. Non possono stare altrove: la
+produzione si calcola ogni volta che qualcuno guarda una citta', e una colonia e' 590.000
+celle. Sono annullabili, e NULL non e' zero -- zero spazio vorrebbe dire una colonia gia'
+stretta prima di essere scesa, mentre una colonia in orbita produce esattamente quello che
+produceva prima che il terreno contasse.
+
+Le colonie atterrate sotto il ruleset 1 si riempiono con `python -m app.sitefill`, che le
+rigenera dal seme: un riempimento ESATTO e non una stima, che e' precisamente il motivo per
+cui il seme era stato salvato.
+
+E il visore li mostra PRIMA dell'atterraggio, perche' e' l'unica cosa che rende la scelta del
+sito una scelta. Il gemello TypeScript li calcola e il riferimento li verifica: se le due
+copie divergessero, il sito che hai pesato e quello che hai preso non sarebbero lo stesso.
+
+## Il magazzino e il cibo
+
+Quattro risorse invece di una, e due regole nuove che decidono la forma del gioco.
+
+### Il cibo e' il tetto, non il carburante
+
+La terra rende quello che rende -- il cibo NON cresce col livello -- mentre il consumo cresce
+con le bocche. Da qui viene il tetto vero di una colonia, e non e' una manopola in piu': e' la
+stessa fertilita' gia' misurata che decide un'altra cosa.
+
+    cibo del sito    2  ->  30 milli/s  ->  livello massimo   4     (deserto)
+                    41  -> 127 milli/s  ->  livello massimo  16     (tundra)
+                    86  -> 240 milli/s  ->  livello massimo  32     (pluviale)
+
+E avanzare oltre cio' che il sito sfama viene **rifiutato**, non permesso e poi punito. Una
+colonia cresciuta troppo morirebbe di fame senza ritorno, e atterrare e' definitivo: un
+vicolo cieco in piu' non serviva a nessuno. E' lo stesso principio del sito senza celle
+edificabili -- terra difficile e' una scelta, nessuna via d'uscita e' una trappola.
+
+Il tetto si calcola sulla politica PIU' SFAVOREVOLE, quindi una maggioranza non puo' affamare
+una colonia che aveva fatto i conti giusti: il voto sposta quanto vai forte, non se sopravvivi.
+
+### Magazzino pieno significa fermo
+
+E' la tensione di Anno, scelta consapevolmente. La sua meta' innocua e' che non si perde cio'
+che si ha: si smette di guadagnare. La meta' pericolosa e' che questo mondo cammina mentre
+dormi, quindi fermarsi a sorpresa sarebbe una punizione per chi ha un lavoro.
+
+Per questo `time_to_full` esiste dal primo giorno: **il momento in cui un magazzino si ferma
+si calcola**, quindi si puo' dire prima. Stallo prevedibile e' strategia; stallo a sorpresa e'
+una faccenda da sbrigare.
+
+### Niente integratore a eventi, per ora
+
+Una catena con scorte e dipendenze non e' integrabile in forma chiusa: se il minerale e'
+finito mercoledi', la fonderia si e' fermata mercoledi', e non lo sai senza ripercorrere la
+settimana. Qui pero' ogni tasso e' non negativo -- il cibo lo e' perche' crescere troppo viene
+rifiutato -- quindi un magazzino pieno RESTA pieno, e il totale e' ancora
+
+    guadagno = min(tasso x secondi, tetto - scorta)
+
+esatto, applicato dentro ogni periodo di politica invece che alla fine. Il macchinario a
+eventi serve quando un processo comincera' a CONSUMARE. Non si costruisce prima di averne
+bisogno; `time_to_full` e' gia' il pezzo che servira' allora.
+
+### Cosa costa un livello
+
+Pietra e legname, e i numeri sono scelti perche' i siti si servano a vicenda:
+
+    macchia arida    pietra 0,4h   legname 4,2h
+    foresta pluviale pietra 4,2h   legname 0,8h
+
+Sono l'immagine speculare l'una dell'altra. E' li' che nascera' il commercio.
+
+Anche la terra piu' spoglia da' un minimo: un deserto non ha ne' roccia ne' alberi, e senza
+quel minimo non potrebbe costruire mai nulla in attesa di un commercio che ancora non esiste.
+
+### La lega non si conia piu'
+
+Tornera' come primo PRODOTTO della prima catena, che e' il posto in cui avrebbe dovuto stare
+dall'inizio. Cio' che e' stato guadagnato resta spendibile: le regole cambiano, non si
+confisca.
+
+E la politica ora sposta le risorse invece della lega -- senza, il voto, che e' l'unica cosa
+condivisa fra tutti i giocatori, sarebbe diventato decorativo.
+
+## La schermata della citta'
+
+E' la prima pagina del visore che NON puo' essere statica, e vale la pena dire perche'.
+
+Il pianeta e' un file e il terreno della colonia e' una funzione di quel file: nessuno dei due
+ha bisogno di qualcosa di sveglio. Una CITTA' si': magazzini, livello e cio' che sta facendo
+sono DECISI dal server, e calcolarli qui significherebbe inventarli. Quindi questa e' l'unica
+parte del visore che dipende da un'istanza in piedi -- di proposito, e solo qui.
+
+    globo e terreno   ->  file statici, niente da svegliare
+    la tua colonia    ->  API autenticata, cross-origin per progetto
+
+### Il risveglio non e' un errore
+
+`lib/patience.ts` era stato scritto per il globo e poi tolto quando il globo smise di avere
+un server davanti. Torna qui, dov'e' davvero necessario: la pazienza si conta a OROLOGIO,
+perche' un'istanza addormentata risponde subito con un 5xx e contare i tentativi brucia un
+minuto e mezzo di budget in diciotto secondi.
+
+E un 401 NON si ritenta: un token sbagliato resta sbagliato per quanto si bussi, e novanta
+secondi di attesa non direbbero al giocatore nient'altro che "e' rotto".
+
+### Il permesso si da' per nome
+
+Il token viaggia in un header `Authorization`, non in un cookie. Con un permesso aperto il
+browser non rifiuterebbe nulla: lascerebbe semplicemente che qualsiasi pagina di internet
+spenda un token di cui sia venuta in possesso. E' un difetto peggiore proprio perche'
+silenzioso, quindi `ALLOWED_ORIGINS` elenca origini e non contiene mai un asterisco.
+
+### Due domande, e sono aritmetica
+
+La schermata esiste per rispondere a due cose: **quando mi fermo** e **cosa mi manca**. Sono
+calcoli, e un calcolo sbagliato dentro un componente non si vede -- si legge come un numero
+plausibile. Quindi stanno in `city/format.ts`, fuori dal disegno e sotto test.
+
+    Cibo     105    pieno fra 26 h
+    Legname   40    pieno fra 5 giorni
+    Pietra    40    pieno fra 5 giorni
+
+Il primo numero e' cio' che hai; il secondo e' la meta' che rende accettabile lo stallo in un
+mondo che cammina mentre dormi.
+
+### Una cosa trovata guardandola
+
+La pagina e' pre-renderizzata a build time, dove non esistono ne' `localStorage` ne'
+l'indirizzo del server. Decidere cosa mostrare prima di essere nel browser significa
+disegnare una cosa e poi un'altra: React lo chiama disallineamento di idratazione e si vedeva
+come un errore in console a ogni caricamento. Ora il primo disegno e' vuoto di proposito.
+
+## Le catene: la produzione smette di essere una moltiplicazione
+
+Una fonderia consuma minerale e legname e rende lega. Tre conseguenze, e nessuna e' cosmetica.
+
+### Il minerale e' un asse nuovo, non la pietra riscritta
+
+I filoni hanno un campo di rumore tutto loro, e la soglia la abbassa la QUOTA: la roccia
+profonda viene a giorno dove la crosta e' stata spinta su. Se avessero seguito la pietra di
+superficie non avrebbero aggiunto nessuna geografia -- una macchia arida sarebbe stata ricca
+due volte e la scelta del sito piu' povera, non piu' ricca.
+
+    pluviale in pianura    minerale  7      macchia arida in piano   minerale  8
+    pluviale a 1800 m      minerale 16      macchia arida a 2200 m   minerale 22
+
+E i numeri dicono la cosa che conta: **nessuno regge una fonderia con cio' che ha sotto i
+piedi.** La montagna arida ha il minerale e non il legno, la giungla il contrario.
+
+    pluviale a 1800 m    regge 1,20 fonderie
+    pluviale in pianura  regge 0,90      (manca il minerale)
+    macchia arida        regge 0,50      (manca il legname)
+
+E' da qui che nascera' il commercio, e non e' un auspicio: e' il rapporto fra due numeri
+misurati.
+
+### L'integrazione a eventi, adesso che serve
+
+Finche' le risorse salivano soltanto, liquidare era una moltiplicazione. Un processo che
+CONSUMA la rompe: se il minerale e' finito mercoledi', la fonderia si e' fermata mercoledi' e
+il tasso di giovedi' non e' quello di martedi'.
+
+Quindi fra un evento e l'altro tutto e' lineare, e il momento in cui una scorta tocca lo zero
+o il tetto si CALCOLA invece di aspettarlo: si salta li', si ricalcolano i tassi, si prosegue.
+
+    dieci anni di assenza  ->  liquidati in 0,15 ms
+
+Nessun tick e' tornato dalla finestra. E l'invariante che aveva permesso di toglierlo regge
+ancora: **spezzare un intervallo non cambia il risultato**, al milli, verificato liquidando
+due giorni in un colpo e poi ora per ora.
+
+Un'opera tira dal magazzino finche' ce n'e' -- puo' girare a pieno anche consumando piu' di
+quanto arrivi, sta svuotando un buffer -- e quando il buffer e' a zero gira al ritmo con cui
+l'ingresso arriva. I millesimi tengono tutto intero, perche' un mondo salvato deve riprodursi
+identico.
+
+### La lega ha uno sbocco, o sarebbe un numero che nessuno spende
+
+Dal livello tre in su un avanzamento vuole anche lega, che non si raccoglie: si fonde. Senza,
+la catena avrebbe prodotto lo stesso difetto che il cibo ha oggi -- una scorta che sale e
+resta li' -- ma voluto invece che ereditato.
+
+### Tre difetti che solo il costruirla ha fatto uscire
+
+**Il minerale non era ammesso nel ledger.** La migrazione precedente aveva fissato l'elenco
+delle risorse; aggiungerne una alle regole e alla riga della citta' senza estenderlo
+significava poterla produrre e non poterla scrivere. Non si vedeva finche' qualcuno non
+estraeva il primo grammo. Ora un test confronta i due elenchi invece di sperare.
+
+**La produzione non poteva essere negativa.** Il vincolo diceva: genesis e production
+aggiungono, upgrade toglie. Vero finche' nulla consumava. Una colonia che fonde piu' minerale
+di quanto ne scavi ha, a fine intervallo, meno minerale di prima -- e quel movimento e'
+esattamente cio' che il ledger deve registrare.
+
+**La previsione guardava il raccolto.** La lega non si raccoglie, quindi la schermata diceva
+"fermo" di una risorsa che stava crescendo. Ora guarda i flussi netti -- e "gia' pieno" e
+"non si fermera' mai" sono tornati due stati distinti, che sembravano uguali e non lo sono.
+
+## L'energia: un flusso, non una scorta
+
+Quattro fonti -- eolico, solare, idroelettrico, geotermico -- e una regola che decide tutto il
+resto: **l'energia non si mette in magazzino.**
+
+Se si potesse accumulare, una colonia ne banchereb­be di notte e il vincolo sparirebbe: si
+tornerebbe a "abbastanza, prima o poi", che non e' una decisione. Come FLUSSO invece e'
+esattamente il caso che lo strozzatore gia' sapeva trattare -- un ingresso senza buffer -- e
+non e' servita nessuna macchina nuova, solo un limite in piu' nella stessa funzione.
+
+    Corrente: 46 prodotta - 14 pretesa - tutto a pieno regime
+    Corrente:  0 prodotta - 14 pretesa - non basta, tutto gira al 0%
+
+E quando non basta, TUTTI gli impianti rallentano insieme: non se ne sceglie uno da spegnere,
+perche' quella scelta e' del giocatore e si fa con la pausa.
+
+### Il deserto smette di essere uno scarto
+
+E' la ragione vera per cui l'energia entra adesso. Il deserto era il sito povero di tutto --
+niente roccia, niente alberi, quasi niente cibo -- e il sole lo riscatta senza che nessuna
+regola debba fare un'eccezione per lui.
+
+    deserto              sole 100   vento 28   acqua  0   calore 17
+    pluviale con fiume   sole  21   vento 26   acqua 88   calore  9
+    macchia arida 2200   sole  82   vento 96   acqua  0   calore 25
+    tundra costiera      sole  72   vento 60   acqua  0   calore 15
+
+Tre delle quattro attitudini si leggono da cio' che il pianeta gia' diceva -- quota, coste,
+piovosita', temperatura, portata del fiume. Il CALORE no: e' geologia nascosta, come i filoni,
+e ha un campo di rumore suo, piu' largo perche' un'anomalia termica e' una regione mentre un
+giacimento e' una vena.
+
+Lo stesso impianto e' una centrale diversa a seconda di dove sta, e la schermata lo dice:
+"Idroelettrico -- 0 corrente/s qui (attitudine 0)" su una casella senza fiume.
+
+## Rendere gestibile cio' che era una condanna
+
+Il gradino precedente aveva lasciato un difetto grave, trovato provandolo e non leggendolo:
+**un'opera non si poteva spegnere.** Una fonderia mangiava il legname per sempre, e siccome il
+legname serve anche a costruire, un solo impianto poteva bloccare la crescita di una colonia
+senza che il giocatore potesse farci niente.
+
+    Pausa     istantaneo  -- un impianto spento non consuma, non produce, non chiede corrente
+    Accendi   istantaneo  -- e' un interruttore, non un lavoro
+    Abbatti   istantaneo  -- senza rimborso, e si abbatte per prima una gia' spenta
+
+Costruire occupa la colonia -- una cosa alla volta, com'e' sempre stato -- ma accendere e
+spegnere no: sarebbe stato punire il giocatore per aver cambiato idea.
+
+### Due elenchi che devono coincidere, e non coincidevano
+
+Lo stesso difetto del minerale nel ledger, in un altro punto: gli impianti nuovi erano nelle
+regole e nel database, e l'API li rifiutava perche' lassu' l'elenco era ancora di uno solo --
+"Input should be 'smelter'". Adesso il modello della richiesta e' legato a `WORK_KINDS`, e un
+test prova a costruire OGNI tipo che le regole conoscono.
+
+E' la terza volta in questo progetto che due elenchi si separano in silenzio. Il rimedio che
+funziona non e' ricordarsene: e' un test che li confronta.
+
+### E il riferimento stesso si era separato
+
+La quarta volta, ed e' la peggiore, perche' e' successa AL GUARDIANO. Le quattro attitudini
+energetiche sono state aggiunte a Python, e `colonyref.py` ha continuato a scriverne sei --
+perche' elencava i campi a mano. Cosi' le due lingue sono divergute mentre il test che esiste
+esattamente per accorgersene passava, confrontando due copie vecchie.
+
+Adesso il riferimento scrive `asdict(made.economy)`: aggiungere un campo di qua ROMPE subito
+il test di la', che e' il suo mestiere. Un elenco scritto a mano si dimentica; una struttura
+no.
 
 ## Via il tick: il mondo e' continuo
 
@@ -692,6 +1093,237 @@ lato client crescono linearmente con le caselle, quindi ogni aumento della tasse
 compromesso con il primo caricamento, soprattutto su mobile. La mappa non ha ancora alcun
 legame con le città: quando esisterà, una migrazione che azzera le caselle non sarà più
 un'operazione innocua e andrà ripensata.
+
+## Lo schermo di gioco
+
+Fino a qui il visore era fatto di PAGINE: il globo, il terreno, la citta'. Tre documenti con
+un titolo e dei paragrafi, buoni per leggere e sbagliati per giocare. Un gioco non si legge:
+si sta dentro. Quindi `/colonia` non e' piu' una pagina con una mappa dentro, e' uno schermo
+-- il terreno occupa tutta la finestra e l'interfaccia ci galleggia sopra.
+
+    barra in alto    risorse, corrente, ora del mondo, livello, menu
+    angolo in basso  minimappa, e i tre modi di uscire da qui
+    pannello destro  i comandi, aperti solo quando servono
+    sotto a tutto    il terreno, che non perde mai spazio
+
+La regola che tiene insieme il disegno e' una sola: **niente ruba spazio alla mappa in modo
+permanente**. La barra e' alta due righe, il pannello si apre e si chiude, la minimappa sta in
+un angolo. Un pannello che occupa sempre un terzo dello schermo e' un pannello che il
+giocatore tiene chiuso, e allora tanto valeva non farlo.
+
+### Il terreno copre, non si inquadra
+
+La prima versione teneva la colonia intera dentro il lato corto della finestra, e su uno
+schermo largo lasciava due bande nere ai fianchi. Corretto per un visore di mappe, sbagliato
+per un gioco: adesso l'ingrandimento minimo e' quello che COPRE la finestra. Vedere tutta la
+colonia in un colpo solo non e' piu' un compito della tela, e' il mestiere della minimappa.
+
+### La minimappa disegna il terreno vero
+
+Non e' un'immagine a parte: campiona la stessa funzione che disegna la tela grande, con lo
+stesso colore per cella, e se la ridisegnasse ad ogni movimento della telecamera costerebbe
+quanto la tela. Quindi il terreno finisce UNA volta in un buffer e resta li'; sopra ci va solo
+il rettangolo dell'inquadratura, che e' quattro numeri. Il rettangolo sparisce quando coincide
+con tutta la mappa, perche' un bordo che ripete il bordo non dice niente.
+
+Un clic sulla minimappa sposta la telecamera. E' l'unico punto in cui un pezzo di interfaccia
+comanda la tela, e passa per una funzione sola (`goTo`) invece che per lo stato di React: una
+panoramica non deve attraversare un ciclo di rendering.
+
+### I comandi hanno DUE case, e una sola definizione
+
+La stessa fonderia si costruisce dalla pagina `/citta` e dal pannello dentro il gioco. Farne
+due copie sarebbe stato il quinto caso di "due elenchi che devono coincidere" di questo
+progetto -- il primo che si fosse aggiornato avrebbe lasciato l'altro a mentire al giocatore.
+Quindi i comandi stanno in `city/CityPanel.tsx`, e le due schermate lo OSPITANO.
+
+Il prezzo e' che un componente deve stare bene in due larghezze molto diverse. Dentro il
+pannello da 30rem la tabella degli impianti smette di essere una tabella: ogni impianto
+diventa un blocco col nome sopra e i comandi sotto. Ed e' per la stessa ragione che il costo
+di costruzione e' uscito dal bottone -- "Costruisci (pietra 120.000, legname 120.000 -- 3.0 h)"
+andava a capo tre volte -- per finire sotto la ricetta, dove serve leggerlo prima di premere.
+
+La stessa trappola era gia' scattata in piccolo: la pastiglia della barra aveva la SUA copia
+della regola a tre stati -- "pieno", "fermo", il tempo che manca -- scritta dentro il disegno.
+Adesso e' `stallShort` accanto a `stallNote`, nello stesso file e sotto lo stesso test: due
+frasi diverse, una regola sola.
+
+### Cosa NON c'e' ancora
+
+Le impostazioni sono l'indirizzo del server e poco altro, perche' non c'e' ancora niente da
+impostare: nessun suono, nessuna velocita' da regolare in un mondo che cammina da solo,
+nessuna scorciatoia. Il menu esiste comunque, perche' e' il posto dove quelle cose andranno e
+inventarlo dopo significa rifare il disegno.
+
+## La luce, che non c'era
+
+Il terreno della colonia era dipinto piatto: un colore per cella, e sopra un velo di puntini
+bianchi a schermo. Il generatore pero' scriveva gia' l'ALTEZZA di ogni cella, in metri, e non
+la guardava nessuno -- una collina e una piana uscivano dello stesso identico colore. Il
+difetto non si vedeva come un difetto: si vedeva come uno stile.
+
+    prima     un colore per cella, puntinio bianco, confini a mezzatinta
+    adesso    pendenza, conche, acqua che si fa fonda, rive, macchie nel terreno
+
+### Il piano vale esattamente uno
+
+La regola che tiene insieme tutto il modello: su terreno piatto la luce vale **1.0**, cioe' il
+colore della tavolozza esce com'e' stato scelto. La luce aggiunge solo cio' che il terreno fa
+davvero. Senza quel vincolo ogni ritocco alla tavolozza sarebbe stato una trattativa con
+l'illuminazione, e si sarebbe finiti a scegliere i colori guardando il risultato invece che il
+posto.
+
+E la scala della pendenza la decide il SITO, non una costante: si misura la pendenza tipica
+della colonia e si tara su quella. Un deserto piatto e una valle alpina hanno lo stesso
+diritto di vedersi; con una scala assoluta uno sarebbe stato carta bianca e l'altro carbone.
+
+### L'ombra e' azzurra
+
+L'ombra non e' nero, e' il cielo che ci arriva dentro. Quindi la luce non ha solo una
+quantita' ma un colore: caldo dove batte, azzurro dove non arriva. E' una riga di codice ed e'
+meta' della differenza fra un terreno e un disegno sfumato col grigio.
+
+### Tre cose trovate solo guardandole
+
+**Le curve di livello stampate sulla sabbia.** Le altezze sono interi di metri e le celle sono
+larghe otto: un gradino di un metro vale 0,125 di pendenza, che in una piana e' PIU' della
+pendenza vera. Derivare quella scala a gradini dava terrazze, e le terrazze si leggevano come
+un'impronta digitale su tutta la piana. Sette celle di media prima di derivare -- una
+cinquantina di metri -- sciolgono il gradino e non toccano un rilievo largo centinaia.
+
+**La nuvola bianca appoggiata sul bosco.** Con un tetto di luce alto, una rupe grigio chiaro
+arrivava a centosettanta di grigio piu' la tinta calda: in mezzo a una foresta verde scura si
+leggeva come una nuvola, non come una rupe. Estremi piu' stretti, roccia piu' scura, e una
+grana per materiale -- la roccia e' mossa, la sabbia no.
+
+**La costa tirata col righello.** Era una diagonale netta attraverso la mappa: a sei
+chilometri non si legge come una costa, si legge come la sponda di un canale. Adesso serpeggia
+con un campo di rumore suo, come il fiume ha sempre fatto. E' un cambio al GENERATORE, quindi
+in tutte e due le lingue, con il riferimento rigenerato e il test di equivalenza a controllare
+che le due copie siano ancora la stessa cosa.
+
+### Un bosco non e' un prato scuro
+
+Il verde era uno solo, piu' o meno carico: la differenza fra prato e foresta era solo di
+luminosita', ed e' per questo che un bosco sembrava un prato scuro. Adesso sono due fermate,
+prato e bosco, e la terra povera fa foglie gialle invece che foglie scure -- che e' la
+differenza fra una macchia mediterranea e una foresta.
+
+Le piante, poi, erano lo stesso cespuglio timbrato cento volte su una griglia uniforme. Tre
+tiri di dado indipendenti invece di uno riciclato (taglia, inclinazione, colore), il numero
+dei lobi che cambia, e la densita' moltiplicata per un campo di macchie: e' quello che apre le
+radure. Ogni pianta prende la luce della cella su cui sta, se no un bosco in ombra restava
+verde acceso e sembrava incollato sopra il terreno.
+
+### La grana e' una cosa da vicino
+
+Il puntinio stava a risoluzione di SCHERMO, quindi a tutta mappa erano seicentomila celle
+sotto un velo di sabbia: si leggeva come carta vetrata. Adesso le macchie larghe stanno nel
+BUFFER -- crescono insieme al terreno -- e il puntinio fine entra solo avvicinandosi, con una
+seconda passata ancorata al terreno perche' il buffer ha due pixel per cella e ingrandito a
+venti e' una poltiglia.
+
+### Cosa costa
+
+Misurato, stessa macchina, dalla richiesta al terreno in piedi:
+
+| | prima | adesso |
+|---|---|---|
+| caricamento | 905 ms | 1.400 ms |
+| fotogramma | 16,7 ms | 16,7 ms |
+
+Il disegno non e' cambiato di prezzo -- il buffer si dipinge una volta e poi panoramica e
+ingrandimento restano un `drawImage`. Il caricamento si' -- di mezzo secondo -- ed e' quasi
+tutto nel ciclo per sottopixel, non nelle chiamate al rumore: precalcolare i reticoli delle
+macchie non ha spostato niente, e la prova e' stata tolta invece di essere tenuta per fede.
+Cio' che ha spostato e' la memoria: il percorso del colore non alloca piu' un vettore per
+cella.
+
+### E una prova che falliva a caso
+
+Durante questo lavoro la suite del backend ha fallito una volta su un test che da solo
+passava sempre: `test_the_timeline_records_a_move_and_collapses_one_that_took_no_time`. Non
+era casuale, e non era del gioco.
+
+`database_now` tronca al secondo. Quel test fermava l'orologio DOPO aver creato i giocatori,
+mentre ogni altra prova lo ferma prima -- e il primo periodo di politica nasce insieme ai
+giocatori. Se la loro creazione scavalcava un secondo intero, il periodo iniziale aveva
+lunghezza positiva, non veniva accorpato, e l'asserzione trovava due righe invece di una.
+Scavalcare un secondo intero dipende da quanto e' carica la macchina, ed era carica perche'
+stavo compilando il visore nello stesso momento.
+
+Vale la pena scriverlo perche' il primo istinto e' chiamarla una fluttuazione e rilanciare: e
+una prova che fallisce una volta ogni tanto, lasciata li', prima o poi si prende la colpa di
+qualcos'altro.
+
+## Rendere pubblico il repository
+
+La CI era ferma perché i 2.000 minuti Actions inclusi nell'account erano esauriti, e due
+repository se li dividevano. Su un repository **pubblico** i runner standard non consumano
+quell'allowance: è la strada scelta, ed è gratis.
+
+Prima di premere, tre cose sono state verificate e non date per buone:
+
+    segreti usati dai workflow   nessuno   -> una PR da un fork non ha niente da rubare
+    credenziali nella storia     zero      -> cercati dpg-, ghp_, github_pat_, chiavi
+    account creabili via rete    nessuno   -> `provision` vive solo nella CLI
+
+### Una rotta pubblica che non serviva più a nessuno
+
+`GET /world/map` serviva quattro megabyte di pianeta, senza autenticazione, a centoventi
+richieste al minuto per indirizzo. Da quando il pianeta è un file statico **nel visore non
+c'era più una riga che la chiamasse**: la nominavano solo i test e questo documento.
+
+Non era un buco di sicurezza — la geografia è pubblica per definizione — ma era mezzo
+gigabyte al minuto di banda esposto da un'istanza gratuita, per codice morto. È uscita prima
+che il repository diventasse leggibile da chiunque, insieme alla cache del payload che
+esisteva solo per lei. Ciò che resta è `read_map`, che serve ancora all'esportazione statica
+e al test di equivalenza fra le due strade.
+
+Delle due prove che la coprivano ne resta una, sull'unica regola che vale ancora: lo stato
+del mondo non si mette in cache, perché cambia.
+
+### Perché il job `containers` era rosso, e perché ci sono voluti due giorni
+
+Con i runner tornati, l'errore si è finalmente letto:
+
+    FileNotFoundError: [Errno 2] No such file or directory: '/.github/workflows/ci.yml'
+    5 failed, 121 passed
+
+Un difetto solo, cinque volte. **L'immagine di prova contiene solo `backend/`** — il
+Dockerfile copia quel contesto e basta — quindi un test che legge un file del REPOSITORY (il
+workflow in `.github/`, il pianeta spedito in `frontend/`) lì dentro non trova niente.
+
+Quattro erano i test scritti poche ore prima per tenere allineate le guardie della CI. Il
+quinto, `test_the_shipped_asset_describes_the_world_the_code_builds`, era lì dal 19 settembre:
+il run 118 — il primo rosso — **è esattamente il commit che lo ha introdotto**, e il 117,
+l'ultimo verde, è quello prima. La CI è stata rossa due giorni per un test che non poteva
+funzionare lì dal minuto in cui è nato.
+
+Il rimedio non è far provare all'immagine cose che non contiene: quei test portano il
+marcatore `repo` e il `CMD` dell'immagine li deseleziona. Non si perde copertura, perché il
+job `backend` ha il repository intero sotto mano e li esegue tutti.
+
+    5/126 raccolti con -m "repo"        i cinque che cadevano
+    121/126 con -m "not repo"           esattamente i 121 che passavano
+
+E la ragione per cui ci sono voluti due giorni è scritta sopra: `docker compose logs` senza
+limite seppelliva l'errore. Anche `--tail 40` non bastava — vale PER SERVIZIO, e con cinque
+servizi fanno duecento righe fra l'errore e la fine del log. Adesso sono quindici, che è
+quanto serve a dire se un container è morto.
+
+### I fork, e il doppio giro
+
+Un repository pubblico può ricevere PR da un fork, e il push di un fork qui non arriva: senza
+l'evento `pull_request` un contributo esterno entrerebbe senza che nessuno lo abbia provato.
+Quindi ci sono tutti e due gli eventi — e ogni job scarta il caso doppio, girando su
+`pull_request` solo quando il ramo di partenza non è di questo repository.
+
+La condizione è scritta tre volte, perché GitHub non ha un `if` a livello di workflow. A
+tenerle uguali c'è `tests/test_workflow.py` e non la memoria: è il sesto caso di "due elenchi
+che devono coincidere" di questo progetto, e il rimedio che funziona è sempre lo stesso.
+Verificato che i tre controlli cadono davvero, separando una guardia, togliendo un tetto di
+tempo e facendo divergere i due `paths-ignore`.
 
 ## Decisioni
 

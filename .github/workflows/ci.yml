@@ -1,9 +1,47 @@
 name: Foundation checks
-on: [push, pull_request]
+
+# Una volta sola per revisione, e i fork coperti lo stesso.
+#
+# `[push, pull_request]` faceva girare la stessa identica revisione DUE VOLTE per ogni ramo
+# con una PR aperta: nella storia dei run ci sono le coppie con lo stesso SHA a un secondo di
+# distanza (116/117, 125/126). Per una PR che nasce da un ramo di QUESTO repository il push
+# copre gia' tutto.
+#
+# Ma da quando il repository e' pubblico le PR possono arrivare da un fork, e il push di un
+# fork qui non ci arriva: senza l'evento `pull_request` un contributo esterno entrerebbe
+# senza che nessuno lo abbia provato. Quindi ci sono tutti e due gli eventi, e ogni job
+# scarta il caso doppio -- `pull_request` gira solo quando il ramo di partenza NON e' di
+# questo repository. La guardia dice "tutto TRANNE una PR interna" e non "solo un push",
+# cosi' un evento nuovo (l'avvio a mano qui sotto) non resta fuori per distrazione.
+# E' scritta tre volte perche' GitHub non ha un `if` a livello di workflow; a tenerle uguali
+# c'e' un test, non la memoria.
+on:
+  push:
+    # Un cambio ai soli documenti non puo' rompere il codice, e questo progetto scrive molti
+    # documenti. Se un giorno un test leggera' un file di docs, queste righe vanno tolte.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  # A mano, dal bottone "Run workflow". Serve quando l'ultima revisione e' verde ma il giro
+  # e' andato storto per una ragione che col codice non c'entra -- oggi: i runner che non
+  # venivano assegnati. Senza, l'unico modo di riprovare era un commit finto.
+  workflow_dispatch:
+
+# E un push che ne supera un altro sullo stesso ramo annulla il primo: il risultato di una
+# revisione gia' sorpassata non lo guarda nessuno, ma i minuti li paga lo stesso.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     services:
       postgres:
         image: postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
@@ -27,6 +65,8 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,6 +85,8 @@ jobs:
 
   containers:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     steps:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
@@ -61,5 +103,9 @@ jobs:
           bash scripts/backup.sh
           RESTORE_CONFIRM=yes bash scripts/restore.sh "$(ls -t backups/*.dump | head -1)"
           curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:8000/health/ready
+      # `--tail`, e corto. Vale PER SERVIZIO: con cinque servizi, quaranta righe l'uno fanno
+      # duecento righe fra l'errore di pytest e la fine del log, e l'errore resta comunque
+      # irraggiungibile -- e' successo, e sono stati due giorni di diagnosi al buio. Quindici
+      # bastano a dire se un container e' morto, che e' tutto cio' che questo dump deve fare.
       - if: always()
-        run: docker compose logs && docker compose down
+        run: docker compose logs --tail 15 && docker compose down

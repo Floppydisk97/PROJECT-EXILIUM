@@ -10,10 +10,7 @@ plus a neighbour count instead of the full adjacency array. Open ocean beyond th
 smooth shell on the client, so its polygons would be dead weight. The table keeps the
 complete geography either way.
 """
-import gzip
-import hashlib
 import json
-import threading
 
 from psycopg.types.json import Jsonb
 
@@ -22,13 +19,6 @@ from app.service import DomainError
 
 INSERT_CHUNK = 4000  # bound peak memory while writing tens of thousands of tiles
 
-# Building the render model costs seconds of CPU and hundreds of megabytes of intermediate
-# lists. The map is immutable once generated -- replacing it takes a migration, which takes
-# a deploy, which restarts this process -- so the answer is built once and then handed out
-# as bytes. Without this, a public unauthenticated endpoint let anyone make the server
-# repeat that work, which on a small instance is a way to exhaust its memory.
-_payload_lock = threading.Lock()
-_payload: dict | None = None
 
 
 def _round(v, digits=4):
@@ -161,6 +151,7 @@ def build_model(meta: dict, rows: list, total: int, rivers: dict) -> dict:
     river_flow: list[int] = []
     landmass_size: list[int] = []
     neighbor_count: list[int] = []
+    coastal: list[int] = []
     ring: list[int] = []
     ring_offset: list[int] = [0]
     land_count = 0
@@ -175,6 +166,7 @@ def build_model(meta: dict, rows: list, total: int, rivers: dict) -> dict:
         river_flow.append(row["river_flow"])
         landmass_size.append(row["landmass_size"])
         neighbor_count.append(row["neighbor_count"])
+        coastal.append(1 if row["coastal"] else 0)
         if row["elevation"] >= 0 and row["biome"] != "lake":
             land_count += 1
         for point in row["polygon"]:
@@ -202,7 +194,8 @@ def build_model(meta: dict, rows: list, total: int, rivers: dict) -> dict:
             "id": ids, "center": center, "elevation": elevation,
             "temperature": temperature, "rainfall": rainfall, "biome": biome,
             "river_flow": river_flow, "landmass_size": landmass_size,
-            "neighbor_count": neighbor_count, "ring": ring, "ring_offset": ring_offset,
+            "neighbor_count": neighbor_count, "coastal": coastal,
+            "ring": ring, "ring_offset": ring_offset,
         },
     }
 
@@ -236,9 +229,16 @@ def read_map(conn) -> dict:
     # reads them, and at three numbers per tile they were 13 per cent of the response (15 per
     # cent gzipped, which is what actually travels). They stay in the table: recomputing them
     # means regenerating the world, and the client could want them again.
+    # `coastal` travels with the tile because the client has no adjacency -- the render model
+    # sends a neighbour COUNT, not their ids -- and without it it cannot tell whether landing
+    # there means having the sea beside you. It is a property of the neighbourhood, so either
+    # it is sent or it is lost.
     select = """SELECT t.id, t.cx, t.cy, t.cz, t.elevation, t.temperature, t.rainfall,
                        t.biome, t.river_flow, t.landmass_size,
-                       COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon
+                       COALESCE(array_length(t.neighbors, 1), 0) AS neighbor_count, t.polygon,
+                       EXISTS (SELECT 1 FROM world_tiles n
+                               WHERE n.map_id = t.map_id AND n.id = ANY(t.neighbors)
+                                 AND n.biome IN ('ocean', 'sea_ice')) AS coastal
                 FROM world_tiles t WHERE t.map_id = 1 AND """
     rows = conn.execute(
         select + "(t.elevation >= 0 OR t.biome = 'sea_ice')"
@@ -250,34 +250,3 @@ def read_map(conn) -> dict:
     rows.sort(key=lambda row: row["id"])
 
     return build_model(meta, rows, total, _river_columns(conn, total))
-
-
-def forget_payload() -> None:
-    """Drop the built payload. Only the tests need this: each gets a fresh schema, and a
-    cache that outlived its world would answer with the previous one's geography."""
-    global _payload
-    with _payload_lock:
-        _payload = None
-
-
-def cached_payload() -> dict | None:
-    """The built payload, or None if nobody has paid for it yet. Needs no connection."""
-    return _payload
-
-
-def build_payload(conn) -> dict:
-    """Build and keep the serialized render model. Concurrent callers share one build.
-
-    Returns the raw JSON bytes, the gzipped bytes and an ETag. Serving pre-compressed
-    bytes also keeps the gzip middleware from re-compressing 14 MB on every request.
-    """
-    global _payload
-    with _payload_lock:
-        if _payload is None:
-            raw = json.dumps(read_map(conn), separators=(",", ":")).encode()
-            _payload = {
-                "raw": raw,
-                "gzip": gzip.compress(raw, 6),
-                "etag": f'"{hashlib.sha256(raw).hexdigest()[:32]}"',
-            }
-        return _payload

@@ -14,6 +14,7 @@ import pytest
 
 from app import db, gameclock, service
 from app.db import database_now, transaction
+from app.sim.config import harvest_rate
 from app.service import balance, provision, start_upgrade
 
 
@@ -80,7 +81,7 @@ def test_production_scales_with_the_clock(database):
     with transaction() as conn:
         player = provision(conn, "Cronos")
     with transaction() as conn:
-        start = balance(conn, player["city_id"])
+        start = service.stock(conn, player["city_id"])["stone"]
         opening = database_now(conn)
 
     with transaction() as conn:
@@ -90,14 +91,15 @@ def test_production_scales_with_the_clock(database):
 
     with transaction() as conn:
         # The path a player actually takes: reading your own city settles it to the world's
-        # now, which is what turns elapsed world time into alloy.
+        # now, which is what turns elapsed world time into stone.
         service.read_city(conn, player["city_id"], player["player_id"])
     with transaction() as conn:
-        grown = balance(conn, player["city_id"]) - start
+        grown = service.stock(conn, player["city_id"])["stone"] - start
         elapsed_world = (database_now(conn) - opening).total_seconds()
     assert elapsed_world > 1800
-    # balanced = 10 milli-alloy per world second, level 0.
-    assert grown > 10 * 1800
+    # La pietra si raccoglie al secondo di MONDO, non al secondo reale: e' questo
+    # che rende l'orologio una manopola vera e non un'etichetta sopra lo stesso gioco.
+    assert grown > harvest_rate("stone", 0, 0) * 1800
 
 
 def test_a_compressed_world_lets_you_act_in_it(database):

@@ -449,6 +449,13 @@ export default function Globe() {
             <dt>Confini</dt><dd>{selected.neighbor_count} tile</dd>
           </dl>
           {water && <p className="globe-panel-note">Acqua: nessuna colonia può insediarsi qui.</p>}
+          {!water && selected.elevation >= 0 && (
+            /* A tile's ground is decided BY THE TILE, so it can be seen before it is taken:
+               the seed no longer mixes in the colony that lands on it. */
+            <a className="globe-land" href={`/colonia?tile=${selected.id}`}>
+              Scendi sul terreno →
+            </a>
+          )}
         </aside>
       )}
 

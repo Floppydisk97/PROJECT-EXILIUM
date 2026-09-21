@@ -25,12 +25,20 @@ html, body {
   left: 50%;
   transform: translateX(-50%);
   margin: 0;
-  font-size: clamp(15px, 2.4vw, 22px);
+  font-size: clamp(14px, 2vw, 19px);
   font-weight: 600;
   letter-spacing: 0.02em;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+  /* Su una pastiglia come il resto della cornice, invece che appoggiato nudo sul pianeta con
+     un'ombra pesante sotto: un titolo con l'ombra stampata addosso si legge come una scritta
+     incollata sopra la foto, e tutto il resto di questa interfaccia parla per pastiglie. */
+  background: rgba(10, 15, 21, 0.72);
+  border: 1px solid rgba(60, 80, 104, 0.5);
+  border-radius: 999px;
+  padding: 7px 18px;
+  backdrop-filter: blur(6px);
   pointer-events: none;
   text-align: center;
+  white-space: nowrap;
 }
 
 .globe-panel {
@@ -68,8 +76,10 @@ html, body {
 
 .globe-hint {
   position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
-  margin: 0; color: var(--muted); font-size: 13px; text-align: center;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); pointer-events: none;
+  margin: 0; color: var(--muted); font-size: 12px; text-align: center;
+  background: rgba(10, 15, 21, 0.66); border: 1px solid rgba(60, 80, 104, 0.4);
+  border-radius: 999px; padding: 5px 14px; backdrop-filter: blur(6px);
+  pointer-events: none;
 }
 
 .status-pill {
@@ -114,13 +124,6 @@ html, body {
   padding: 0.7rem 1rem 0.5rem; border-bottom: 1px solid #1d2733;
 }
 .colony-head h1 { font-size: 1rem; letter-spacing: 0.04em; margin: 0; opacity: 0.85; }
-.colony-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-.colony-tabs button {
-  background: #16202b; color: #b9c6d2; border: 1px solid #243040; border-radius: 999px;
-  padding: 0.25rem 0.75rem; font: inherit; font-size: 0.82rem; cursor: pointer;
-}
-.colony-tabs button:hover { background: #1d2a37; }
-.colony-tabs button.on { background: #2b4258; color: #eaf2f8; border-color: #3d5c79; }
 .colony-stage { position: relative; flex: 1; min-height: 0; }
 .colony-canvas { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .colony-canvas:active { cursor: grabbing; }
@@ -138,3 +141,198 @@ html, body {
 .colony-spacer { flex: 1; }
 .colony-note { padding: 1.2rem; color: #9fb0bf; }
 @media (max-width: 640px) { .colony-head h1 { width: 100%; } }
+
+.globe-land {
+  display: block; margin-top: 0.6rem; text-align: center; text-decoration: none;
+  background: #2b4258; color: #eaf2f8; border: 1px solid #3d5c79; border-radius: 4px;
+  padding: 0.4rem 0.6rem; font-size: 0.86rem;
+}
+.globe-land:hover { background: #35506b; }
+.colony-back { color: #9fb0bf; text-decoration: none; font-size: 0.82rem; }
+.colony-back:hover { color: #dbe6ef; }
+.colony-progress { padding: 1.2rem; color: #9fb0bf; }
+
+/* ---- La schermata della citta' ---------------------------------------------------------- */
+.city-page { max-width: 62rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
+.city-head {
+  display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+  padding: 0.7rem 0 0.6rem; border-bottom: 1px solid #1d2733;
+}
+.city-head h1 { font-size: 1.1rem; letter-spacing: 0.04em; margin: 0; }
+.city-level { font-size: 0.86rem; color: #9fb0bf; }
+.city-note { color: #9fb0bf; font-size: 0.86rem; margin: 0.5rem 0; line-height: 1.5; }
+.city-alarm { color: #e2b04a; font-size: 0.86rem; margin: 0.5rem 0; line-height: 1.5; }
+
+.city-stores { display: grid; gap: 0.7rem; grid-template-columns: repeat(3, 1fr); margin: 1rem 0; }
+.city-store { background: #121a23; border: 1px solid #1f2b38; border-radius: 6px; padding: 0.7rem 0.8rem; }
+.city-store-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem;
+  font-size: 0.8rem; color: #9fb0bf;
+}
+.city-store-head b { color: #dbe6ef; font-size: 0.86rem; }
+.city-stalled { color: #e2b04a; }
+.city-amount { font-size: 1.6rem; margin-top: 0.3rem; color: #eaf2f8; font-variant-numeric: tabular-nums; }
+
+.city-actions { display: grid; gap: 0.7rem; grid-template-columns: repeat(2, 1fr); }
+.city-card { background: #121a23; border: 1px solid #1f2b38; border-radius: 6px; padding: 0.9rem; }
+.city-card h2 { font-size: 0.92rem; margin: 0 0 0.4rem; letter-spacing: 0.03em; }
+.city-cost { font-size: 0.86rem; color: #dbe6ef; margin: 0.2rem 0 0.6rem; }
+.city-card button, .city-login button {
+  background: #2b4258; color: #eaf2f8; border: 1px solid #3d5c79; border-radius: 4px;
+  padding: 0.45rem 0.8rem; font: inherit; font-size: 0.86rem; cursor: pointer;
+}
+.city-card button:hover:enabled, .city-login button:hover:enabled { background: #35506b; }
+.city-card button:disabled { opacity: 0.45; cursor: not-allowed; }
+.city-vote { display: flex; gap: 0.4rem; margin: 0.4rem 0; }
+.city-vote button.on { background: #3d6b4f; border-color: #4f8a66; }
+.city-quiet { background: none; border: none; color: #9fb0bf; font: inherit; font-size: 0.82rem; cursor: pointer; }
+.city-quiet:hover { color: #dbe6ef; }
+
+.city-login { display: flex; flex-direction: column; gap: 0.5rem; max-width: 30rem; margin-top: 1.2rem; }
+.city-login label { font-size: 0.82rem; color: #9fb0bf; }
+.city-login input {
+  background: #0d141b; color: #eaf2f8; border: 1px solid #243040; border-radius: 4px;
+  padding: 0.5rem 0.6rem; font: inherit; font-size: 0.86rem;
+}
+.city-login button { align-self: flex-start; }
+
+@media (max-width: 640px) {
+  .city-stores, .city-actions { grid-template-columns: 1fr; }
+}
+
+.home-city {
+  position: absolute; top: 14px; left: 16px;
+  background: var(--panel-bg); border: 1px solid var(--panel-border);
+  border-radius: 999px; padding: 6px 14px; font-size: 12px; color: var(--text);
+  text-decoration: none;
+}
+.home-city:hover { border-color: #3d5c79; }
+
+.city-wide { grid-column: 1 / -1; }
+.city-works { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.city-works td { padding: 0.4rem 0.3rem; border-top: 1px solid #1b242f; vertical-align: middle; }
+.city-works tr:first-child td { border-top: none; }
+.city-dim { color: #8497a7; }
+.city-price { display: block; color: #7d8fa0; font-size: 0.76rem; margin-top: 0.15rem; }
+.city-count { white-space: nowrap; color: #dbe6ef; text-align: right; }
+.city-buttons { display: flex; gap: 0.3rem; flex-wrap: wrap; justify-content: flex-end; }
+.city-buttons button { padding: 0.3rem 0.55rem; font-size: 0.8rem; }
+@media (max-width: 860px) {
+  .city-works td { display: block; text-align: left; }
+  .city-buttons { justify-content: flex-start; }
+}
+
+/* ---- Lo schermo di gioco ---------------------------------------------------------------- */
+/* Il terreno riempie la finestra e l'interfaccia ci galleggia sopra: un gioco non ha margini,
+   e un pannello che RUBA spazio alla mappa e' un pannello che si chiude e basta. */
+.game { position: fixed; inset: 0; background: #0b1016; overflow: hidden; }
+.game-stage { position: absolute; inset: 0; }
+.game-stage .colony-stage, .game-stage canvas { width: 100%; height: 100%; display: block; }
+
+.hud-top {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 3;
+  display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem;
+  background: linear-gradient(to bottom, rgba(8, 13, 18, 0.94), rgba(8, 13, 18, 0.72));
+  border-bottom: 1px solid #1d2733; backdrop-filter: blur(6px);
+}
+.hud-resources { display: flex; gap: 0.4rem; flex-wrap: wrap; flex: 1; align-items: center; }
+.hud-right { display: flex; gap: 0.5rem; align-items: center; }
+.hud-pill {
+  display: inline-flex; align-items: baseline; gap: 0.35rem;
+  background: rgba(18, 26, 35, 0.9); border: 1px solid #243040; border-radius: 999px;
+  padding: 0.22rem 0.6rem; font-size: 0.82rem; white-space: nowrap;
+}
+.hud-glyph { font-size: 0.9rem; }
+.hud-value { color: #eaf2f8; font-variant-numeric: tabular-nums; }
+.hud-rate { color: #8497a7; font-size: 0.74rem; }
+.hud-full { color: #e2b04a; font-size: 0.74rem; }
+.hud-warn { border-color: #6b4a1e; background: rgba(48, 34, 14, 0.9); }
+.hud-clock, .hud-level { color: #9fb0bf; font-size: 0.78rem; white-space: nowrap; }
+.hud-scout-title { color: #dbe6ef; font-size: 0.9rem; font-weight: 600; padding-right: 0.3rem; }
+.hud-icon {
+  background: rgba(18, 26, 35, 0.9); border: 1px solid #243040; border-radius: 6px;
+  color: #eaf2f8; font: inherit; font-size: 1rem; line-height: 1;
+  padding: 0.3rem 0.5rem; cursor: pointer;
+}
+.hud-icon:hover { border-color: #3d5c79; }
+
+.hud-corner {
+  position: absolute; left: 0.7rem; bottom: 0.7rem; z-index: 3;
+  display: flex; align-items: flex-end; gap: 0.6rem;
+}
+.hud-minimap {
+  width: 160px; height: 160px; display: block; cursor: crosshair;
+  border: 1px solid #2b3a4a; border-radius: 4px; background: #0b1016;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+}
+.hud-buttons { display: flex; flex-direction: column; gap: 0.35rem; }
+.hud-buttons button {
+  background: rgba(18, 26, 35, 0.92); border: 1px solid #243040; border-radius: 6px;
+  color: #eaf2f8; font: inherit; font-size: 0.82rem; padding: 0.38rem 0.7rem;
+  cursor: pointer; text-align: left; white-space: nowrap;
+}
+.hud-buttons button:hover { border-color: #3d5c79; }
+
+.game-panel {
+  position: absolute; top: 3rem; right: 0.7rem; bottom: 0.7rem; z-index: 3;
+  width: min(30rem, calc(100vw - 1.4rem)); overflow-y: auto;
+  background: rgba(11, 16, 22, 0.96); border: 1px solid #1f2b38; border-radius: 8px;
+  padding: 0.8rem; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+}
+.game-panel .city-actions { grid-template-columns: 1fr; }
+/* Dentro il pannello stretto la tabella degli impianti non e' piu' una tabella: ogni impianto
+   diventa un blocco, col suo nome sopra e i comandi sotto in una riga sola. La stessa regola
+   della pagina larga, applicata a 30rem invece che a 860px di finestra. */
+.game-panel .city-works tr { display: block; border-top: 1px solid #1b242f; padding: 0.45rem 0; }
+.game-panel .city-works tr:first-child { border-top: none; padding-top: 0; }
+.game-panel .city-works td { display: block; border-top: none; padding: 0 0 0.25rem; text-align: left; }
+.game-panel .city-works td:last-child { padding-bottom: 0; }
+.game-panel .city-count { text-align: left; }
+.game-panel .city-count:empty { display: none; }
+.game-panel .city-buttons { justify-content: flex-start; }
+
+.hud-menu-back {
+  position: absolute; inset: 0; z-index: 5; display: grid; place-items: center;
+  background: rgba(4, 7, 10, 0.7);
+}
+.hud-menu {
+  width: min(26rem, calc(100vw - 2rem));
+  background: #121a23; border: 1px solid #1f2b38; border-radius: 8px; padding: 1rem;
+  display: flex; flex-direction: column; gap: 0.45rem;
+}
+.hud-menu h2 { margin: 0 0 0.2rem; font-size: 1rem; }
+.hud-menu h3 { margin: 0.3rem 0 0; font-size: 0.86rem; color: #9fb0bf; }
+.hud-menu hr { border: none; border-top: 1px solid #1f2b38; margin: 0.4rem 0 0; }
+.hud-menu button {
+  background: #2b4258; color: #eaf2f8; border: 1px solid #3d5c79; border-radius: 4px;
+  padding: 0.45rem 0.7rem; font: inherit; font-size: 0.86rem; cursor: pointer; text-align: left;
+}
+.hud-menu button:hover { background: #35506b; }
+.hud-menu-close { background: #1b2530 !important; border-color: #243040 !important; }
+.hud-menu-note { color: #9fb0bf; font-size: 0.8rem; margin: 0; line-height: 1.5; }
+.hud-menu-note code { color: #dbe6ef; }
+
+/* Dove sta il server. Tre schermate lo mostrano, quindi una regola sola. */
+.server-field {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem;
+  align-items: center; max-width: 34rem; margin-top: 0.6rem;
+}
+.server-field label { color: var(--muted); font-size: 0.78rem; }
+.server-field input {
+  background: #0c1219; border: 1px solid #243040; border-radius: 4px; color: var(--text);
+  font: inherit; font-size: 0.84rem; padding: 0.4rem 0.55rem; min-width: 0;
+}
+.server-field input:focus { outline: none; border-color: #3d5c79; }
+.server-field button { padding: 0.4rem 0.7rem; font-size: 0.82rem; white-space: nowrap; }
+
+@media (max-width: 720px) {
+  .hud-minimap { width: 108px; height: 108px; }
+  .hud-pill { font-size: 0.76rem; padding: 0.18rem 0.45rem; }
+  .game-panel { top: auto; height: 55vh; left: 0.7rem; width: auto; }
+  /* Su un telefono sei pastiglie a capo mangiavano un quarto dello schermo: restano su una
+     riga sola e si scorrono di lato, perche' la barra deve COSTARE due righe sempre. */
+  .hud-resources { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .hud-resources::-webkit-scrollbar { display: none; }
+  /* L'ora del mondo e' la cosa meno utile della barra: su uno schermo stretto cede il posto. */
+  .hud-clock { display: none; }
+}

@@ -28,6 +28,26 @@ Le migrazioni devono completarsi prima dell'avvio di API e worker.
 - OpenAPI: http://localhost:8000/docs
 - Liveness: `/health/live`; readiness (DB + tick recuperati): `/health/ready`
 
+### Giocare, in tre comandi
+
+```bash
+cp .env.example .env
+docker compose up --build -d
+docker compose exec api python -m app.mapcli          # il pianeta, una volta sola
+docker compose exec api python -m app.cli "Prima colonia"
+```
+
+L'ultimo comando stampa un **token**: è l'unica volta che lo vedi. Poi:
+
+1. apri <http://localhost:3000> — il pianeta, e si naviga senza token perché è un file;
+2. clicca una terra e scendi: la casella dice cosa rende *prima* di sceglierla;
+3. apri <http://localhost:3000/citta>, incolla il token, e la colonia è tua.
+
+Il visore sa già dove sta il server: l'indirizzo entra nella compilazione (`NEXT_PUBLIC_API_URL`,
+impostato da `compose.yaml` su `http://localhost:8000`, che è l'indirizzo visto dal BROWSER e
+non dalla rete di compose). Per puntare altrove c'è il campo **Server**, nella pagina della
+colonia e nel menu di gioco.
+
 Provisionare un giocatore locale (il token viene mostrato una sola volta):
 
 ```powershell
@@ -64,7 +84,7 @@ Il generatore v2 produce forme del terreno riconoscibili, non macchie di rumore:
   connesse danno a ogni tile la dimensione della sua massa continentale;
 - **poli** — poli più freddi, quindi calotte glaciali e banchisa formano vere calotte.
 
-`GET /world/map` serve il *render model* **in colonne**. A questa scala un oggetto JSON per
+`mapservice.read_map` produce il *render model* **in colonne**. A questa scala un oggetto JSON per
 tile spenderebbe più byte a ripetere i nomi dei campi che sulla geografia, quindi ogni campo
 è un array parallelo; e i vertici dei poligoni sono centroidi condivisi da tre tile ciascuno,
 quindi vivono in un unico pool e il tile ne cita solo gli indici. Insieme portano il payload a

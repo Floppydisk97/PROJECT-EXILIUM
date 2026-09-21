@@ -12,9 +12,12 @@ import pytest
 from app import citygen
 from app.db import transaction
 from app.mapservice import generate_and_store
-from app.service import DomainError, city_ground, land, provision
+from app.service import DomainError, _site_of, city_ground, city_state, land, provision
+from app.sim.config import POLICY_RATES, production_rate
 
 FREQUENCY = 12       # 1442 tiles: enough for coasts, rivers and several biomes
+SMALL = 96           # a test-sized colony: production is 768 a side and three seconds, and
+                     # these assertions are about shape, not about scale
 
 
 def world():
@@ -28,7 +31,10 @@ def player(name="Exilium"):
 
 
 def a_land_tile(biome=None, with_river=False):
-    clause = "elevation >= 0 AND biome NOT IN ('ocean', 'lake', 'sea_ice')"
+    # Not frozen: a tile can be dry by elevation and still be ice end to end, and landing
+    # there is refused -- see `test_a_site_with_nothing_to_build_on_is_refused`.
+    clause = ("elevation >= 0 AND biome NOT IN ('ocean', 'lake', 'sea_ice')"
+              " AND temperature > -8")
     if biome:
         clause += f" AND biome = '{biome}'"
     if with_river:
@@ -59,11 +65,11 @@ def test_a_colony_cannot_land_twice_or_move_afterwards(database):
     future code path is free to forget."""
     world()
     p = player()
-    first, second = a_land_tile(), None
     with transaction() as conn:
         rows = conn.execute(
             "SELECT id FROM world_tiles WHERE map_id = 1 AND elevation >= 0"
-            " AND biome NOT IN ('ocean','lake','sea_ice') ORDER BY id LIMIT 2"
+            " AND biome NOT IN ('ocean','lake','sea_ice') AND temperature > -8"
+            " ORDER BY id LIMIT 2"
         ).fetchall()
     first, second = rows[0]["id"], rows[1]["id"]
     with transaction() as conn:
@@ -107,10 +113,14 @@ def test_water_is_refused(database):
     assert error.value.detail == "not_dry_land"
 
 
-def test_the_ground_is_not_stored_and_comes_back_the_same_every_time(database):
-    """The heart of it. Sixteen thousand cells a colony would be eighty million rows at the
-    size this planet is built for; what is kept is a thirty-two character seed. Which is only
-    sound if regenerating really does give the same place back."""
+def test_the_ground_is_not_stored_and_the_seed_is_what_travels(database):
+    """The heart of it. 590.000 cells a colony would be three billion rows at the size this
+    planet is built for; what is kept is a thirty-two character seed -- and what is SENT is
+    that same seed, not the map it grows.
+
+    Sending the map was nine megabytes and three seconds of CPU per request, for cells the
+    receiver can grow in four tenths of a second from what is returned here.
+    """
     world()
     p = player()
     with transaction() as conn:
@@ -119,7 +129,11 @@ def test_the_ground_is_not_stored_and_comes_back_the_same_every_time(database):
         first = city_ground(conn, p["city_id"], p["player_id"])
         second = city_ground(conn, p["city_id"], p["player_id"])
     assert first == second
-    assert len(first["cells"]["ground"]) == first["size"] ** 2
+    assert "cells" not in first
+    # Everything the ground needs to be grown, and nothing that has to be carried.
+    assert set(first) == {"city_id", "tile_id", "seed", "size", "cell_metres",
+                          "site", "ground_names"}
+    assert len(first["seed"]) == 32
     with transaction() as conn:
         # Nothing about those cells went anywhere near a table.
         tables = conn.execute(
@@ -129,17 +143,34 @@ def test_the_ground_is_not_stored_and_comes_back_the_same_every_time(database):
     assert tables == 0
 
 
-def test_two_colonies_on_identical_ground_get_different_maps(database):
-    """Random at landing. The seed mixes the city, so the same tile twice -- which cannot
-    happen now, but will the day a colony is abandoned -- is not the same map twice."""
+def test_the_same_seed_gives_the_same_place_back(database):
+    """Which is the only reason storing a seed instead of a map is sound. It used to be
+    checked through the endpoint, back when the endpoint shipped the cells; the property
+    belongs to the generator, so it is asked of the generator."""
+    site = citygen.Site("temperate_forest", 220, 12.0, 1100, 900, False)
+    first = citygen.generate("abc", site, SMALL)
+    second = citygen.generate("abc", site, SMALL)
+    assert first.ground == second.ground and first.height == second.height
+    assert first.fertility == second.fertility and first.vegetation == second.vegetation
+    # ... and a different seed is a different place, or the seed would not be doing anything.
+    assert citygen.generate("abd", site, SMALL).ground != first.ground
+
+
+def test_the_tile_decides_the_ground_not_the_colony(database):
+    """A change of rule, deliberate. The seed used to mix the city id, so the ground was rolled
+    at the moment of landing and nobody could know what they were taking until they had taken
+    it. Scouting a site and then choosing it is a better game -- and it costs nothing, because
+    one colony to a tile means two colonies never want different ground from the same place.
+
+    It is also what lets the planet viewer show you the ground BEFORE you commit to it.
+    """
     world()
     tile = a_land_tile()
-    first = citygen.seed_for("Approdo", tile, uuid4())
-    second = citygen.seed_for("Approdo", tile, uuid4())
-    assert first != second
-    # ... and a different world hands out different ground for the same tile and colony.
-    city = uuid4()
-    assert citygen.seed_for("Approdo", tile, city) != citygen.seed_for("Altrove", tile, city)
+    assert citygen.seed_for("Approdo", tile) == citygen.seed_for("Approdo", tile)
+    # A different tile is a different place...
+    assert citygen.seed_for("Approdo", tile) != citygen.seed_for("Approdo", tile + 1)
+    # ... and a different world does not hand out the old one's ground.
+    assert citygen.seed_for("Approdo", tile) != citygen.seed_for("Altrove", tile)
 
 
 def test_an_unlanded_colony_has_no_ground(database):
@@ -157,9 +188,9 @@ def test_the_biome_really_shapes_the_ground(database):
     ordering rather than on exact numbers, because the numbers are balancing knobs in
     BIOME_RULES and are meant to be turned.
     """
-    swamp = citygen.generate("x", citygen.Site("tropical_swamp", 40, 26.0, 2400, 0, False))
-    desert = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False))
-    ice = citygen.generate("x", citygen.Site("ice_sheet", 900, -30.0, 120, 0, False))
+    swamp = citygen.generate("x", citygen.Site("tropical_swamp", 40, 26.0, 2400, 0, False), SMALL)
+    desert = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False), SMALL)
+    ice = citygen.generate("x", citygen.Site("ice_sheet", 900, -30.0, 120, 0, False), SMALL)
 
     assert desert.buildable > swamp.buildable * 3
     assert _mean(swamp.fertility) > _mean(desert.fertility) * 10
@@ -170,8 +201,8 @@ def test_the_biome_really_shapes_the_ground(database):
 def test_a_river_makes_its_banks_worth_landing_on(database):
     """The one reason to land in a desert. Without it the site looked interesting on the
     planet and was worthless on the ground."""
-    dry = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False))
-    watered = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 3100, False))
+    dry = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False), SMALL)
+    watered = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 3100, False), SMALL)
     assert max(watered.fertility) > 8 * max(dry.fertility)
     assert max(watered.vegetation) > 10 * max(dry.vegetation)
     # The bank is silt, not the sand the river crossed -- which is what stops the bonus being
@@ -182,3 +213,61 @@ def test_a_river_makes_its_banks_worth_landing_on(database):
 
 def _mean(values):
     return sum(values) / len(values)
+
+
+def test_landing_writes_down_what_the_ground_is_worth(database):
+    """The map is grown once, here, and reduced to three numbers. Nowhere else: production is
+    worked out every time somebody looks at a city, and a colony is 590.000 cells."""
+    world()
+    p = player()
+    with transaction() as conn:
+        landed = land(conn, p["city_id"], p["player_id"], a_land_tile())
+    assert {"site_food", "site_timber", "site_stone", "site_effort", "site_room"} <= set(landed)
+    with transaction() as conn:
+        row = conn.execute(
+            "SELECT site_food, site_timber, site_stone, site_room FROM cities WHERE id = %s",
+            (p["city_id"],),
+        ).fetchone()
+    assert row["site_food"] == landed["site_food"]
+    assert row["site_room"] > 0
+    # And the numbers are the map's own, not a guess: regrowing from the stored seed agrees.
+    with transaction() as conn:
+        seed = conn.execute("SELECT map_seed FROM cities WHERE id = %s",
+                            (p["city_id"],)).fetchone()["map_seed"]
+        site, _tile = _site_of(conn, a_land_tile())
+    assert citygen.generate(seed, site).economy.food == row["site_food"]
+
+
+def test_a_colony_in_orbit_earns_exactly_what_it_earned_before_the_ground_mattered(database):
+    """Null is not zero. A colony that has not landed has no ground to be crowded against,
+    and ruleset 2 must not quietly tax it for standing nowhere."""
+    world()
+    p = player()
+    with transaction() as conn:
+        row = conn.execute("SELECT * FROM cities WHERE id = %s", (p["city_id"],)).fetchone()
+    assert row["site_room"] is None
+    state = city_state(row)
+    assert state.site_food == 0 and state.site_effort == 0 and state.site_room is None
+    assert production_rate("balanced", 7, state.site_food) == POLICY_RATES["balanced"] + 7 * 5
+
+
+def test_a_site_with_nothing_to_build_on_is_refused(database):
+    """Dry by elevation and yet frozen end to end: an ice cap has not one buildable cell.
+
+    Landing is irreversible, so letting a colony down there would strand it for ever with
+    nothing it could ever build. Hard ground is a decision -- a swamp has almost no room and
+    is allowed -- but NO ground is a trap, and the planet has plenty of it.
+    """
+    world()
+    p = player()
+    with transaction() as conn:
+        frozen = conn.execute(
+            """SELECT id FROM world_tiles WHERE map_id = 1 AND elevation >= 0
+                 AND biome NOT IN ('ocean', 'lake', 'sea_ice') AND temperature <= -8
+               ORDER BY id LIMIT 1"""
+        ).fetchone()
+    if frozen is None:
+        pytest.skip("this test world happens to have no frozen land")
+    with pytest.raises(DomainError) as error, transaction() as conn:
+        land(conn, p["city_id"], p["player_id"], frozen["id"])
+    assert error.value.detail == "no_ground"

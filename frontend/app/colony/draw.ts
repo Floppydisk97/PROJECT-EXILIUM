@@ -3,58 +3,112 @@
 // depth is entirely in the shadow under a tree and in the order the trees are painted.
 
 import {
-  ColonyGround, GROUND_STYLE, Prop, WATER, groundColor, hash, propAt,
+  ColonyGround, Prop, ROUGHNESS, WATER, hash, litInto, patches, propAt,
 } from "./ground";
+import { lightOf, reliefOf } from "./light";
 
 /** Pixels per cell in the terrain buffer. More than one, because a flat square per cell reads
- *  as a spreadsheet: the grain and the blended edges between two grounds are what make it look
- *  like earth, and they need somewhere to live. */
-export const SUB = 4;
+ *  as a spreadsheet: the blended edges between two grounds need somewhere to live. Two rather
+ *  than four, because a colony is 768 cells a side now -- four would be a 3072x3072 buffer,
+ *  9.4 megapixels, past what Safari on a phone will allocate. The fine texture is laid over
+ *  the top at screen resolution anyway, so the buffer only owes us the blending.
+ *
+ *  Below this many pixels per cell nothing standing on the ground is drawn: at a wide zoom a
+ *  viewport covers a hundred thousand cells, and a hundred thousand sprites a frame is a
+ *  slideshow. The terrain already carries the vegetation in its colour. */
+export const SUB = 2;
+export const PROP_ZOOM = 7;
 
 /** Paint the ground into an offscreen buffer, once. It never changes, so panning and zooming
- *  are one `drawImage` rather than sixteen thousand fills. */
+ *  are one `drawImage` rather than half a million fills.
+ *
+ *  Tre cose succedono qui, e sono tre difetti che si vedevano tutti nella stessa schermata:
+ *  la LUCE (il rilievo, che prima non esisteva: una collina e una piana erano lo stesso
+ *  colore), il CONFINE fra due terreni (prima un mezzatinta a caso, adesso un campionamento
+ *  bilineare con il bordo spostato a caso, che e' frastagliato senza essere sporco) e la
+ *  GRANA (prima puntinio bianco a tutte le scale, adesso macchie larghe quanto il terreno
+ *  che stanno nel buffer e quindi si ingrandiscono insieme a lui).
+ */
 export function paintTerrain(ground: ColonyGround, seed: number): HTMLCanvasElement {
   const size = ground.size;
+  const relief = reliefOf(ground);
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = size * SUB;
   const context = canvas.getContext("2d")!;
   const image = context.createImageData(size * SUB, size * SUB);
   const data = image.data;
 
-  const colors: [number, number, number][] = [];
-  for (let i = 0; i < size * size; i++) colors.push(groundColor(ground, i));
+  const red = new Float32Array(size * size);
+  const green = new Float32Array(size * size);
+  const blue = new Float32Array(size * size);
+  const wet = new Uint8Array(size * size);
+  const leaf = new Uint8Array(size * size);
+  const rough = new Float32Array(size * size);
+  const tint = [0, 0, 0];
+  for (let i = 0; i < size * size; i++) {
+    litInto(ground, relief, i, tint);
+    red[i] = tint[0]; green[i] = tint[1]; blue[i] = tint[2];
+    const name = ground.ground_names[ground.cells.ground[i]];
+    wet[i] = WATER.has(name) ? 1 : 0;
+    leaf[i] = ground.cells.vegetation[i];
+    rough[i] = ROUGHNESS[name] ?? 1;
+  }
 
-  for (let cy = 0; cy < size; cy++) {
-    for (let cx = 0; cx < size; cx++) {
-      const here = colors[cy * size + cx];
-      const name = ground.ground_names[ground.cells.ground[cy * size + cx]];
-      const water = WATER.has(name);
-      for (let sy = 0; sy < SUB; sy++) {
-        for (let sx = 0; sx < SUB; sx++) {
-          // Bleed toward whichever neighbour this sub-pixel leans to, with a hashed wobble so
-          // the seam between soil and sand is ragged rather than ruled.
-          const towardX = sx < SUB / 2 ? -1 : 1;
-          const towardY = sy < SUB / 2 ? -1 : 1;
-          const lean = Math.abs((sx + 0.5) / SUB - 0.5) + Math.abs((sy + 0.5) / SUB - 0.5);
-          const wobble = hash(seed, cx * SUB + sx, cy * SUB + sy, 7);
-          let r = here[0], g = here[1], b = here[2];
-          if (lean * 1.15 + wobble * 0.45 > 0.62) {
-            const nx = Math.min(size - 1, Math.max(0, cx + towardX));
-            const ny = Math.min(size - 1, Math.max(0, cy + towardY));
-            const near = colors[ny * size + nx];
-            r = (r + near[0]) / 2; g = (g + near[1]) / 2; b = (b + near[2]) / 2;
-          }
-          // A little grain here for large-scale mottling; the fine texture is laid over the
-          // top at SCREEN resolution instead, because a buffer of four pixels a cell blown up
-          // to forty is a mosaic, and that is exactly what it looked like.
-          const grain = (hash(seed, cx * SUB + sx, cy * SUB + sy, 8) - 0.5) * (water ? 7 : 14);
-          const at = ((cy * SUB + sy) * size * SUB + (cx * SUB + sx)) * 4;
-          data[at] = clamp(r + grain);
-          data[at + 1] = clamp(g + grain);
-          data[at + 2] = clamp(b + grain);
-          data[at + 3] = 255;
+  const span = size * SUB;
+  for (let sy = 0; sy < span; sy++) {
+    for (let sx = 0; sx < span; sx++) {
+      // Dove cade questo sottopixel, in celle, spostato a caso di una frazione di cella: e'
+      // lo spostamento che rende il confine fra sabbia e terra un orlo invece di un righello.
+      const wobbleX = (hash(seed, sx, sy, 7) - 0.5) * 0.9;
+      const wobbleY = (hash(seed, sx, sy, 11) - 0.5) * 0.9;
+      const fx = (sx + 0.5) / SUB - 0.5 + wobbleX;
+      const fy = (sy + 0.5) / SUB - 0.5 + wobbleY;
+      const x0 = Math.max(0, Math.min(size - 1, Math.floor(fx)));
+      const y0 = Math.max(0, Math.min(size - 1, Math.floor(fy)));
+      const x1 = Math.min(size - 1, x0 + 1);
+      const y1 = Math.min(size - 1, y0 + 1);
+      const tx = Math.max(0, Math.min(1, fx - x0));
+      const ty = Math.max(0, Math.min(1, fy - y0));
+      const i00 = y0 * size + x0, i10 = y0 * size + x1;
+      const i01 = y1 * size + x0, i11 = y1 * size + x1;
+      const w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty);
+      const w01 = (1 - tx) * ty, w11 = tx * ty;
+
+      let r = red[i00] * w00 + red[i10] * w10 + red[i01] * w01 + red[i11] * w11;
+      let g = green[i00] * w00 + green[i10] * w10 + green[i01] * w01 + green[i11] * w11;
+      let b = blue[i00] * w00 + blue[i10] * w10 + blue[i01] * w01 + blue[i11] * w11;
+
+      const here = ty < 0.5 ? (tx < 0.5 ? i00 : i10) : (tx < 0.5 ? i01 : i11);
+
+      if (wet[here]) {
+        // L'acqua non ha grana: ha onde, lunghe e quasi diritte come il vento le fa. La
+        // prima versione mescolava
+        // l'onda con una macchia larga e veniva fuori un corallo cerebrale.
+        const wave = Math.sin((sx * 0.35 + sy) * 0.075
+                              + patches(seed, sx, sy, 31, 40) * 2.2);
+        const lift = wave * 2.6 + (patches(seed, sx, sy, 32, 14) - 0.5) * 3.0;
+        r += lift * 0.7; g += lift; b += lift * 1.15;
+      } else {
+        // Macchie larghe, nel buffer, cosi' crescono col terreno invece di restare polvere
+        // sullo schermo. Due frequenze: chiazze di suolo, e sotto di esse il puntinio fine.
+        const grit = rough[here];
+        const broad = (patches(seed, sx, sy, 12, 13) - 0.5) * 17 * grit;
+        const fine = (hash(seed, sx, sy, 8) - 0.5) * 9 * grit;
+        r += broad + fine; g += broad * 0.96 + fine; b += broad * 0.82 + fine;
+        // E la chioma: dove c'e' bosco, la macchia scurisce in verde invece che in grigio --
+        // un bosco visto dall'alto e' fatto di masse e di buchi, non di tinta unita.
+        if (leaf[here] > 30) {
+          const canopy = (patches(seed, sx, sy, 13, 7) - 0.5)
+                       * Math.min(1, (leaf[here] - 30) / 45) * 19;
+          r -= canopy * 0.85; g -= canopy * 0.55; b -= canopy * 0.80;
         }
       }
+
+      const at = (sy * span + sx) * 4;
+      data[at] = clamp(r);
+      data[at + 1] = clamp(g);
+      data[at + 2] = clamp(b);
+      data[at + 3] = 255;
     }
   }
   context.putImageData(image, 0, 0);
@@ -99,6 +153,8 @@ export function paintProps(
   view: { x0: number; y0: number; x1: number; y1: number; scale: number },
 ): number {
   const size = ground.size;
+  if (view.scale < PROP_ZOOM) return 0;
+  const relief = reliefOf(ground);
   const x0 = Math.max(0, Math.floor(view.x0) - 1);
   const x1 = Math.min(size - 1, Math.ceil(view.x1) + 1);
   const y0 = Math.max(0, Math.floor(view.y0) - 1);
@@ -109,37 +165,61 @@ export function paintProps(
     for (let x = x0; x <= x1; x++) {
       const prop = propAt(ground, seed, x, y);
       if (prop === null) continue;
-      drawProp(context, prop, view.scale);
+      // La pianta prende la luce della cella su cui sta. Senza, un bosco su un fianco in
+      // ombra restava verde acceso e sembrava incollato sopra il terreno invece che dentro.
+      drawProp(context, prop, view.scale, lightOf(relief, y * size + x));
       drawn++;
     }
   }
   return drawn;
 }
 
-function drawProp(context: CanvasRenderingContext2D, prop: Prop, scale: number): void {
+/** Il verde della foglia e quello della foglia patita: la terra povera non fa boschi scuri,
+ *  fa boschi gialli, ed e' la differenza fra una macchia mediterranea e una foresta. */
+const LEAF_DARK: [number, number, number] = [34, 58, 32];
+const LEAF_LIT: [number, number, number] = [62, 96, 48];
+const DRY_DARK: [number, number, number] = [86, 78, 38];
+const DRY_LIT: [number, number, number] = [132, 120, 60];
+
+function tone(
+  a: [number, number, number], b: [number, number, number], t: number, light: number,
+): string {
+  const k = t < 0 ? 0 : t > 1 ? 1 : t;
+  const l = Math.max(0.55, Math.min(1.35, light));
+  const r = Math.round(Math.min(255, (a[0] + (b[0] - a[0]) * k) * l));
+  const g = Math.round(Math.min(255, (a[1] + (b[1] - a[1]) * k) * l));
+  const bl = Math.round(Math.min(255, (a[2] + (b[2] - a[2]) * k) * l));
+  return `rgb(${r}, ${g}, ${bl})`;
+}
+
+function drawProp(
+  context: CanvasRenderingContext2D, prop: Prop, scale: number, light: number,
+): void {
   const px = prop.x * scale;
   const py = prop.y * scale;
   const s = prop.size * scale;
 
   // The shadow first, and always down and a little right, so the whole colony agrees about
   // where the light is. Consistency is what makes flat sprites read as standing up -- it is
-  // the only third dimension there is here.
-  context.fillStyle = "rgba(0, 0, 0, 0.26)";
+  // the only third dimension there is here. In ombra l'ombra si smorza: dove non batte il
+  // sole non c'e' niente che possa proiettarla.
+  context.fillStyle = `rgba(14, 18, 26, ${0.10 + 0.20 * Math.min(1, Math.max(0, light - 0.55))})`;
   context.beginPath();
   context.ellipse(px + s * 0.16, py + s * 0.10, s * 0.40, s * 0.17, 0, 0, Math.PI * 2);
   context.fill();
 
-  if (prop.kind === "rock") return drawRock(context, prop, px, py, s);
-  if (prop.kind === "tuft") return drawTuft(context, prop, px, py, s);
-  drawPlant(context, prop, px, py, s);
+  if (prop.kind === "rock") return drawRock(context, prop, px, py, s, light);
+  if (prop.kind === "tuft") return drawTuft(context, prop, px, py, s, light);
+  drawPlant(context, prop, px, py, s, light);
 }
 
 function drawRock(
   context: CanvasRenderingContext2D, prop: Prop, px: number, py: number, s: number,
+  light: number,
 ): void {
   // An irregular polygon, not an ellipse: boulders have corners, and a field of identical
   // grey eggs is what the first attempt looked like.
-  const grey = 88 + prop.hue * 40;
+  const grey = (80 + prop.hue * 46) * Math.max(0.6, Math.min(1.3, light));
   const points = 6 + Math.floor(prop.hue * 3);
   context.beginPath();
   for (let i = 0; i < points; i++) {
@@ -156,7 +236,7 @@ function drawRock(
   context.lineWidth = Math.max(0.7, s * 0.05);
   context.stroke();
   // A lit facet, up and to the left, matching the shadow's direction.
-  context.fillStyle = "rgba(255, 255, 255, 0.13)";
+  context.fillStyle = `rgba(255, 252, 238, ${0.10 + 0.09 * Math.max(0, light - 1)})`;
   context.beginPath();
   context.ellipse(px - s * 0.10, py - s * 0.20, s * 0.17, s * 0.11, -0.6, 0, Math.PI * 2);
   context.fill();
@@ -164,16 +244,18 @@ function drawRock(
 
 function drawTuft(
   context: CanvasRenderingContext2D, prop: Prop, px: number, py: number, s: number,
+  light: number,
 ): void {
-  context.strokeStyle = `rgba(${84 + prop.hue * 24}, ${104 + prop.hue * 30}, ${54}, 0.85)`;
+  context.strokeStyle = tone(LEAF_LIT, DRY_LIT, prop.dry, light * (0.8 + prop.hue * 0.4));
   context.lineWidth = Math.max(0.5, s * 0.16);
   context.lineCap = "round";
   context.beginPath();
   for (let blade = -1; blade <= 1; blade++) {
+    const tilt = blade + prop.lean * 1.6;
     context.moveTo(px + blade * s * 0.18, py);
     context.quadraticCurveTo(
-      px + blade * s * 0.30, py - s * 0.40,
-      px + blade * s * 0.42, py - s * 0.66,
+      px + tilt * s * 0.30, py - s * 0.40,
+      px + tilt * s * 0.46, py - s * 0.66,
     );
   }
   context.stroke();
@@ -181,6 +263,7 @@ function drawTuft(
 
 function drawPlant(
   context: CanvasRenderingContext2D, prop: Prop, px: number, py: number, s: number,
+  light: number,
 ): void {
   const tree = prop.kind === "tree";
   const base = tree ? 0.62 : 0.26;         // how high the canopy sits above the ground
@@ -188,45 +271,49 @@ function drawPlant(
 
   if (tree) {
     // A tapered trunk, drawn before the canopy so the canopy sits on top of it.
-    context.fillStyle = `rgb(${58 + prop.hue * 16}, ${40 + prop.hue * 10}, ${26})`;
+    const bark = Math.max(0.6, Math.min(1.25, light));
+    context.fillStyle = `rgb(${(54 + prop.hue * 22) * bark}, ${(38 + prop.hue * 14) * bark}, ${26 * bark})`;
     context.beginPath();
     context.moveTo(px - s * 0.09, py);
-    context.lineTo(px - s * 0.05, py - s * 0.58);
-    context.lineTo(px + s * 0.05, py - s * 0.58);
+    context.lineTo(px - s * 0.05 + prop.lean * s * 0.20, py - s * 0.58);
+    context.lineTo(px + s * 0.05 + prop.lean * s * 0.20, py - s * 0.58);
     context.lineTo(px + s * 0.09, py);
     context.closePath();
     context.fill();
   }
 
   // The canopy: overlapping lobes in two tones, dark underneath and lighter toward the light.
-  // One circle is a ball; five off-centre circles are a crown.
-  const dark = `rgb(${34 + prop.hue * 16}, ${58 + prop.hue * 26}, ${32 + prop.hue * 12})`;
-  const lit = `rgb(${52 + prop.hue * 22}, ${86 + prop.hue * 34}, ${44 + prop.hue * 16})`;
-  const lobes = tree ? 5 : 3;
+  // One circle is a ball; five off-centre circles are a crown. Il numero dei lobi e la loro
+  // schiacciatura cambiano da pianta a pianta: cinque cerchi sempre uguali sono un timbro.
+  const dark = tone(LEAF_DARK, DRY_DARK, prop.dry, light * (0.9 + prop.hue * 0.2));
+  const lit = tone(LEAF_LIT, DRY_LIT, prop.dry, light * (0.9 + prop.hue * 0.2));
+  const lobes = (tree ? 4 : 3) + Math.floor(prop.hue * 3);
+  const squash = 0.34 + prop.dry * 0.12 + prop.hue * 0.12;
+  const cx = px + prop.lean * s * 0.22;
   const cy = py - s * base;
+  const turn = prop.hue * 6.283;
 
   context.fillStyle = dark;
   for (let lobe = 0; lobe < lobes; lobe++) {
-    const angle = (lobe / lobes) * Math.PI * 2 + prop.hue * 4.2;
+    const angle = (lobe / lobes) * Math.PI * 2 + turn;
     context.beginPath();
     context.arc(
-      px + Math.cos(angle) * s * spread * 0.55,
-      cy + Math.sin(angle) * s * spread * 0.40,
-      s * (tree ? 0.30 : 0.24), 0, Math.PI * 2,
+      cx + Math.cos(angle) * s * spread * 0.58,
+      cy + Math.sin(angle) * s * spread * squash * 1.15,
+      s * (tree ? 0.30 : 0.24) * (0.85 + prop.lean * 0.3), 0, Math.PI * 2,
     );
     context.fill();
   }
   context.fillStyle = lit;
   for (let lobe = 0; lobe < lobes; lobe++) {
-    const angle = (lobe / lobes) * Math.PI * 2 + prop.hue * 4.2;
+    const angle = (lobe / lobes) * Math.PI * 2 + turn;
     context.beginPath();
     context.arc(
-      px + Math.cos(angle) * s * spread * 0.50 - s * 0.06,
-      cy + Math.sin(angle) * s * spread * 0.36 - s * 0.07,
-      s * (tree ? 0.24 : 0.19), 0, Math.PI * 2,
+      cx + Math.cos(angle) * s * spread * 0.50 - s * 0.07,
+      cy + Math.sin(angle) * s * spread * squash - s * 0.08,
+      s * (tree ? 0.23 : 0.18) * (0.85 + prop.lean * 0.3), 0, Math.PI * 2,
     );
     context.fill();
   }
 }
 
-export const LEGEND = GROUND_STYLE;

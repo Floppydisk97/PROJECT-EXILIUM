@@ -3,7 +3,7 @@
 // check the arithmetic that the type checker and a screenshot both miss.
 import * as THREE from "three";
 import {
-  biomeColor, biomeGrain, SHELF_DEEP, SHELF_MAX_DEPTH, SHELF_SHALLOW,
+  ABYSS, ABYSS_DEPTH, biomeColor, biomeGrain, SHELF_DEEP, SHELF_MAX_DEPTH, SHELF_SHALLOW,
   WATER_BIOMES, type Tile, type WorldMap,
 } from "./biomes";
 
@@ -136,6 +136,10 @@ export function tileAt(map: WorldMap, index: number): Tile {
     river_flow: map.tiles.river_flow[index],
     landmass_size: map.tiles.landmass_size[index],
     neighbor_count: map.tiles.neighbor_count[index],
+    // A property of the NEIGHBOURHOOD, so it has to travel: the render model sends a
+    // count of neighbours, not their ids, and without this the client could not know
+    // whether landing here means having the sea next door.
+    coastal: map.tiles.coastal[index] === 1,
   };
 }
 
@@ -199,6 +203,7 @@ export function buildTerrain(map: WorldMap): Terrain {
   // palette and only show up where a flat material sits next to a vertex colour.
   const shelfShallow = new THREE.Color(SHELF_SHALLOW);
   const shelfDeep = new THREE.Color(SHELF_DEEP);
+  const abyss = new THREE.Color(ABYSS);
 
   // An edge shared by two land tiles is inland; one that only a single land tile owns is a
   // shoreline. Corners are already shared indices, so an edge is just its pair of them.
@@ -231,6 +236,9 @@ export function buildTerrain(map: WorldMap): Terrain {
       // quickly -- a shelf should read as shallow water, not as an outline stroke.
       const depth = Math.min(1, -elevation / SHELF_MAX_DEPTH);
       tmp.copy(shelfShallow).lerp(shelfDeep, Math.pow(depth, 0.85));
+      // E oltre la piattaforma la rampa continua, invece di fermarsi su uno scalino.
+      const below = Math.max(0, -elevation - SHELF_MAX_DEPTH);
+      tmp.lerp(abyss, Math.min(1, below / (ABYSS_DEPTH - SHELF_MAX_DEPTH)));
       tmp.multiplyScalar(1 + tileJitter(columns.id[t]) * 0.12);
     } else {
       tmp.copy(biomeColors[biomeIndex]);

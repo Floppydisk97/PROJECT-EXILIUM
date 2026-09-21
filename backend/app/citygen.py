@@ -10,7 +10,7 @@ belong to a persistent shared world: two players would see different places and 
 yesterday would be somewhere else today. So the roll happens exactly once, at landing, and
 what is kept is the SEED. Everything below is a pure function of that seed plus what the
 planet says about the site, which means the map is reproducible for ever, identical for
-everyone, and costs one short string per colony instead of sixteen thousand rows.
+everyone, and costs one short string per colony instead of six hundred thousand rows.
 
 THE BIOME IS NOT DECORATION. Every knob a site turns lives in BIOME_RULES, as data: a desert
 is dry, bright and bare, a rainforest is dense and wet, a tundra is stony and thin. Rainfall,
@@ -21,16 +21,19 @@ from __future__ import annotations
 
 import hashlib
 import math
-import random
 from dataclasses import dataclass
 
-from app.worldgen import BandNoise
+from app.prng import Prng
 
-SIZE = 128                  # cells per side: a colony's worth of ground, ~16k cells
-CELL_METRES = 8             # so a map is roughly a kilometre across
+SIZE = 768                  # cells per side: ~590k cells, about six kilometres across
+CELL_METRES = 8
 
 # How far a bank stays fertile, and by how much. A river or a shore is the strongest thing a
 # site can have: it is what makes a desert worth landing on at all.
+# How far the coastline wanders off its straight line, in half-map units: about
+# twenty cells, which is a bay and not a fractal.
+COAST_WANDER = 0.055
+
 RIPARIAN_REACH = 260.0      # centimetres of height above the water line
 RIPARIAN_GAIN = 55          # fertility added right at the water's edge
 POOLING_CLIMATE = 0.40      # below this a climate does not fill its hollows, so no banks
@@ -39,6 +42,8 @@ ALLUVIUM_REACH = 150.0      # how far from water the ground itself becomes silt
 
 # The ground a cell is made of. Order is the wire format, so append rather than insert.
 GROUNDS = ("deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice")
+DRY = frozenset(GROUNDS.index(name) for name in ("sand", "soil", "gravel", "rock"))
+STONE = frozenset(GROUNDS.index(name) for name in ("rock", "gravel"))
 
 # What a biome does to the ground it is made of. Data, not behaviour -- the same rule as
 # `sim/config.py`, so tuning a world is reading one table instead of chasing literals.
@@ -99,25 +104,143 @@ class CityMap:
     height: tuple[int, ...]         # centimetres above the map's own datum
     fertility: tuple[int, ...]      # 0-100
     vegetation: tuple[int, ...]     # 0-100
+    # I filoni non sono una mappa per cella come gli altri: finche' non ci si costruisce
+    # sopra un edificio, di un giacimento interessa QUANTO ce n'e', non dove. Il giorno in cui
+    # una miniera andra' piazzata su una casella, questo diventera' uno strato come gli altri.
+    ore: int = 0                    # 0-100: quota di terra asciutta che porta un filone
+    heat: int = 0                   # 0-100: calore geotermico, anch'esso sotto la superficie
 
     @property
     def buildable(self) -> int:
-        dry = {GROUNDS.index(name) for name in ("sand", "soil", "gravel", "rock")}
-        return sum(1 for g in self.ground if g in dry)
+        return sum(1 for g in self.ground if g in DRY)
+
+    @property
+    def economy(self) -> "SiteEconomy":
+        """What this ground is worth, as three integers.
+
+        Three, and computed HERE, because the economy must not carry a map around. A colony
+        is 590.000 cells and takes seconds to grow; production is worked out every time
+        somebody looks at a city. So the map is reduced once, at landing, to the only things
+        the rules ask of it, and those are what the row keeps.
+
+        Integers on purpose: a saved world has to replay identically, and the accrual is
+        integer arithmetic from end to end.
+        """
+        cells = len(self.ground)
+        # Yield is the quality of the land you can actually BUILD ON, not the average of the
+        # whole map. Averaged over everything, a swamp full of water reads as middling -- it
+        # is not middling, it is excellent ground you cannot put a city on, and those are two
+        # different facts that the economy has to keep apart.
+        usable = [f for g, f in zip(self.ground, self.fertility) if g in DRY]
+        food = sum(usable) // len(usable) if usable else 0
+        # Effort is what has to be cleared before anything can be built: standing growth, and
+        # marsh, which has to be drained. It is what stops rich ground from being simply
+        # better -- a rainforest pays more per level and takes far longer to reach the next.
+        marsh = sum(1 for g in self.ground if g == GROUNDS.index("marsh"))
+        greenery = sum(self.vegetation) // cells
+        effort = greenery + 100 * marsh // cells
+        # Timber is the standing growth ALONE. Effort adds the marsh to it, because a bog has
+        # to be drained before anything can be built on it -- but a bog has no timber in it,
+        # and the two would be the same number only by accident.
+        stone = 100 * sum(1 for g in self.ground if g in STONE) // cells
+        power = energy_potentials(self.site, self.heat)
+        return SiteEconomy(food=food, timber=greenery, stone=stone, ore=self.ore,
+                           effort=effort, room=self.buildable, **power)
 
 
-def seed_for(world_seed: str, tile_id: int, city_id) -> str:
-    """The seed a landing rolls. It mixes the city, so two colonies on the same ground would
-    still get different ground -- and the world seed, so a regenerated planet does not hand
-    out the maps of the old one."""
-    material = f"{world_seed}:{tile_id}:{city_id}".encode()
-    return hashlib.sha256(material).hexdigest()[:32]
+def _clamp100(value: float) -> int:
+    return int(max(0, min(100, value)))
 
 
-def _rng(seed: str, salt: str) -> random.Random:
-    return random.Random(int.from_bytes(
-        hashlib.sha256(f"{seed}:{salt}".encode()).digest()[:8], "big"
-    ))
+def energy_potentials(site: Site, heat: int) -> dict[str, int]:
+    """Quanta energia questo posto sa dare, per fonte. Zero-cento, come il resto.
+
+    Non e' una quinta risorsa da raccogliere: e' l'attitudine del LUOGO, e serve a far contare
+    la geografia in una direzione nuova. Il deserto era il sito povero di tutto -- niente
+    roccia, niente alberi, niente cibo -- e qui diventa il posto migliore del pianeta per il
+    sole. Un sito senza risorse ma pieno di energia e' una scelta, non uno scarto.
+    """
+    return {
+        # Vento: aria che corre. Le creste e le coste, dove non c'e' niente a fermarla.
+        "wind": _clamp100(18 + max(0, site.elevation) / 28.0 + (28 if site.coastal else 0)),
+        # Sole: cielo sgombro e caldo. La piovosita' e' una misura di nuvole quanto d'acqua.
+        "sun": _clamp100(96 - site.rainfall / 24.0 + (site.temperature - 10) / 1.8),
+        # Acqua: la portata del fiume, e nient'altro. Senza fiume, niente.
+        "water": _clamp100(site.river_flow / 34.0),
+        # Calore: geologia nascosta, come i filoni. Non si vede dalla superficie, e per questo
+        # e' l'unica delle quattro che il terreno deve dire invece di dedurre.
+        "heat": heat,
+    }
+
+
+@dataclass(frozen=True)
+class SiteEconomy:
+    """What a landed colony keeps instead of its map.
+
+    Three of these say what the ground GIVES and two what it COSTS, and no site is good at
+    everything: a rainforest is food and timber with no stone under it, a gravel shrubland is
+    stone with almost nothing to eat, and a desert is neither. That distribution is not
+    decoration -- it is what will make one colony need another.
+    """
+    food: int       # 0-100: fertility of the buildable land
+    timber: int     # 0-100: standing growth, the marsh excluded -- a bog has no timber
+    stone: int      # 0-100: share of the map that is rock or gravel
+    ore: int        # 0-100: share carrying a vein -- the only one that is not on the surface
+    wind: int       # 0-100: quanto tira -- creste e coste
+    sun: int        # 0-100: quanto splende -- cieli sgombri e caldo
+    water: int      # 0-100: quanto scorre -- la portata del fiume
+    heat: int       # 0-100: quanto scotta sotto -- geologia nascosta, come i filoni
+    effort: int     # 0-200: growth AND marsh to clear -- drives how long an upgrade takes
+    room: int       # buildable cells -- how far the colony grows before it starts to crowd
+
+
+def seed_for(world_seed: str, tile_id: int) -> str:
+    """The seed a tile's ground grows from.
+
+    The TILE decides, not the colony that lands on it. An earlier version mixed the city id,
+    so the ground was rolled at the moment of landing -- which meant nobody could ever know
+    what they were landing on until they had landed. Scouting a site and then taking it is a
+    better game than taking a site and then finding out, and it costs nothing: with one colony
+    to a tile there is no case where two colonies would have wanted different ground from the
+    same place.
+
+    The world seed is in there so a regenerated planet does not hand out the old one's maps.
+    """
+    return hashlib.sha256(f"{world_seed}:{tile_id}".encode()).hexdigest()[:32]
+
+
+def _rng(seed: str, salt: str) -> Prng:
+    return Prng(f"{seed}:{salt}")
+
+
+class PlaneNoise:
+    """Band-limited noise: a sum of directional sinusoids with seeded directions, frequencies
+    and phases. Continuous everywhere, so the plane this samples is valid two-dimensional
+    noise.
+
+    Its own, rather than `worldgen.BandNoise`, for one reason: this one has a twin in
+    TypeScript and the two must agree number for number. That rules out anything built on a
+    language's own generator, so the directions come from `Prng.direction` and the whole thing
+    is spelled out in arithmetic both languages do identically.
+    """
+
+    __slots__ = ("terms", "total")
+
+    def __init__(self, rng: Prng, octaves: int, base_freq: float):
+        self.terms = []
+        amp, freq, total = 1.0, base_freq, 0.0
+        for _ in range(octaves):
+            self.terms.append((rng.direction(), freq, rng.uniform(0.0, 2 * math.pi), amp))
+            total += amp
+            amp *= 0.55
+            freq *= 1.9
+        self.total = total
+
+    def at(self, x: float, y: float) -> float:
+        value = 0.0
+        for (dx, dy, _dz), freq, phase, amp in self.terms:
+            value += amp * math.sin(freq * (dx * x + dy * y) + phase)
+        return value / self.total
 
 
 def _smoothstep(t: float) -> float:
@@ -132,13 +255,35 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     # Relief. A tile high on the planet lands you somewhere steep; a coastal plain is a plain.
     # The planet's elevation is a real input, not flavour: it is why a mountain colony has to
     # be built around its rock and a delta colony does not.
-    relief = BandNoise(_rng(seed, "relief"), 5, 3.2)
-    detail = BandNoise(_rng(seed, "detail"), 3, 11.0)
-    damp = BandNoise(_rng(seed, "damp"), 4, 4.5)
-    grain = BandNoise(_rng(seed, "grain"), 3, 9.0)
+    relief = PlaneNoise(_rng(seed, "relief"), 5, 3.2)
+    detail = PlaneNoise(_rng(seed, "detail"), 3, 11.0)
+    damp = PlaneNoise(_rng(seed, "damp"), 4, 4.5)
+    grain = PlaneNoise(_rng(seed, "grain"), 3, 9.0)
+    # I filoni. Un campo tutto suo, a frequenza alta perche' un giacimento e' stretto: se
+    # seguisse il rilievo o il terreno di superficie non aggiungerebbe nessuna geografia --
+    # sarebbe la pietra con un altro nome, e una macchia arida sarebbe ricca due volte.
+    veins = PlaneNoise(_rng(seed, "veins"), 3, 13.0)
+    deep = PlaneNoise(_rng(seed, "deep"), 3, 7.0)
+    # The coastline wanders. Without this it is a ruled diagonal across the map --
+    # at six kilometres that does not read as a coast, it reads as a canal wall.
+    coast = PlaneNoise(_rng(seed, "coast"), 3, 5.5)
 
     altitude_roughness = 0.6 + min(2.0, max(0.0, site.elevation) / 2200.0)
-    amplitude = 320.0 * rule.roughness * altitude_roughness      # centimetres of relief
+    amplitude = 320.0 * rule.roughness * altitude_roughness
+
+    # Where bare rock starts. It used to be a flat 0.62 of the relief, which is a fraction of
+    # the map and so handed EVERY biome the same 16 per cent of naked stone: a rainforest with
+    # continents of bare grey in it. What covers rock is vegetation, and the biome already says
+    # how much it has, so the cover raises the line -- `bare_rock` (cover 0.02) keeps its stone
+    # almost everywhere, a rainforest (0.95) shows it only on the real crests.
+    bare_above = amplitude * (0.62 + 0.30 * rule.cover)
+
+    # Quanto in alto si e', quanto e' probabile incontrare un filone: la roccia profonda
+    # viene a giorno dove la crosta e' stata spinta su. Una foresta in quota puo' avere
+    # minerale sotto, una macchia arida in pianura puo' non averne -- che e' cio' che rende
+    # il minerale un asse NUOVO invece della pietra scritta due volte.
+    vein_line = 0.62 - 0.30 * min(1.0, max(0, site.elevation) / 2500.0)
+    heat_line = 0.30 - 0.20 * min(1.0, max(0, site.elevation) / 2500.0)
 
     # Where the water goes. A river on the planet becomes a river here; a coastal tile gets a
     # shore along one edge, its direction rolled from the seed so two coasts differ.
@@ -154,6 +299,8 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     fertility_base = rule.fertility * (0.55 + 0.75 * min(1.0, site.rainfall / 1800.0))
     frozen = site.temperature < -8.0
 
+    ore_cells = 0
+    heat_cells = 0
     ground: list[int] = []
     height: list[int] = []
     fertility: list[int] = []
@@ -167,16 +314,14 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             # size, and a map rendered at a different resolution is the same place.
             u = (x / (size - 1)) * 2.0 - 1.0
             v = (y / (size - 1)) * 2.0 - 1.0
-            point = (u, v, 0.0)
-
-            h = relief.at(point) + 0.35 * detail.at(point)
+            h = relief.at(u, v) + 0.35 * detail.at(u, v)
             metres = h * amplitude
 
             # Shore: a signed distance from the map's edge in the rolled direction.
             bank = -1e9          # how close this cell is to water that REALLY exists
             depth_below = 0.0
             if site.coastal:
-                toward_sea = u * shore_dx + v * shore_dy
+                toward_sea = u * shore_dx + v * shore_dy + COAST_WANDER * coast.at(u, v)
                 shore_term = (toward_sea - 0.35) * 900.0
                 depth_below = max(depth_below, shore_term)
                 bank = max(bank, shore_term)
@@ -185,7 +330,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             # ruled line. Width comes from the planet's own flow -- a great river is wide here.
             if has_river:
                 across = (u * math.cos(river_axis) + v * math.sin(river_axis)) * 100.0
-                across += 14.0 * damp.at(point)
+                across += 14.0 * damp.at(u, v)
                 river_term = (river_width - abs(across)) * 26.0
                 depth_below = max(depth_below, river_term)
                 bank = max(bank, river_term)
@@ -221,11 +366,11 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             name = rule.ground
             if frozen:
                 name = "ice"
-            elif metres > amplitude * 0.62 and rule.ground != "sand":
+            elif metres > bare_above and rule.ground != "sand":
                 name = "rock"
             elif metres < -amplitude * 0.30 and wetness > 0.55:
                 name = "marsh"
-            elif rule.ground == "soil" and grain.at(point) > 0.55:
+            elif rule.ground == "soil" and grain.at(u, v) > 0.55:
                 name = "gravel"
             if name in ("sand", "gravel") and bank > -ALLUVIUM_REACH and not frozen:
                 # What a river leaves on its banks is silt, not the desert it crossed. Without
@@ -233,6 +378,13 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
                 # bonus is added -- so the one reason to land in a desert was quietly worth
                 # less than half of what the rule said it was.
                 name = "soil"
+
+            if veins.at(u, v) > vein_line:
+                ore_cells += 1
+            # Il calore sta piu' in profondita' dei filoni, quindi il suo campo e' piu' largo:
+            # un giacimento e' stretto, un'anomalia termica e' una regione.
+            if deep.at(u, v) > heat_line:
+                heat_cells += 1
 
             index = GROUNDS.index(name)
             slope_penalty = 1.0 - _smoothstep(abs(metres) / max(1.0, amplitude)) * 0.45
@@ -256,7 +408,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             # fertile strip nobody could see and nothing grew on: the biome's `cover` of four
             # hundredths applied right up to the water's edge.
             cover = rule.cover + (RIPARIAN_COVER - rule.cover) * riparian
-            cover *= 0.5 + 0.5 * (0.5 + 0.5 * grain.at(point))
+            cover *= 0.5 + 0.5 * (0.5 + 0.5 * grain.at(u, v))
             cell_vegetation = 0
             if cell_fertility > 0:
                 cell_vegetation = max(0, min(100, int(100 * cover * (cell_fertility / 100.0) ** 0.5)))
@@ -270,4 +422,6 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
         seed=seed, size=size, cell_metres=CELL_METRES, site=site,
         ground_names=GROUNDS, ground=tuple(ground), height=tuple(height),
         fertility=tuple(fertility), vegetation=tuple(vegetation),
+        ore=100 * ore_cells // (size * size),
+        heat=100 * heat_cells // (size * size),
     )

@@ -8,14 +8,15 @@ const NAMES = ["deep_water", "water", "marsh", "sand", "soil", "gravel", "rock",
 
 function colony(cells: { ground: number; fertility: number; vegetation: number }[], size = 4): ColonyGround {
   return {
-    name: "t", label: "T", seed: "seed", size, cell_metres: 8, buildable: 0,
+    seed: "seed", size, cell_metres: 8, buildable: 0,
+    economy: { food: 0, timber: 0, stone: 0, ore: 0, wind: 0, sun: 0, water: 0, heat: 0, effort: 0, room: 0 },
     site: { biome: "temperate_forest", elevation: 100, temperature: 10, rainfall: 900, river_flow: 0, coastal: false },
     ground_names: NAMES,
     cells: {
-      ground: cells.map((c) => c.ground),
-      height: cells.map(() => 0),
-      fertility: cells.map((c) => c.fertility),
-      vegetation: cells.map((c) => c.vegetation),
+      ground: Uint8Array.from(cells, (c) => c.ground),
+      height: Int32Array.from(cells, () => 0),
+      fertility: Uint8Array.from(cells, (c) => c.fertility),
+      vegetation: Uint8Array.from(cells, (c) => c.vegetation),
     },
   };
 }
@@ -93,11 +94,30 @@ describe("what stands where", () => {
 
 describe("what the ground looks like", () => {
   it("greens earth that has something growing on it", () => {
+    // Si misura il verde RELATIVO al rosso, non il canale verde da solo. Da quando il bosco
+    // ha un colore suo -- piu' scuro del prato, come sono i boschi -- una foresta fitta ha
+    // meno verde assoluto di una terra chiara, e piu' verde di quanta ne abbia di rosso.
     const bare = colony([{ ground: SOIL, fertility: 10, vegetation: 0 }], 1);
+    const grass = colony([{ ground: SOIL, fertility: 60, vegetation: 30 }], 1);
     const lush = colony([{ ground: SOIL, fertility: 90, vegetation: 95 }], 1);
-    const [, bareGreen] = groundColor(bare, 0);
-    const [, lushGreen] = groundColor(lush, 0);
-    expect(lushGreen).toBeGreaterThan(bareGreen);
+    const greenness = (ground: ColonyGround) => {
+      const [r, g] = groundColor(ground, 0);
+      return g - r;
+    };
+    expect(greenness(grass)).toBeGreaterThan(greenness(bare));
+    expect(greenness(lush)).toBeGreaterThan(greenness(grass));
+  });
+
+  it("non dipinge un bosco come un prato scuro", () => {
+    // Il difetto vero della prima tavolozza: una sola fermata di verde, quindi la differenza
+    // fra prato e foresta era solo di luminosita'. Adesso sono due colori.
+    const grass = colony([{ ground: SOIL, fertility: 60, vegetation: 25 }], 1);
+    const wood = colony([{ ground: SOIL, fertility: 60, vegetation: 95 }], 1);
+    const [gr, gg, gb] = groundColor(grass, 0);
+    const [wr, wg, wb] = groundColor(wood, 0);
+    expect(wg).toBeLessThan(gg);                       // il bosco e' piu' scuro
+    const hue = (r: number, g: number, b: number) => (g - r) / (g + r + b);
+    expect(hue(wr, wg, wb)).toBeGreaterThan(hue(gr, gg, gb));   // e piu' verde di tinta
   });
 
   it("leaves water alone whatever the columns beside it say", () => {
