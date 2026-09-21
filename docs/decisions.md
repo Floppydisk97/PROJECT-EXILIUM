@@ -599,3 +599,13 @@ ristretto**, ed è giusto che il test lo dica.
 **Da rivedere se.** Il rilievo della colonia smette di essere un rumore a poche armoniche: con
 una geografia vera — creste, valli scavate dall'acqua — l'ombreggiatura tornerebbe a dire
 qualcosa invece di stampare righe.
+
+**Nota a margine — un difetto trovato per strada.** La CI di questa modifica è caduta su un
+test che non c'entrava niente: `rewind` invecchiava le colonie **sottraendo** dal momento in
+cui erano nate, e l'orologio veniva fermato con una **seconda** lettura. Fra le due, su una
+macchina carica, il secondo gira: il tempo trascorso diventava 61 invece di 60 e la colonia si
+trovava 244 di pietra invece di 240. È il genere di caduta che si chiama *flaky* e si ririlancia.
+Riprodotto apposta (un secondo di attesa in mezzo alla preparazione: stesso numero, `100244`),
+e chiuso alla radice — l'età si scrive come un **istante**, e invecchiare e fermare escono da
+**una sola** lettura dell'orologio. C'è un test che fa girare il secondo di proposito: senza la
+correzione cade sempre, non una volta su venti.
