@@ -478,37 +478,12 @@ def test_world_map_generates_persists_and_is_immutable(database):
         conn.execute("DELETE FROM world_map")
 
 
-def test_world_map_endpoint_serves_geography_or_404(database):
+def test_live_world_state_is_never_cached(database):
+    """Cio' che resta di due prove sulla mappa servita dall'API: la rotta non c'e' piu' --
+    il pianeta e' un file statico -- ma la regola sulle intestazioni vale ancora per lo
+    stato del mondo, che cambia e non deve essere tenuto da parte da nessuno."""
     with TestClient(app) as client:
-        # Before generation: 404, not an empty map.
-        assert client.get("/world/map").status_code == 404
-        with transaction() as conn:
-            generate_and_store(conn, "Church", frequency=6)
-        body = client.get("/world/map").json()
-        assert body["tile_count"] == 362 and body["name"] == "Hesperia"
-        assert body["land_count"] <= body["tile_count"]
-
-
-def test_world_map_is_cached_and_revalidates(database):
-    with TestClient(app) as client:
-        with transaction() as conn:
-            generate_and_store(conn, "Church", frequency=6)
-        first = client.get("/world/map")
-        assert first.status_code == 200
-        etag = first.headers["ETag"]
-        # Immutable geography may be cached; live state elsewhere may not.
-        assert "immutable" in first.headers["Cache-Control"]
         assert client.get("/world").headers["Cache-Control"] == "no-store"
-
-        # A second call is served from the process cache: same bytes, same tag.
-        second = client.get("/world/map")
-        assert second.headers["ETag"] == etag
-        assert second.content == first.content
-
-        # And a client that already has it gets told so instead of the payload again.
-        revalidated = client.get("/world/map", headers={"If-None-Match": etag})
-        assert revalidated.status_code == 304
-        assert revalidated.content == b""
 
 
 def test_rate_limit_counts_per_address_and_spares_health():

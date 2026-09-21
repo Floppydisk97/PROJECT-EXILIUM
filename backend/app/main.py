@@ -30,8 +30,9 @@ async def lifespan(_app: FastAPI):
     Generating the world is minutes of CPU on a small instance. Doing it before the server
     exists means the port stays closed for those minutes, and Render gives up on a service
     that never binds -- which is what happened. Here the server comes up immediately and,
-    only if the map is missing, hands the build to a separate process. Until that finishes
-    `/world/map` answers 404 and the client already says so in as many words.
+    only if the map is missing, hands the build to a separate process. Atterrare vuole le
+    caselle nel database, quindi la mappa si costruisce ancora: cio' che non c'e' piu' e' la
+    rotta che la SERVIVA, perche' il visore legge il pianeta da un file statico.
 
     Does nothing unless MAP_BUILD=background, so a deployment still generating from its
     start command is untouched.
@@ -41,7 +42,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Project Exilium", version="0.1.0", lifespan=lifespan)
-# The world map is several MB of JSON; compress it (and any other large payload).
+# Le risposte grandi vengono compresse. Non ce n'e' piu' nessuna da molti MB -- il pianeta
+# e' un file statico -- ma un elenco lungo di movimenti lo e' abbastanza da valerne la pena.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # The viewer is a static site on its own host, so the city screen is cross-origin BY DESIGN:
@@ -176,31 +178,6 @@ def world_state():
     # to know how fast this world's seconds go by, and a world running at anything but 1
     # should be able to say so rather than look broken.
     return {**world, "policy": policy}
-
-
-@app.get("/world/map")
-def world_map(request: Request):
-    # Public, immutable geography: the geodesic tiles the client renders as the planet.
-    # Built once per process and served as bytes; only a cache miss touches the database.
-    payload = mapservice.cached_payload()
-    if payload is None:
-        with transaction() as conn:
-            payload = mapservice.build_payload(conn)
-    headers = {
-        "ETag": payload["etag"],
-        # Immutable for the life of this world: a new map only ever arrives with a deploy,
-        # and the ETag changes with it.
-        "Cache-Control": "public, max-age=86400, immutable",
-    }
-    if request.headers.get("if-none-match") == payload["etag"]:
-        return Response(status_code=304, headers=headers)
-    if "gzip" in request.headers.get("accept-encoding", ""):
-        # Pre-compressed, so the gzip middleware passes it through untouched rather than
-        # spending CPU on twelve megabytes per request.
-        return Response(payload["gzip"], media_type="application/json",
-                        headers={**headers, "Content-Encoding": "gzip",
-                                 "Vary": "Accept-Encoding"})
-    return Response(payload["raw"], media_type="application/json", headers=headers)
 
 
 @app.get("/me/cities")

@@ -234,7 +234,7 @@ continente subtropicale — e un interno equatoriale o temperato resta umido.
 
 ### Il render model
 
-`GET /world/map` non è un dump della tabella ma ciò che il client disegna: le terre, la
+`mapservice.read_map` non è un dump della tabella ma ciò che il client disegna: le terre, la
 banchisa che forma le calotte polari, un anello di piattaforma continentale attorno a ogni
 costa (l'oceano oltre la piattaforma è un guscio liscio lato client, quindi le sue polilinee
 sarebbero peso morto) e la rete idrografica già risolta in segmenti. Latitudine e longitudine
@@ -1255,6 +1255,46 @@ stavo compilando il visore nello stesso momento.
 Vale la pena scriverlo perche' il primo istinto e' chiamarla una fluttuazione e rilanciare: e
 una prova che fallisce una volta ogni tanto, lasciata li', prima o poi si prende la colpa di
 qualcos'altro.
+
+## Rendere pubblico il repository
+
+La CI era ferma perché i 2.000 minuti Actions inclusi nell'account erano esauriti, e due
+repository se li dividevano. Su un repository **pubblico** i runner standard non consumano
+quell'allowance: è la strada scelta, ed è gratis.
+
+Prima di premere, tre cose sono state verificate e non date per buone:
+
+    segreti usati dai workflow   nessuno   -> una PR da un fork non ha niente da rubare
+    credenziali nella storia     zero      -> cercati dpg-, ghp_, github_pat_, chiavi
+    account creabili via rete    nessuno   -> `provision` vive solo nella CLI
+
+### Una rotta pubblica che non serviva più a nessuno
+
+`GET /world/map` serviva quattro megabyte di pianeta, senza autenticazione, a centoventi
+richieste al minuto per indirizzo. Da quando il pianeta è un file statico **nel visore non
+c'era più una riga che la chiamasse**: la nominavano solo i test e questo documento.
+
+Non era un buco di sicurezza — la geografia è pubblica per definizione — ma era mezzo
+gigabyte al minuto di banda esposto da un'istanza gratuita, per codice morto. È uscita prima
+che il repository diventasse leggibile da chiunque, insieme alla cache del payload che
+esisteva solo per lei. Ciò che resta è `read_map`, che serve ancora all'esportazione statica
+e al test di equivalenza fra le due strade.
+
+Delle due prove che la coprivano ne resta una, sull'unica regola che vale ancora: lo stato
+del mondo non si mette in cache, perché cambia.
+
+### I fork, e il doppio giro
+
+Un repository pubblico può ricevere PR da un fork, e il push di un fork qui non arriva: senza
+l'evento `pull_request` un contributo esterno entrerebbe senza che nessuno lo abbia provato.
+Quindi ci sono tutti e due gli eventi — e ogni job scarta il caso doppio, girando su
+`pull_request` solo quando il ramo di partenza non è di questo repository.
+
+La condizione è scritta tre volte, perché GitHub non ha un `if` a livello di workflow. A
+tenerle uguali c'è `tests/test_workflow.py` e non la memoria: è il sesto caso di "due elenchi
+che devono coincidere" di questo progetto, e il rimedio che funziona è sempre lo stesso.
+Verificato che i tre controlli cadono davvero, separando una guardia, togliendo un tetto di
+tempo e facendo divergere i due `paths-ignore`.
 
 ## Decisioni
 
