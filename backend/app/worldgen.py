@@ -207,6 +207,32 @@ BIOMES = (
     "tropical_rainforest", "tropical_swamp",
 )
 
+# Di che colore si disegna ogni bioma, e di che colore l'acqua e i fiumi.
+#
+# QUI e non nel client, ed e' una correzione di rotta. Le tinte vivevano in `biomes.ts`, e
+# quando e' arrivato un secondo visore sono state trascritte una seconda volta: due tavolozze
+# che devono coincidere sono la settima coppia-di-copie di questo progetto, e le prime sei
+# sono tutte finite male. Adesso viaggiano DENTRO al file del pianeta, accanto ai nomi dei
+# biomi che gia' portava: chi disegna la legge, non la ricorda.
+#
+# Sono presentazione, non geografia -- il generatore non le guarda mai. Stanno qui perche' qui
+# sta l'elenco dei biomi, e una tinta senza il suo bioma e' un numero e basta.
+BIOME_COLORS = {
+    "ocean": 0x2A5A86, "lake": 0x3D84BD, "sea_ice": 0xD3E3EF, "ice_sheet": 0xE9F0F6,
+    "snow_cap": 0xE0E8F0, "bare_rock": 0x9A9287, "tundra": 0x9EA089,
+    "boreal_forest": 0x548A62, "temperate_forest": 0x6D9A4E, "temperate_swamp": 0x59886D,
+    "arid_shrubland": 0xB3A263, "desert": 0xDCC084, "tropical_rainforest": 0x549F45,
+    "tropical_swamp": 0x568F6F,
+}
+
+# Il mare e' una rampa sola, dalla battigia all'abisso, e i fiumi vanno dal sottile al largo.
+PALETTE = {
+    "shelf_shallow": 0x6BA3C4,
+    "ocean_deep": 0x35688F,
+    "river_minor": 0x4E9ED0,
+    "river_major": 0x8AD6F5,
+}
+
 # Biomes that are water: no colony settles there even though a lake sits above sea level.
 WATER_BIOMES = frozenset({"ocean", "lake", "sea_ice"})
 

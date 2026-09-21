@@ -188,6 +188,11 @@ def build_model(meta: dict, rows: list, total: int, rivers: dict) -> dict:
         # metres that it owns itself.
         "river_min_flow": worldgen.river_min_flow(total),
         "biome_names": list(worldgen.BIOMES),
+        # Le tinte viaggiano col pianeta, accanto ai nomi. Chi disegna le legge invece di
+        # ricordarsele: una tavolozza trascritta in ogni visore e' una copia che deve
+        # coincidere, e di quelle questo progetto ne ha gia' pagate sei.
+        "biome_colors": [worldgen.BIOME_COLORS[name] for name in worldgen.BIOMES],
+        "palette": dict(worldgen.PALETTE),
         "corners": corners,
         "rivers": rivers,
         "tiles": {

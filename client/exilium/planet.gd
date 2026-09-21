@@ -24,6 +24,10 @@ var tile_count: int
 var land_count: int
 var river_min_flow: int
 var biome_names: PackedStringArray
+# Le tinte arrivano COL PIANETA, non trascritte qui. Erano trascritte, ed era la settima
+# coppia-di-copie-che-devono-coincidere di questo progetto: adesso chi disegna le legge.
+var biome_colors: PackedColorArray
+var palette := {}
 var corners: PackedFloat64Array      # tre per vertice, condivisi fra le caselle
 var ids: PackedInt32Array
 var center: PackedFloat64Array       # tre per casella
@@ -31,6 +35,17 @@ var elevation: PackedInt32Array
 var biome: PackedByteArray
 var ring: PackedInt32Array           # indici dentro `corners`
 var ring_offset: PackedInt32Array    # una voce in piu' del numero di caselle
+var temperature: PackedFloat64Array
+var rainfall: PackedInt32Array
+var river_flow: PackedInt32Array
+var landmass_size: PackedInt32Array
+var coastal: PackedByteArray         # 1 quando c'e' acqua aperta a fianco
+
+# I tratti dei fiumi: ogni voce e' un segmento dal centro di una casella a quello in cui
+# scarica. Il server li ha gia' appaiati, quindi qui non c'e' idrologia da rifare.
+var river_a: PackedFloat64Array      # tre per tratto: l'estremo a monte
+var river_b: PackedFloat64Array      # tre per tratto: dove scarica
+var river_reach_flow: PackedInt32Array
 
 
 ## Dove sta il pianeta cotto, cercandolo accanto al progetto. In sviluppo il file vive con il
@@ -74,6 +89,10 @@ static func load_from(path: String):
 	planet.land_count = int(data["land_count"])
 	planet.river_min_flow = int(data["river_min_flow"])
 	planet.biome_names = PackedStringArray(data["biome_names"])
+	for value in data["biome_colors"]:
+		planet.biome_colors.append(from_hex(int(value)))
+	for key in data["palette"]:
+		planet.palette[key] = from_hex(int(data["palette"][key]))
 	planet.corners = PackedFloat64Array(data["corners"])
 	var tiles: Dictionary = data["tiles"]
 	planet.ids = PackedInt32Array(tiles["id"])
@@ -82,7 +101,34 @@ static func load_from(path: String):
 	planet.biome = PackedByteArray(tiles["biome"])
 	planet.ring = PackedInt32Array(tiles["ring"])
 	planet.ring_offset = PackedInt32Array(tiles["ring_offset"])
+	planet.temperature = PackedFloat64Array(tiles["temperature"])
+	planet.rainfall = PackedInt32Array(tiles["rainfall"])
+	planet.river_flow = PackedInt32Array(tiles["river_flow"])
+	planet.landmass_size = PackedInt32Array(tiles["landmass_size"])
+	planet.coastal = PackedByteArray(tiles["coastal"])
+	var rivers: Dictionary = data["rivers"]
+	planet.river_a = PackedFloat64Array(rivers["a"])
+	planet.river_b = PackedFloat64Array(rivers["b"])
+	planet.river_reach_flow = PackedInt32Array(rivers["flow"])
 	return planet
+
+
+## Quanto dista un centro di casella dal suo vicino, sulla sfera unitaria. Gemella di
+## `terrain.tileSpacing`: la larghezza di un fiume e' una frazione di questo, non un numero
+## assoluto -- se no su un pianeta piu' fitto i fiumi sarebbero larghi come una regione.
+func tile_spacing() -> float:
+	return sqrt((8.0 * PI) / (sqrt(3.0) * float(tile_count)))
+
+
+## Da un numero esadecimale a un colore: 0x6D9A4E diventa il verde della foresta temperata.
+## Cosi' viaggiano nel file -- un intero e' un intero in qualunque lingua, mentre "un colore"
+## no, e il pianeta deve poter essere letto anche da chi non e' ancora stato scritto.
+static func from_hex(value: int) -> Color:
+	return Color8((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+
+
+func color_of(index: int) -> Color:
+	return biome_colors[biome[index]]
 
 
 func drawn_count() -> int:
