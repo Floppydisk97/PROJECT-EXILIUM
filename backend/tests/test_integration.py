@@ -9,6 +9,7 @@ These tests are about the seam, not the rules: locking, idempotency, the clock, 
 constraints the database is asked to enforce on its own.
 """
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from datetime import timedelta
 from uuid import uuid4
 
@@ -30,6 +31,15 @@ from app.sim.config import (
     upgrade_cost, upgrade_duration,
 )
 from app.worker import sweep
+
+
+INVARIANT_SQL = (Path(__file__).resolve().parents[1] / "sql" / "stock_matches_ledger.sql").read_text()
+
+
+def divergent_stock(conn) -> int:
+    """Quante coppie (citta', risorsa) divergono dal ledger. La STESSA query che gira dopo
+    un ripristino: se questa dovesse smettere di descrivere lo schema, smette qui."""
+    return int(conn.execute(INVARIANT_SQL).fetchone()["count"])
 
 
 def player(name="Exilium"):
@@ -391,17 +401,17 @@ def test_materialized_balance_equals_ledger_sum(database, monkeypatch):
         # L'invariante che regge tutto, ora per RISORSA: ogni cursore materializzato e'
         # esattamente la somma del ledger di quella risorsa. Il ledger resta l'unica fonte
         # di verita' e resta immutabile; le scorte sono un cursore ricostruibile.
-        rows = conn.execute(
-            """SELECT s.city_id, s.resource, s.amount_milli,
-                      (SELECT COALESCE(SUM(amount), 0) FROM resource_ledger l
-                        WHERE l.city_id = s.city_id AND l.resource = s.resource) AS ledger_sum
-                 FROM city_stock s ORDER BY s.city_id, s.resource"""
-        ).fetchall()
-        assert rows, "nessuna scorta da verificare"
-        for row in rows:
-            assert int(row["amount_milli"]) == int(row["ledger_sum"]), dict(row)
-        # ... e non e' vera per vuoto: qualcosa e' stato prodotto e qualcosa speso.
-        assert any(int(row["amount_milli"]) > 0 for row in rows)
+        #
+        # La query sta in un FILE, la stessa che `scripts/restore.sh` esegue dopo un
+        # ripristino. Erano due scritture diverse della stessa regola, e quella del restore
+        # e' marcita alla migrazione 0019 senza che nessuno potesse accorgersene.
+        assert divergent_stock(conn) == 0
+        # ... e non e' vera per vuoto: ci sono scorte, e qualcuna e' positiva.
+        held = conn.execute("SELECT amount_milli FROM city_stock").fetchall()
+        assert held, "nessuna scorta da verificare"
+        assert any(int(row["amount_milli"]) > 0 for row in held)
+
+
 def test_ledger_enforces_no_overdraft_and_duplicate_event(database):
     p = player()
     # Lo scoperto e' rifiutato PER RISORSA: avere legname non autorizza a spendere pietra.
@@ -748,3 +758,26 @@ def test_pausing_settles_first_so_the_last_hour_is_not_rewritten(database, monke
         after = stock(conn, p["city_id"])["stone"]
     # I dieci minuti di raccolto sono stati incassati, non persi nel cambio di assetto.
     assert after > before
+
+
+def test_the_invariant_query_actually_catches_a_divergence(database):
+    """Uno zero non dimostra niente se la query non sa vedere un uno.
+
+    E' esattamente come il controllo del restore e' potuto marcire: interrogava una colonna
+    che non c'era piu', quindi non tornava zero -- falliva -- ma per mesi nessuno l'ha
+    eseguito. Qui lo zero viene messo alla prova sporcando davvero una scorta.
+    """
+    p = player("Guasta")
+    with transaction() as conn:
+        assert divergent_stock(conn) == 0
+        conn.execute(
+            "UPDATE city_stock SET amount_milli = amount_milli + 1 WHERE city_id = %s",
+            (p["city_id"],),
+        )
+        assert divergent_stock(conn) > 0
+
+    # E una scorta che sparisce mentre il ledger resta e' una divergenza quanto un numero
+    # sbagliato: e' la meta' che un JOIN semplice avrebbe lasciato passare.
+    with transaction() as conn:
+        conn.execute("DELETE FROM city_stock WHERE city_id = %s", (p["city_id"],))
+        assert divergent_stock(conn) > 0
