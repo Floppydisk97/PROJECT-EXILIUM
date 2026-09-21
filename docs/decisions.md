@@ -301,3 +301,51 @@ risultato **al milli** (verificato su 48 ore, in un colpo contro ora per ora).
 **Da rivedere se.** Le catene diventano a più stadi (un'opera che mangia ciò che un'altra
 produce): lì il calcolo dei flussi smette di essere una divisione e diventa una propagazione
 sul grafo, e va scritto come tale invece che allargato per gradi.
+
+---
+
+## ADR-009 — L'energia è un flusso, e un impianto si può spegnere
+
+**Decisione.** L'energia non è una risorsa di magazzino e non entra nel ledger: è un **flusso**,
+due numeri al secondo (prodotta, pretesa). Quattro fonti — eolico, solare, idroelettrico,
+geotermico — rendono in proporzione all'**attitudine del luogo**. Quando la corrente non basta,
+tutti gli impianti rallentano alla stessa frazione. E ogni impianto si può mettere in pausa,
+riaccendere e abbattere, istantaneamente.
+
+**Motivazione.** Se l'energia si accumulasse, una colonia ne banchereb­be di notte e il vincolo
+sparirebbe: tornerebbe a essere «abbastanza, prima o poi». Come flusso è invece il caso che lo
+strozzatore delle catene già sapeva trattare — un ingresso senza buffer — quindi non è servita
+nessuna macchina nuova.
+
+La pausa chiude il difetto più grave del gradino precedente, che avevo trovato **provando** il
+gioco e non leggendolo: una fonderia mangiava il legname per sempre, e siccome il legname serve
+anche a costruire, un solo impianto poteva bloccare per sempre la crescita di una colonia.
+
+E l'energia riscatta il deserto senza che nessuna regola debba fare un'eccezione per lui: era
+il sito povero di tutto, ed è il posto migliore del pianeta per il sole.
+
+**Alternative considerate.**
+1. *Energia come quinta risorsa con magazzino.* Uniforme col resto e più semplice da scrivere.
+   Scartata: toglie il vincolo invece di crearlo, e trasforma una decisione in un'attesa.
+2. *Batterie fin da subito* (un accumulo limitato). Interessante, e prematuro: prima serve che
+   il flusso stringa davvero, poi avrà senso poterlo livellare.
+3. *A corrente insufficiente si spegne qualcosa automaticamente.* Scartata: la scelta di cosa
+   sacrificare è del giocatore, ed è precisamente il genere di decisione per cui esiste la
+   pausa.
+4. *Pausa come impegno* (occupa la colonia, come costruire). Scartata: sarebbe punire il
+   giocatore per aver cambiato idea.
+
+**Rischi e criticità.**
+- **Il sole non ha ancora un ciclo giorno/notte**, né il vento una variabilità. Oggi una fonte
+  rende costante: è onesto per un primo gradino, ma toglie alle rinnovabili proprio ciò che le
+  rende interessanti. Le batterie diventano sensate solo quando ci sarà.
+- **Il nucleare non c'è**, come previsto: è la fonte che non dipende dal luogo, e va aggiunta
+  quando ci sarà una scala tecnologica che la giustifichi — altrimenti è solo la centrale
+  migliore, e le altre quattro diventano decorazione.
+- **Abbattere non rimborsa.** Scelta voluta e dichiarata nell'interfaccia; se giocando
+  sembrerà una punizione invece di una conseguenza, un rimborso parziale è una riga.
+- **Il regime unico** (tutti rallentano insieme) è semplice da spiegare ma grossolano: con
+  catene lunghe si vorrà dare precedenza a qualcosa. Sarà una priorità per impianto.
+
+**Da rivedere se.** Arrivano il ciclo giorno/notte o il nucleare: entrambi cambiano il senso di
+«quanta ne produco adesso», e il primo rende finalmente utile un accumulo.

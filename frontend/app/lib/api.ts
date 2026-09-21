@@ -67,11 +67,24 @@ export type CityView = {
   supported_level: number;
   stalls_in_seconds: StallForecast;
   works: Record<string, number>;
+  works_idle: Record<string, number>;
   /** A quanti millesimi girano le opere: mille e' pieno regime, meno significa a secco. */
   work_permille: number;
-  work_cost_milli: Record<string, string>;
-  work_seconds: number;
-  chains: Record<string, { inputs: Record<string, number>; outputs: Record<string, number> }>;
+  /** La corrente e' un FLUSSO: due numeri al secondo, non una scorta. Se si mostrasse come
+   *  un magazzino, la prima domanda sarebbe "quanta ne ho da parte", e non se ne ha mai. */
+  power_made: number;
+  power_used: number;
+  site_power: Record<string, number>;
+  catalogue: Record<string, {
+    label: string;
+    inputs: Record<string, number>;
+    outputs: Record<string, number>;
+    draw: number;
+    power: number;
+    from: string | null;
+    cost_milli: Record<string, string>;
+    seconds: number;
+  }>;
   busy_until: string | null;
   busy_with: string | null;
 };
@@ -138,5 +151,9 @@ export const upgrade = (id: string) =>
   call<unknown>(`/cities/${id}/upgrade`, { method: "POST" });
 export const buildWork = (id: string, kind: string) =>
   call<unknown>(`/cities/${id}/works`, { method: "POST", body: { kind } });
+export const setRunning = (id: string, kind: string, count: number) =>
+  call<unknown>(`/cities/${id}/works/${kind}`, { method: "PUT", body: { running: count } });
+export const demolish = (id: string, kind: string) =>
+  call<unknown>(`/cities/${id}/works/${kind}`, { method: "DELETE" });
 export const vote = (id: string, choice: string) =>
   call<unknown>(`/cities/${id}/vote`, { method: "PUT", body: { choice } });

@@ -17,6 +17,7 @@ forty megabytes and nobody would regenerate it.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from app.citygen import Site, generate, seed_for
@@ -59,13 +60,17 @@ def build() -> dict:
             "fertility": list(made.fertility),
             "vegetation": list(made.vegetation),
             "buildable": made.buildable,
-            # The three economic numbers travel with the reference too. They are what the
-            # viewer PROMISES before a landing and what the server writes down after it: if
-            # the two copies computed them differently, the site you weighed and the site you
-            # took would not be the same site, and every cell-for-cell check would still pass.
-            "economy": {"food": made.economy.food, "timber": made.economy.timber,
-                        "stone": made.economy.stone, "ore": made.economy.ore,
-                        "effort": made.economy.effort, "room": made.economy.room},
+            # I numeri economici viaggiano col riferimento: sono cio' che il visore PROMETTE
+            # prima di un atterraggio e cio' che il server scrive dopo. Se le due copie li
+            # calcolassero diversamente, il sito pesato e quello preso non sarebbero lo stesso
+            # -- e ogni confronto cella per cella continuerebbe a passare.
+            #
+            # `asdict` e non un elenco scritto a mano: un elenco si dimentica. E' successo --
+            # le quattro attitudini energetiche sono state aggiunte a Python e il riferimento
+            # ha continuato a scriverne sei, quindi le due lingue sono divergute mentre il
+            # test che esiste per accorgersene passava. Cosi' invece aggiungere un campo di
+            # qua ROMPE subito il test di la', che e' esattamente il suo mestiere.
+            "economy": asdict(made.economy),
         })
     seeds = [{"world": world, "tile": tile, "seed": seed_for(world, tile)}
              for world, tile in SEEDS]

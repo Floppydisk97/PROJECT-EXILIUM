@@ -18,9 +18,9 @@ from datetime import datetime
 from collections.abc import Mapping
 
 from app.sim.config import (
-    CHAINS, MAX_LEVEL, MAX_WORKS, RESOURCES, WORK_COST, WORK_DURATION, food_income,
-    food_upkeep, harvest_rate, production_rate, store_cap, supported_level, upgrade_cost,
-    upgrade_duration,
+    MAX_LEVEL, MAX_WORKS, POWER_SITES, RESOURCES, WORKS, food_income, food_upkeep,
+    harvest_rate, power_made, production_rate, store_cap, supported_level, upgrade_cost,
+    upgrade_duration, work_cost, work_duration,
 )
 from app.sim.state import (
     Advance, CityState, Commitment, Completion, LedgerEntry, PolicyPeriod, Settlement,
@@ -110,46 +110,73 @@ def resource_rate(resource: str, policy: str, city: CityState) -> int:
     return harvest_rate(resource, city.level, site, policy)
 
 
-def throttle(city: CityState, policy: str, stock: Mapping[str, int]) -> int:
-    """A quanti millesimi della propria capacita' girano le opere, ADESSO.
+def running(city: CityState) -> dict[str, int]:
+    """Quante opere di ciascun tipo stanno davvero girando. Le spente non contano: un
+    impianto in pausa non consuma, non produce e non pretende corrente."""
+    return {kind: max(0, count - city.idle.get(kind, 0))
+            for kind, count in city.works.items() if count - city.idle.get(kind, 0) > 0}
 
-    Un'opera tira dal magazzino finche' ce n'e': finche' l'ingresso ha scorta puo' girare a
-    pieno anche consumando piu' di quanto arrivi -- sta svuotando il buffer. Quando il buffer
-    e' a zero puo' girare soltanto al ritmo con cui l'ingresso arriva.
 
-    E' questo che rende necessaria l'integrazione a eventi: il momento in cui un ingresso si
-    esaurisce cambia il tasso, e va trovato invece che aspettato. Restituire millesimi invece
-    di una frazione tiene tutto intero, che e' il requisito di un mondo che deve riprodursi
-    identico.
+def power(city: CityState) -> tuple[int, int]:
+    """Corrente prodotta e corrente pretesa, al secondo.
+
+    Un flusso, non una scorta. Nessuno la mette in magazzino: cio' che non si produce adesso
+    non si consuma adesso, e gli impianti che ne chiedono girano piu' piano.
     """
-    wanted = demand(city)
-    if not wanted:
-        return 0
-    running = 1000
-    for resource, per_second in wanted.items():
-        if stock.get(resource, 0) > 0 or per_second <= 0:
-            continue
-        arriving = max(0, resource_rate(resource, policy, city))
-        running = min(running, 1000 * arriving // per_second)
-    return running
+    made = used = 0
+    for kind, count in running(city).items():
+        work = WORKS[kind]
+        if "from" in work:
+            made += power_made(kind, getattr(city, f"site_{work['from']}")) * count
+        used += work.get("draw", 0) * count
+    return made, used
 
 
 def demand(city: CityState) -> dict[str, int]:
-    """Cio' che le opere vorrebbero consumare al secondo, se girassero a pieno."""
+    """Cio' che le opere ACCESE vorrebbero consumare al secondo, se girassero a pieno."""
     wanted: dict[str, int] = {}
-    for kind, count in city.works.items():
-        for resource, per_second in CHAINS[kind]["inputs"].items():
+    for kind, count in running(city).items():
+        for resource, per_second in WORKS[kind].get("inputs", {}).items():
             wanted[resource] = wanted.get(resource, 0) + per_second * count
     return wanted
 
 
 def supply(city: CityState) -> dict[str, int]:
-    """Cio' che le opere renderebbero al secondo, se girassero a pieno."""
+    """Cio' che le opere ACCESE renderebbero al secondo, se girassero a pieno."""
     made: dict[str, int] = {}
-    for kind, count in city.works.items():
-        for resource, per_second in CHAINS[kind]["outputs"].items():
+    for kind, count in running(city).items():
+        for resource, per_second in WORKS[kind].get("outputs", {}).items():
             made[resource] = made.get(resource, 0) + per_second * count
     return made
+
+
+def throttle(city: CityState, policy: str, stock: Mapping[str, int]) -> int:
+    """A quanti millesimi della propria capacita' girano le opere, ADESSO.
+
+    Due cose le rallentano, e sono la stessa cosa vista da due lati.
+
+    Un INGRESSO: un'opera tira dal magazzino finche' ce n'e', quindi puo' girare a pieno anche
+    consumando piu' di quanto arrivi -- sta svuotando un buffer. Quando il buffer e' a zero
+    puo' girare solo al ritmo con cui l'ingresso arriva. E' questo che rende necessaria
+    l'integrazione a eventi: il momento in cui si esaurisce cambia il tasso.
+
+    La CORRENTE: che e' un ingresso senza buffer, sempre. Se ne serve piu' di quanta se ne
+    produce, tutti gli impianti vanno alla stessa frazione -- non se ne sceglie uno da
+    spegnere, perche' quella scelta e' del giocatore e si fa mettendo in pausa.
+    """
+    wanted = demand(city)
+    made, used = power(city)
+    running_at = 1000
+    if used > 0:
+        running_at = min(running_at, 1000 * made // used)
+    if not wanted:
+        return running_at
+    for resource, per_second in wanted.items():
+        if stock.get(resource, 0) > 0 or per_second <= 0:
+            continue
+        arriving = max(0, resource_rate(resource, policy, city))
+        running_at = min(running_at, 1000 * arriving // per_second)
+    return running_at
 
 
 def net_flows(city: CityState, policy: str, stock: Mapping[str, int]) -> dict[str, int]:
@@ -334,18 +361,18 @@ def begin_work(
     che sta la scelta, non nel magazzino.
     """
     _whole_seconds(now)
-    if kind not in CHAINS:
+    if kind not in WORKS:
         return "unknown_work"
     if busy:
         return "already_busy"
     if city.works.get(kind, 0) >= MAX_WORKS:
         return "too_many_works"
-    for resource, amount in sorted(WORK_COST.items()):
+    for resource, amount in sorted(work_cost(kind).items()):
         if city.stock.get(resource, 0) < amount:
             return f"insufficient_{resource}"
     entries = tuple(
         LedgerEntry(city.id, -amount, "upgrade",
                     f"work:{city.id}:{kind}:{resource}:{now.isoformat()}", now, resource)
-        for resource, amount in sorted(WORK_COST.items())
+        for resource, amount in sorted(work_cost(kind).items())
     )
-    return entries, now + WORK_DURATION
+    return entries, now + work_duration(kind)

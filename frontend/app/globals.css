@@ -197,3 +197,16 @@ html, body {
   text-decoration: none;
 }
 .home-city:hover { border-color: #3d5c79; }
+
+.city-wide { grid-column: 1 / -1; }
+.city-works { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.city-works td { padding: 0.4rem 0.3rem; border-top: 1px solid #1b242f; vertical-align: middle; }
+.city-works tr:first-child td { border-top: none; }
+.city-dim { color: #8497a7; }
+.city-count { white-space: nowrap; color: #dbe6ef; text-align: right; }
+.city-buttons { display: flex; gap: 0.3rem; flex-wrap: wrap; justify-content: flex-end; }
+.city-buttons button { padding: 0.3rem 0.55rem; font-size: 0.8rem; }
+@media (max-width: 860px) {
+  .city-works td { display: block; text-align: left; }
+  .city-buttons { justify-content: flex-start; }
+}

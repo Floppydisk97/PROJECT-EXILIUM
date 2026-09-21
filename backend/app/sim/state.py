@@ -41,10 +41,19 @@ class CityState:
     # cui la produzione non e' piu' una moltiplicazione: un processo che CONSUMA puo'
     # rimanere a secco, e da quel momento il tasso non e' piu' quello di prima.
     works: Mapping[str, int] = field(default_factory=dict)
+    # Quante ne sono SPENTE, per tipo. Una in pausa non consuma, non produce e non pretende
+    # corrente: e' l'unico modo che il giocatore ha di dire "non adesso" a un impianto che
+    # gli sta mangiando il legname, e senza di esso una sola fonderia poteva bloccare per
+    # sempre la crescita di una colonia.
+    idle: Mapping[str, int] = field(default_factory=dict)
     site_food: int = 0             # 0 -> the rate is untouched
     site_timber: int = 0           # what the standing growth is worth once cleared
     site_stone: int = 0            # what is under the colony
     site_ore: int = 0              # i filoni: l'unico che non sta in superficie
+    site_wind: int = 0
+    site_sun: int = 0
+    site_water: int = 0
+    site_heat: int = 0
     site_effort: int = 0           # 0 -> an upgrade takes its bare duration
     site_room: int | None = None   # None -> nothing to crowd against
 
@@ -141,6 +150,7 @@ def snapshot(policy: str, cities: tuple[CityState, ...] | list[CityState]) -> di
                 "level": city.level,
                 "stock": dict(sorted(city.stock.items())),
                 "works": dict(sorted(city.works.items())),
+                "idle": dict(sorted(city.idle.items())),
                 "settled_at": city.settled_at.isoformat(),
                 "site": {"food": city.site_food, "timber": city.site_timber,
                          "stone": city.site_stone, "effort": city.site_effort,

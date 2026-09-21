@@ -12,13 +12,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app import gameclock, mapbuild, mapservice
+from app.sim.config import WORK_KINDS
 from app.db import transaction
 from app.service import (
     DomainError, cast_vote, city_ground, current_policy, land, owned_city, read_city,
-    start_upgrade, start_work, token_hash,
+    demolish_work, set_work_running, start_upgrade, start_work, token_hash,
 )
 
 
@@ -61,7 +62,7 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
     max_age=600,
 )
@@ -247,7 +248,17 @@ def colony_ground(city_id: UUID, owner: Owner):
 
 class Work(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["smelter"]
+    # Non un Literal scritto a mano: l'elenco vive in `sim/config`, e un secondo elenco qui
+    # significherebbe poter aggiungere un impianto alle regole e al database e vederselo
+    # rifiutare dall'API con un messaggio che parla di un tipo solo. E' gia' successo.
+    kind: str
+
+    @field_validator("kind")
+    @classmethod
+    def known(cls, value: str) -> str:
+        if value not in WORK_KINDS:
+            raise ValueError(f"unknown work: {value}")
+        return value
 
 
 @app.post("/cities/{city_id}/works")
@@ -257,6 +268,25 @@ def build_work(city_id: UUID, work: Work, owner: Owner,
     magazzino che sale in una catena che puo' restare a secco."""
     with transaction() as conn:
         return commitment_view(start_work(conn, city_id, owner, work.kind, idempotency_key))
+
+
+class Running(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    running: int = Field(ge=0, le=64)
+
+
+@app.put("/cities/{city_id}/works/{kind}")
+def set_running(city_id: UUID, kind: str, wanted: Running, owner: Owner):
+    """Quanti impianti di questo tipo tenere accesi. Istantaneo: e' un interruttore."""
+    with transaction() as conn:
+        return set_work_running(conn, city_id, owner, kind, wanted.running)
+
+
+@app.delete("/cities/{city_id}/works/{kind}")
+def remove_work(city_id: UUID, kind: str, owner: Owner):
+    """Abbattere un impianto di questo tipo. Senza rimborso."""
+    with transaction() as conn:
+        return demolish_work(conn, city_id, owner, kind)
 
 
 @app.put("/cities/{city_id}/vote")

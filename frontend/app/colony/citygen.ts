@@ -55,6 +55,10 @@ export type Cells = {
   ground: Uint8Array; height: Int32Array; fertility: Uint8Array; vegetation: Uint8Array;
 };
 
+function clamp100(value: number): number {
+  return Math.trunc(Math.max(0, Math.min(100, value)));
+}
+
 function smoothstep(t: number): number {
   const c = t < 0 ? 0 : t > 1 ? 1 : t;
   return c * c * (3 - 2 * c);
@@ -106,6 +110,10 @@ export type SiteEconomy = {
   timber: number;    // standing growth alone -- a bog has none
   stone: number;     // share of the map that is rock or gravel
   ore: number;       // share carrying a vein -- the only one that is not on the surface
+  wind: number;      // quanto tira: creste e coste
+  sun: number;       // quanto splende: cieli sgombri e caldo
+  water: number;     // quanto scorre: la portata del fiume
+  heat: number;      // quanto scotta sotto: geologia nascosta, come i filoni
   effort: number;    // growth AND marsh to clear
   room: number;      // buildable cells
 };
@@ -126,6 +134,9 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   // I filoni: un campo tutto suo, a frequenza alta perche' un giacimento e' stretto. Se
   // seguisse la pietra di superficie non aggiungerebbe nessuna geografia.
   const veins = new PlaneNoise(new Prng(`${seed}:veins`), 3, 13.0);
+  // Il calore sta piu' in profondita' dei filoni, quindi il suo campo e' piu' largo: un
+  // giacimento e' una vena, un'anomalia termica e' una regione.
+  const deep = new PlaneNoise(new Prng(`${seed}:deep`), 3, 7.0);
 
   const altitudeRoughness = 0.6 + Math.min(2.0, Math.max(0, site.elevation) / 2200.0);
   const amplitude = 320.0 * rule.roughness * altitudeRoughness;
@@ -137,6 +148,7 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   // Piu' in alto, piu' facile incontrare un filone: la roccia profonda viene a giorno dove
   // la crosta e' stata spinta su.
   const veinLine = 0.62 - 0.30 * Math.min(1, Math.max(0, site.elevation) / 2500.0);
+  const heatLine = 0.30 - 0.20 * Math.min(1, Math.max(0, site.elevation) / 2500.0);
 
   const hasRiver = site.river_flow > 0;
   const riverAxis = new Prng(`${seed}:river`).uniform(0, Math.PI);
@@ -173,6 +185,7 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   let marshCells = 0;
   let stoneCells = 0;
   let oreCells = 0;
+  let heatCells = 0;
 
   for (let y = 0; y < size; y++) {
     const v = (y / (size - 1)) * 2 - 1;
@@ -235,6 +248,7 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
       }
 
       if (veins.at(u, v) > veinLine) oreCells++;
+      if (deep.at(u, v) > heatLine) heatCells++;
 
       cells.ground[at] = index;
       cells.height[at] = Math.trunc(metres);
@@ -260,6 +274,12 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
     timber: greenAverage,
     stone: Math.trunc((100 * stoneCells) / cells_total),
     ore: Math.trunc((100 * oreCells) / cells_total),
+    // Le quattro attitudini energetiche. Tre si leggono da cio' che il pianeta gia' diceva;
+    // il calore no, e' geologia nascosta. Gemelle di `citygen.energy_potentials`.
+    wind: clamp100(18 + Math.max(0, site.elevation) / 28.0 + (site.coastal ? 28 : 0)),
+    sun: clamp100(96 - site.rainfall / 24.0 + (site.temperature - 10) / 1.8),
+    water: clamp100(site.river_flow / 34.0),
+    heat: Math.trunc((100 * heatCells) / cells_total),
     effort: greenAverage + Math.trunc((100 * marshCells) / cells_total),
     room: buildable,
   };

@@ -106,6 +106,13 @@ export default function ColonyPicker({ tileId }: { tileId: number | null }) {
           <span title="Filoni: l'unica ricchezza che non sta in superficie — la decide la quota">
             minerale <b>{ground.economy.ore}</b>
           </span>
+          {/* L'energia non si raccoglie: e' l'attitudine del LUOGO a produrne. Mostrata qui
+              perche' un sito povero di tutto puo' essere il migliore del pianeta per il sole,
+              e chi sceglie dove scendere deve poterlo sapere prima. */}
+          <span title="Vento, sole, acqua, calore: quanta corrente sa dare questo posto">
+            energia <b>{ground.economy.wind}</b>/<b>{ground.economy.sun}</b>/
+            <b>{ground.economy.water}</b>/<b>{ground.economy.heat}</b>
+          </span>
           <span title="Verde e palude da sgomberare: allunga ogni avanzamento">
             fatica <b>{ground.economy.effort}</b>
           </span>

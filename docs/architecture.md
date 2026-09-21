@@ -718,6 +718,76 @@ esattamente cio' che il ledger deve registrare.
 "fermo" di una risorsa che stava crescendo. Ora guarda i flussi netti -- e "gia' pieno" e
 "non si fermera' mai" sono tornati due stati distinti, che sembravano uguali e non lo sono.
 
+## L'energia: un flusso, non una scorta
+
+Quattro fonti -- eolico, solare, idroelettrico, geotermico -- e una regola che decide tutto il
+resto: **l'energia non si mette in magazzino.**
+
+Se si potesse accumulare, una colonia ne banchereb­be di notte e il vincolo sparirebbe: si
+tornerebbe a "abbastanza, prima o poi", che non e' una decisione. Come FLUSSO invece e'
+esattamente il caso che lo strozzatore gia' sapeva trattare -- un ingresso senza buffer -- e
+non e' servita nessuna macchina nuova, solo un limite in piu' nella stessa funzione.
+
+    Corrente: 46 prodotta - 14 pretesa - tutto a pieno regime
+    Corrente:  0 prodotta - 14 pretesa - non basta, tutto gira al 0%
+
+E quando non basta, TUTTI gli impianti rallentano insieme: non se ne sceglie uno da spegnere,
+perche' quella scelta e' del giocatore e si fa con la pausa.
+
+### Il deserto smette di essere uno scarto
+
+E' la ragione vera per cui l'energia entra adesso. Il deserto era il sito povero di tutto --
+niente roccia, niente alberi, quasi niente cibo -- e il sole lo riscatta senza che nessuna
+regola debba fare un'eccezione per lui.
+
+    deserto              sole 100   vento 28   acqua  0   calore 17
+    pluviale con fiume   sole  21   vento 26   acqua 88   calore  9
+    macchia arida 2200   sole  82   vento 96   acqua  0   calore 25
+    tundra costiera      sole  72   vento 60   acqua  0   calore 15
+
+Tre delle quattro attitudini si leggono da cio' che il pianeta gia' diceva -- quota, coste,
+piovosita', temperatura, portata del fiume. Il CALORE no: e' geologia nascosta, come i filoni,
+e ha un campo di rumore suo, piu' largo perche' un'anomalia termica e' una regione mentre un
+giacimento e' una vena.
+
+Lo stesso impianto e' una centrale diversa a seconda di dove sta, e la schermata lo dice:
+"Idroelettrico -- 0 corrente/s qui (attitudine 0)" su una casella senza fiume.
+
+## Rendere gestibile cio' che era una condanna
+
+Il gradino precedente aveva lasciato un difetto grave, trovato provandolo e non leggendolo:
+**un'opera non si poteva spegnere.** Una fonderia mangiava il legname per sempre, e siccome il
+legname serve anche a costruire, un solo impianto poteva bloccare la crescita di una colonia
+senza che il giocatore potesse farci niente.
+
+    Pausa     istantaneo  -- un impianto spento non consuma, non produce, non chiede corrente
+    Accendi   istantaneo  -- e' un interruttore, non un lavoro
+    Abbatti   istantaneo  -- senza rimborso, e si abbatte per prima una gia' spenta
+
+Costruire occupa la colonia -- una cosa alla volta, com'e' sempre stato -- ma accendere e
+spegnere no: sarebbe stato punire il giocatore per aver cambiato idea.
+
+### Due elenchi che devono coincidere, e non coincidevano
+
+Lo stesso difetto del minerale nel ledger, in un altro punto: gli impianti nuovi erano nelle
+regole e nel database, e l'API li rifiutava perche' lassu' l'elenco era ancora di uno solo --
+"Input should be 'smelter'". Adesso il modello della richiesta e' legato a `WORK_KINDS`, e un
+test prova a costruire OGNI tipo che le regole conoscono.
+
+E' la terza volta in questo progetto che due elenchi si separano in silenzio. Il rimedio che
+funziona non e' ricordarsene: e' un test che li confronta.
+
+### E il riferimento stesso si era separato
+
+La quarta volta, ed e' la peggiore, perche' e' successa AL GUARDIANO. Le quattro attitudini
+energetiche sono state aggiunte a Python, e `colonyref.py` ha continuato a scriverne sei --
+perche' elencava i campi a mano. Cosi' le due lingue sono divergute mentre il test che esiste
+esattamente per accorgersene passava, confrontando due copie vecchie.
+
+Adesso il riferimento scrive `asdict(made.economy)`: aggiungere un campo di qua ROMPE subito
+il test di la', che e' il suo mestiere. Un elenco scritto a mano si dimentica; una struttura
+no.
+
 ## Via il tick: il mondo e' continuo
 
 Il tick era il momento in cui le cose accadevano: gli ordini si accodavano a mezzanotte, ogni

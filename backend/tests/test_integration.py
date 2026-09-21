@@ -26,8 +26,8 @@ from app.service import (
     start_upgrade, stock,
 )
 from app.sim.config import (
-    RESOURCES, RULESET, STARTING_STOCK, harvest_rate, store_cap, upgrade_cost,
-    upgrade_duration,
+    RESOURCES, RULESET, STARTING_STOCK, WORK_KINDS, harvest_rate, store_cap,
+    upgrade_cost, upgrade_duration,
 )
 from app.worker import sweep
 
@@ -653,3 +653,115 @@ def test_every_resource_the_rules_can_produce_is_a_resource_the_ledger_accepts(d
         held = stock(conn, p["city_id"])
     for resource in RESOURCES:
         assert held[resource] >= 1, resource
+
+
+def test_the_api_accepts_every_plant_the_rules_know(database):
+    """Lo stesso difetto del minerale nel ledger, in un altro punto: un impianto aggiunto alle
+    regole e al database, e rifiutato dall'API perche' lassu' l'elenco era un altro. Scoperto
+    costruendo -- il solare tornava "Input should be 'smelter'".
+
+    Questo confronta i due elenchi invece di sperare che restino allineati.
+    """
+    p = player()
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {p['token']}"}
+        for kind in WORK_KINDS:
+            answer = client.post(
+                f"/cities/{p['city_id']}/works",
+                headers={**headers, "Idempotency-Key": str(uuid4())},
+                json={"kind": kind},
+            )
+            # Puo' rifiutare per mancanza di materiale o perche' la colonia e' occupata --
+            # quelle sono risposte del gioco. Non deve rifiutare perche' NON SA cosa sia.
+            assert answer.status_code != 422, (kind, answer.json())
+            if answer.status_code == 409:
+                assert answer.json()["detail"] != "unknown_work", kind
+
+    # E un impianto che non esiste resta rifiutato, o il test sopra passerebbe per vuoto.
+    with TestClient(app) as client:
+        answer = client.post(
+            f"/cities/{p['city_id']}/works",
+            headers={"Authorization": f"Bearer {p['token']}", "Idempotency-Key": str(uuid4())},
+            json={"kind": "reattore-a-fusione"},
+        )
+    assert answer.status_code == 422
+
+
+def landed_player(name="Colono"):
+    """Un giocatore la cui colonia e' DAVVERO a terra: senza atterrare, le attitudini del
+    sito sono nulle e una centrale solare non produce niente -- che e' corretto, e rende il
+    fixture in orbita inadatto a provare l'energia."""
+    with transaction() as conn:
+        if not conn.execute("SELECT 1 FROM world_map WHERE id = 1").fetchone():
+            generate_and_store(conn, "Approdo", 12)
+    who = player(name)
+    with transaction() as conn:
+        tile = conn.execute(
+            """SELECT id FROM world_tiles WHERE map_id = 1 AND elevation >= 0
+                 AND biome NOT IN ('ocean', 'lake', 'sea_ice') AND temperature > -8
+                 AND id NOT IN (SELECT tile_id FROM cities WHERE tile_id IS NOT NULL)
+               ORDER BY rainfall LIMIT 1"""
+        ).fetchone()
+        land(conn, who["city_id"], who["player_id"], tile["id"])
+    return who
+
+
+def test_a_plant_can_be_paused_resumed_and_pulled_down(database, monkeypatch):
+    """La cosa che mancava, e che rendeva una fonderia una condanna: senza un modo di dire
+    "non adesso", un solo impianto poteva mangiare il legname per sempre -- e il legname serve
+    anche a costruire.
+
+    Accendere e spegnere NON occupano la colonia: sono un interruttore, non un lavoro, e
+    chiedere un impegno di tre ore per cambiare idea sarebbe stato punire il ripensamento.
+    """
+    p = landed_player("Assolata")
+    freeze_clock(monkeypatch)
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO city_works (city_id, kind, count) VALUES (%s, 'solar', 2)",
+            (p["city_id"],),
+        )
+
+    with transaction() as conn:
+        view = service.set_work_running(conn, p["city_id"], p["player_id"], "solar", 1)
+    assert view["works"]["solar"] == 2 and view["works_idle"]["solar"] == 1
+    # Una spenta non produce: la corrente e' un flusso, e cio' che e' fermo non ne fa.
+    with transaction() as conn:
+        both = service.set_work_running(conn, p["city_id"], p["player_id"], "solar", 2)
+    assert both["power_made"] > view["power_made"]
+
+    # Non si possono accendere impianti che non si hanno.
+    with pytest.raises(DomainError) as error, transaction() as conn:
+        service.set_work_running(conn, p["city_id"], p["player_id"], "solar", 9)
+    assert error.value.detail == "out_of_range"
+
+    # Abbattere toglie uno e non chiede permesso al tempo: e' istantaneo.
+    with transaction() as conn:
+        after = service.demolish_work(conn, p["city_id"], p["player_id"], "solar")
+    assert after["works"]["solar"] == 1
+    with transaction() as conn:
+        service.demolish_work(conn, p["city_id"], p["player_id"], "solar")
+    with pytest.raises(DomainError) as error, transaction() as conn:
+        service.demolish_work(conn, p["city_id"], p["player_id"], "solar")
+    assert error.value.detail == "no_such_work"
+
+
+def test_pausing_settles_first_so_the_last_hour_is_not_rewritten(database, monkeypatch):
+    """Spegnere un impianto non deve riscrivere cio' che la colonia ha gia' prodotto: quelle
+    ore le ha prodotte col vecchio assetto, e il cursore va portato al presente PRIMA che
+    l'assetto cambi."""
+    p = landed_player("Paziente")
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO city_works (city_id, kind, count) VALUES (%s, 'solar', 1)",
+            (p["city_id"],),
+        )
+    rewind(600)
+    freeze_clock(monkeypatch)
+
+    with transaction() as conn:
+        before = stock(conn, p["city_id"])["stone"]
+        service.set_work_running(conn, p["city_id"], p["player_id"], "solar", 0)
+        after = stock(conn, p["city_id"])["stone"]
+    # I dieci minuti di raccolto sono stati incassati, non persi nel cambio di assetto.
+    assert after > before

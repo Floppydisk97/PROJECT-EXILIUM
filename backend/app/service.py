@@ -26,11 +26,11 @@ from app import citygen
 from app.sim import CityState, Commitment, PolicyPeriod, advance_city, begin_upgrade
 from app.sim.rules import begin_work
 from app.sim.config import (
-    ALL_RESOURCES, CHAINS, RESOURCES, RULESET, STARTING_STOCK, WORK_COST, WORK_DURATION,
-    store_cap, supported_level,
-    time_to_full, upgrade_cost, upgrade_duration,
+    ALL_RESOURCES, POWER_SITES, RESOURCES, RULESET, STARTING_STOCK, WORKS, power_made,
+    store_cap, supported_level, time_to_full, upgrade_cost, upgrade_duration, work_cost,
+    work_duration,
 )
-from app.sim.rules import majority_policy, net_flows, throttle
+from app.sim.rules import majority_policy, net_flows, power, throttle
 
 
 class DomainError(Exception):
@@ -56,13 +56,14 @@ def owned_city(conn, city_id, owner_id, lock=False):
     return city
 
 
-def works(conn, city_id) -> dict[str, int]:
-    """Le opere costruite, per tipo. Zero non si conserva: un'opera che non c'e' non e' una
-    riga con un conteggio a zero, e' una riga che non esiste."""
+def works(conn, city_id) -> tuple[dict[str, int], dict[str, int]]:
+    """Le opere costruite e quante ne sono spente, per tipo. Zero non si conserva: un'opera
+    che non c'e' non e' una riga con un conteggio a zero, e' una riga che non esiste."""
     rows = conn.execute(
-        "SELECT kind, count FROM city_works WHERE city_id = %s AND count > 0", (city_id,)
+        "SELECT kind, count, idle FROM city_works WHERE city_id = %s AND count > 0", (city_id,)
     ).fetchall()
-    return {row["kind"]: int(row["count"]) for row in rows}
+    return ({row["kind"]: int(row["count"]) for row in rows},
+            {row["kind"]: int(row["idle"]) for row in rows if row["idle"]})
 
 
 def stock(conn, city_id) -> dict[str, int]:
@@ -97,7 +98,8 @@ def write_entry(conn, described):
 
 
 def city_state(row, held: dict[str, int] | None = None,
-               works: dict[str, int] | None = None) -> CityState:
+               built: dict[str, int] | None = None,
+               idle: dict[str, int] | None = None) -> CityState:
     """A database row as the simulation sees it: nothing about ownership or naming, which
     are the adapter's business, and no column the rules do not actually read.
 
@@ -110,13 +112,18 @@ def city_state(row, held: dict[str, int] | None = None,
         level=row["level"],
         settled_at=row["settled_at"],
         stock=held or {},
-        works=works or {},
+        works=built or {},
+        idle=idle or {},
         # What the colony kept of its ground. Null until it lands -- and null is not zero
         # room, it is no ground to be crowded against, which is what an orbiting colony has.
         site_food=row["site_food"] or 0,
         site_timber=row["site_timber"] or 0,
         site_stone=row["site_stone"] or 0,
         site_ore=row["site_ore"] or 0,
+        site_wind=row["site_wind"] or 0,
+        site_sun=row["site_sun"] or 0,
+        site_water=row["site_water"] or 0,
+        site_heat=row["site_heat"] or 0,
         site_effort=row["site_effort"] or 0,
         site_room=row["site_room"],
     )
@@ -162,7 +169,7 @@ def advance(conn, city_row, now):
     looks at the city or asks it to do something -- so a world with nobody watching costs
     nothing and a city nobody touches is still correct the moment it is read.
     """
-    city = city_state(city_row, stock(conn, city_row["id"]), works(conn, city_row["id"]))
+    city = city_state(city_row, stock(conn, city_row["id"]), *works(conn, city_row["id"]))
     result = advance_city(
         city, commitment_of(conn, city_row["id"]), policy_periods(conn, city.settled_at), now
     )
@@ -217,7 +224,7 @@ def stall_forecast(conn, city_row, now) -> dict[str, int | None]:
     held = stock(conn, city_row["id"])
     cap = store_cap(city_row["level"])
     policy = current_policy(conn)
-    city = city_state(city_row, held, works(conn, city_row["id"]))
+    city = city_state(city_row, held, *works(conn, city_row["id"]))
     # I flussi NETTI, non il raccolto. La lega non si raccoglie: la fonde un'opera, e una
     # previsione fatta sul solo raccolto diceva "fermo" di una risorsa che stava crescendo.
     flows = net_flows(city, policy, held)
@@ -228,11 +235,41 @@ def stall_forecast(conn, city_row, now) -> dict[str, int | None]:
     return forecast
 
 
-def running_at(conn, city_row) -> int:
-    """A quanti millesimi girano le opere adesso. Mille significa a pieno regime."""
+def works_view(conn, city_row) -> dict:
+    """Le opere, il regime a cui girano e il bilancio della corrente.
+
+    La corrente si riporta come DUE numeri e non come una scorta, perche' e' un flusso: se
+    la si mostrasse come un magazzino, la prima domanda del giocatore sarebbe "quanta ne ho
+    da parte", e la risposta onesta e' che non se ne ha mai da parte.
+    """
     held = stock(conn, city_row["id"])
-    city = city_state(city_row, held, works(conn, city_row["id"]))
-    return throttle(city, current_policy(conn), held)
+    built, idle = works(conn, city_row["id"])
+    city = city_state(city_row, held, built, idle)
+    made, used = power(city)
+    return {
+        "works": built,
+        "works_idle": idle,
+        "work_permille": throttle(city, current_policy(conn), held),
+        "power_made": made,
+        "power_used": used,
+        # Cosa sa dare questo posto, per fonte. Un pannello in un deserto e uno sotto la
+        # pioggia sono lo stesso pannello e non sono la stessa centrale.
+        "site_power": {name: city_row[f"site_{name}"] or 0 for name in POWER_SITES},
+        "catalogue": {
+            kind: {
+                "label": work["label"],
+                "inputs": work.get("inputs", {}),
+                "outputs": work.get("outputs", {}),
+                "draw": work.get("draw", 0),
+                "power": (power_made(kind, city_row[f"site_{work['from']}"] or 0)
+                          if "from" in work else 0),
+                "from": work.get("from"),
+                "cost_milli": {r: str(a) for r, a in work_cost(kind).items()},
+                "seconds": int(work_duration(kind).total_seconds()),
+            }
+            for kind, work in WORKS.items()
+        },
+    }
 
 
 def city_view(conn, city_row, now) -> dict:
@@ -260,11 +297,7 @@ def city_view(conn, city_row, now) -> dict:
         # Le opere, e a che regime stanno girando. Il secondo numero e' cio' che spiega un
         # magazzino che non cresce come ci si aspettava: una fonderia a secco non si ferma,
         # rallenta, e senza dirlo sembrerebbe soltanto che i conti non tornino.
-        "works": works(conn, city_row["id"]),
-        "work_permille": running_at(conn, city_row),
-        "work_cost_milli": {name: str(amount) for name, amount in WORK_COST.items()},
-        "work_seconds": int(WORK_DURATION.total_seconds()),
-        "chains": {kind: chain for kind, chain in CHAINS.items()},
+        **works_view(conn, city_row),
         "busy_until": None if busy is None else busy.completes_at,
         "busy_with": None if busy is None else busy.kind,
     }
@@ -334,6 +367,56 @@ def start_work(conn, city_id, owner_id, kind, key):
         (city_id, key, kind, now, completes_at,
          sum(-described.amount for described in spends)),
     ).fetchone()
+
+
+def set_work_running(conn, city_id, owner_id, kind, wanted):
+    """Accendere o spegnere impianti di un tipo. Istantaneo: e' un interruttore, non un lavoro.
+
+    E' la mancanza piu' grave che il gradino precedente aveva lasciato: una fonderia mangiava
+    il legname per sempre, e siccome il legname serve anche a costruire, un solo impianto
+    poteva bloccare la crescita di una colonia senza che il giocatore potesse farci niente.
+    Un impianto in pausa non consuma, non produce e non pretende corrente.
+    """
+    if kind not in WORKS:
+        raise DomainError(422, "unknown_work")
+    city_row = owned_city(conn, city_id, owner_id, lock=True)
+    # Prima si porta la citta' al presente: cio' che ha prodotto FINO A ORA lo ha prodotto
+    # col vecchio assetto, e spegnere un impianto non deve riscrivere l'ultima ora.
+    advance(conn, city_row, db.database_now(conn))
+
+    built, _idle = works(conn, city_id)
+    have = built.get(kind, 0)
+    if not have:
+        raise DomainError(409, "no_such_work")
+    if not 0 <= wanted <= have:
+        raise DomainError(422, "out_of_range")
+    conn.execute(
+        "UPDATE city_works SET idle = %s WHERE city_id = %s AND kind = %s",
+        (have - wanted, city_id, kind),
+    )
+    return works_view(conn, owned_city(conn, city_id, owner_id))
+
+
+def demolish_work(conn, city_id, owner_id, kind):
+    """Abbattere un impianto. Niente rimborso, e va detto: cio' che e' stato messo in opera
+    e' stato messo in opera. Chi vuole solo fermarlo ha la pausa."""
+    if kind not in WORKS:
+        raise DomainError(422, "unknown_work")
+    city_row = owned_city(conn, city_id, owner_id, lock=True)
+    advance(conn, city_row, db.database_now(conn))
+
+    built, idle = works(conn, city_id)
+    have = built.get(kind, 0)
+    if not have:
+        raise DomainError(409, "no_such_work")
+    # Si abbatte per prima una gia' spenta, se ce n'e': e' l'unica scelta che non cambia
+    # cio' che la colonia sta producendo in questo istante.
+    stopped = max(0, idle.get(kind, 0) - 1)
+    conn.execute(
+        "UPDATE city_works SET count = %s, idle = %s WHERE city_id = %s AND kind = %s",
+        (have - 1, min(stopped, have - 1), city_id, kind),
+    )
+    return works_view(conn, owned_city(conn, city_id, owner_id))
 
 
 def cast_vote(conn, city_id, owner_id, choice):
@@ -437,9 +520,12 @@ def land(conn, city_id, owner_id, tile_id: int) -> dict:
         conn.execute(
             """UPDATE cities SET tile_id = %s, landed_at = %s, map_seed = %s,
                                  site_food = %s, site_timber = %s, site_stone = %s,
-                                 site_ore = %s, site_effort = %s, site_room = %s
+                                 site_ore = %s, site_wind = %s, site_sun = %s,
+                                 site_water = %s, site_heat = %s,
+                                 site_effort = %s, site_room = %s
                WHERE id = %s""",
             (tile_id, now, seed, economy.food, economy.timber, economy.stone, economy.ore,
+             economy.wind, economy.sun, economy.water, economy.heat,
              economy.effort, economy.room, city_id),
         )
     except psycopg.errors.UniqueViolation:
@@ -448,6 +534,8 @@ def land(conn, city_id, owner_id, tile_id: int) -> dict:
             "coastal": site.coastal, "river_flow": site.river_flow,
             "site_food": economy.food, "site_timber": economy.timber,
             "site_stone": economy.stone, "site_ore": economy.ore,
+            "site_wind": economy.wind, "site_sun": economy.sun,
+            "site_water": economy.water, "site_heat": economy.heat,
             "site_effort": economy.effort,
             "site_room": economy.room}
 

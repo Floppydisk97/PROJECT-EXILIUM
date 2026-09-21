@@ -138,25 +138,71 @@ def harvest_rate(resource: str, level: int, site: int, policy: str = "balanced")
     return gathered * POLICY_SHIFT[policy][resource] // 100
 
 
-# LE CATENE. Il primo prodotto: una fonderia consuma minerale e legname e restituisce lega.
+# LE OPERE. Una colonia costruisce impianti che consumano, producono, e chiedono CORRENTE.
 #
-# E' questo che trasforma il pianeta da fondale in vincolo. Il minerale sta in quota e il
-# legname in basso, quindi la colonia che ha l'uno raramente ha l'altro -- e nessuna fonderia
-# gira a pieno regime su cio' che si trova sotto i piedi.
+# L'energia non e' una quinta risorsa da accumulare: e' un FLUSSO. Se si potesse mettere in
+# magazzino, una colonia ne banchereb­be di notte e il vincolo sparirebbe -- si tornerebbe a
+# "abbastanza prima o poi", che non e' una decisione. Come flusso invece e' il caso che lo
+# strozzatore gia' sa trattare: un ingresso senza buffer, che limita sempre al ritmo con cui
+# arriva.
 #
-# I tassi sono PER OPERA: costruirne una seconda raddoppia il consumo e la resa.
-CHAINS = {
+# E lega la geografia in una direzione nuova. Il deserto era il sito povero di tutto -- niente
+# roccia, niente alberi, niente cibo -- e qui diventa il posto migliore del pianeta per il
+# sole. Un luogo senza risorse ma pieno di energia e' una scelta, non uno scarto.
+WORKS = {
     "smelter": {
+        "label": "Fonderia",
         "inputs": {"ore": 10, "timber": 8},
         "outputs": {"alloy": 6},
+        "draw": 14,                  # milli-corrente al secondo che pretende
+        "cost": {"stone": 120_000, "timber": 120_000},
+        "hours": 3,
+    },
+    "windfarm": {
+        "label": "Eolico",
+        "power": 30, "from": "wind",  # resa = power * attitudine del sito / 100
+        "cost": {"stone": 60_000, "timber": 100_000},
+        "hours": 2,
+    },
+    "solar": {
+        "label": "Solare",
+        "power": 26, "from": "sun",
+        "cost": {"stone": 40_000, "alloy": 30_000},
+        "hours": 2,
+    },
+    "hydro": {
+        "label": "Idroelettrico",
+        "power": 40, "from": "water",
+        "cost": {"stone": 200_000, "timber": 80_000},
+        "hours": 6,
+    },
+    "geothermal": {
+        "label": "Geotermico",
+        "power": 48, "from": "heat",
+        "cost": {"stone": 160_000, "alloy": 60_000},
+        "hours": 8,
     },
 }
+WORK_KINDS = tuple(WORKS)
+POWER_SITES = ("wind", "sun", "water", "heat")
 
-# Cosa costa un'opera, e quanto occupa la colonia. Una alla volta, come tutto il resto: la
-# scarsita' di questo gioco e' l'ATTENZIONE, non il magazzino.
-WORK_COST = {"stone": 120_000, "timber": 120_000}
-WORK_DURATION = timedelta(hours=3)
-MAX_WORKS = 8           # oltre, una colonia sarebbe una fabbrica e non un insediamento
+MAX_WORKS = 8           # per tipo: oltre, una colonia sarebbe una fabbrica e non un insediamento
+
+
+def work_cost(kind: str) -> dict[str, int]:
+    return dict(WORKS[kind]["cost"])
+
+
+def work_duration(kind: str) -> timedelta:
+    return timedelta(hours=WORKS[kind]["hours"])
+
+
+def power_made(kind: str, site: int) -> int:
+    """Milli-corrente al secondo che un impianto di questo tipo rende QUI. Un pannello in un
+    deserto e uno sotto la pioggia sono lo stesso pannello e non sono la stessa centrale."""
+    work = WORKS[kind]
+    return work.get("power", 0) * site // 100
+
 
 # Da questo livello in su un avanzamento vuole anche LEGA, che non si raccoglie: si fonde.
 # Senza questo la catena produrrebbe un numero che nessuno spende -- lo stesso difetto che il
