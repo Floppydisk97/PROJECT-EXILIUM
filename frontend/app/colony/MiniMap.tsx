@@ -3,7 +3,8 @@
 import { useEffect, useRef } from "react";
 import type { Generated } from "./citygen";
 import type { Camera } from "./ColonyView";
-import { groundColor } from "./ground";
+import { litColor } from "./ground";
+import { reliefOf } from "./light";
 
 /** La minimappa: tutta la colonia in un francobollo, col rettangolo di dove stai guardando.
  *
@@ -31,11 +32,14 @@ export default function MiniMap(
     const context = buffer.getContext("2d")!;
     const image = context.createImageData(side, side);
     const step = ground.size / side;
+    // La STESSA luce della tela grande: una minimappa piatta accanto a un terreno in rilievo
+    // sembrerebbe la mappa di un altro posto.
+    const relief = reliefOf(ground);
     for (let y = 0; y < side; y++) {
       for (let x = 0; x < side; x++) {
         const cell = Math.min(ground.size - 1, Math.floor(y * step)) * ground.size
                    + Math.min(ground.size - 1, Math.floor(x * step));
-        const [r, g, b] = groundColor(ground, cell);
+        const [r, g, b] = litColor(ground, relief, cell);
         const at = (y * side + x) * 4;
         image.data[at] = r; image.data[at + 1] = g; image.data[at + 2] = b; image.data[at + 3] = 255;
       }

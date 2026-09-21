@@ -1155,6 +1155,107 @@ impostare: nessun suono, nessuna velocita' da regolare in un mondo che cammina d
 nessuna scorciatoia. Il menu esiste comunque, perche' e' il posto dove quelle cose andranno e
 inventarlo dopo significa rifare il disegno.
 
+## La luce, che non c'era
+
+Il terreno della colonia era dipinto piatto: un colore per cella, e sopra un velo di puntini
+bianchi a schermo. Il generatore pero' scriveva gia' l'ALTEZZA di ogni cella, in metri, e non
+la guardava nessuno -- una collina e una piana uscivano dello stesso identico colore. Il
+difetto non si vedeva come un difetto: si vedeva come uno stile.
+
+    prima     un colore per cella, puntinio bianco, confini a mezzatinta
+    adesso    pendenza, conche, acqua che si fa fonda, rive, macchie nel terreno
+
+### Il piano vale esattamente uno
+
+La regola che tiene insieme tutto il modello: su terreno piatto la luce vale **1.0**, cioe' il
+colore della tavolozza esce com'e' stato scelto. La luce aggiunge solo cio' che il terreno fa
+davvero. Senza quel vincolo ogni ritocco alla tavolozza sarebbe stato una trattativa con
+l'illuminazione, e si sarebbe finiti a scegliere i colori guardando il risultato invece che il
+posto.
+
+E la scala della pendenza la decide il SITO, non una costante: si misura la pendenza tipica
+della colonia e si tara su quella. Un deserto piatto e una valle alpina hanno lo stesso
+diritto di vedersi; con una scala assoluta uno sarebbe stato carta bianca e l'altro carbone.
+
+### L'ombra e' azzurra
+
+L'ombra non e' nero, e' il cielo che ci arriva dentro. Quindi la luce non ha solo una
+quantita' ma un colore: caldo dove batte, azzurro dove non arriva. E' una riga di codice ed e'
+meta' della differenza fra un terreno e un disegno sfumato col grigio.
+
+### Tre cose trovate solo guardandole
+
+**Le curve di livello stampate sulla sabbia.** Le altezze sono interi di metri e le celle sono
+larghe otto: un gradino di un metro vale 0,125 di pendenza, che in una piana e' PIU' della
+pendenza vera. Derivare quella scala a gradini dava terrazze, e le terrazze si leggevano come
+un'impronta digitale su tutta la piana. Sette celle di media prima di derivare -- una
+cinquantina di metri -- sciolgono il gradino e non toccano un rilievo largo centinaia.
+
+**La nuvola bianca appoggiata sul bosco.** Con un tetto di luce alto, una rupe grigio chiaro
+arrivava a centosettanta di grigio piu' la tinta calda: in mezzo a una foresta verde scura si
+leggeva come una nuvola, non come una rupe. Estremi piu' stretti, roccia piu' scura, e una
+grana per materiale -- la roccia e' mossa, la sabbia no.
+
+**La costa tirata col righello.** Era una diagonale netta attraverso la mappa: a sei
+chilometri non si legge come una costa, si legge come la sponda di un canale. Adesso serpeggia
+con un campo di rumore suo, come il fiume ha sempre fatto. E' un cambio al GENERATORE, quindi
+in tutte e due le lingue, con il riferimento rigenerato e il test di equivalenza a controllare
+che le due copie siano ancora la stessa cosa.
+
+### Un bosco non e' un prato scuro
+
+Il verde era uno solo, piu' o meno carico: la differenza fra prato e foresta era solo di
+luminosita', ed e' per questo che un bosco sembrava un prato scuro. Adesso sono due fermate,
+prato e bosco, e la terra povera fa foglie gialle invece che foglie scure -- che e' la
+differenza fra una macchia mediterranea e una foresta.
+
+Le piante, poi, erano lo stesso cespuglio timbrato cento volte su una griglia uniforme. Tre
+tiri di dado indipendenti invece di uno riciclato (taglia, inclinazione, colore), il numero
+dei lobi che cambia, e la densita' moltiplicata per un campo di macchie: e' quello che apre le
+radure. Ogni pianta prende la luce della cella su cui sta, se no un bosco in ombra restava
+verde acceso e sembrava incollato sopra il terreno.
+
+### La grana e' una cosa da vicino
+
+Il puntinio stava a risoluzione di SCHERMO, quindi a tutta mappa erano seicentomila celle
+sotto un velo di sabbia: si leggeva come carta vetrata. Adesso le macchie larghe stanno nel
+BUFFER -- crescono insieme al terreno -- e il puntinio fine entra solo avvicinandosi, con una
+seconda passata ancorata al terreno perche' il buffer ha due pixel per cella e ingrandito a
+venti e' una poltiglia.
+
+### Cosa costa
+
+Misurato, stessa macchina, dalla richiesta al terreno in piedi:
+
+| | prima | adesso |
+|---|---|---|
+| caricamento | 905 ms | 1.400 ms |
+| fotogramma | 16,7 ms | 16,7 ms |
+
+Il disegno non e' cambiato di prezzo -- il buffer si dipinge una volta e poi panoramica e
+ingrandimento restano un `drawImage`. Il caricamento si' -- di mezzo secondo -- ed e' quasi
+tutto nel ciclo per sottopixel, non nelle chiamate al rumore: precalcolare i reticoli delle
+macchie non ha spostato niente, e la prova e' stata tolta invece di essere tenuta per fede.
+Cio' che ha spostato e' la memoria: il percorso del colore non alloca piu' un vettore per
+cella.
+
+### E una prova che falliva a caso
+
+Durante questo lavoro la suite del backend ha fallito una volta su un test che da solo
+passava sempre: `test_the_timeline_records_a_move_and_collapses_one_that_took_no_time`. Non
+era casuale, e non era del gioco.
+
+`database_now` tronca al secondo. Quel test fermava l'orologio DOPO aver creato i giocatori,
+mentre ogni altra prova lo ferma prima -- e il primo periodo di politica nasce insieme ai
+giocatori. Se la loro creazione scavalcava un secondo intero, il periodo iniziale aveva
+lunghezza positiva, non veniva accorpato, e l'asserzione trovava due righe invece di una.
+Scavalcare un secondo intero dipende da quanto e' carica la macchina, ed era carica perche'
+stavo compilando il visore nello stesso momento.
+
+Vale la pena scriverlo perche' il primo istinto e' chiamarla una fluttuazione e rilanciare: e
+una prova che fallisce una volta ogni tanto, lasciata li', prima o poi si prende la colpa di
+qualcos'altro.
+
 ## Decisioni
 
 Le scelte che vincolano il progetto — il tick da 24 ore, il multiplayer, il confine della

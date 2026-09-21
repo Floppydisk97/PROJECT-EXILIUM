@@ -78,14 +78,21 @@ export const BIOMES: Record<string, { label: string; color: number }> = {
 // Water never hosts a colony, even where a lake sits above sea level.
 export const WATER_BIOMES = new Set(["ocean", "lake", "sea_ice"]);
 
-// The shelf ring is shaded by its real depth, from the surf line out to where the sea floor
-// drops away; past that the client draws open ocean as one smooth shell.
+// Il mare e' una rampa sola, dalla battigia all'abisso.
+//
+// Prima erano due: la piattaforma sfumava fino al colore dell'oceano aperto, e poi TUTTO cio'
+// che era piu' fondo di novecento metri saltava di colpo al colore del bioma -- che e' un
+// altro blu. Il risultato era un anello chiaro, uno scalino, e poi una lastra piatta grande
+// quanto un oceano. Adesso la stessa curva continua fino all'abisso, e un oceano ha un fondo
+// che si vede invece di essere una tinta.
 export const SHELF_SHALLOW = 0x6ba3c4;
-// The deep end of the shelf is exactly the open-ocean colour, so the ring fades into the
-// sea instead of ending on a seam.
 export const OCEAN_DEEP = 0x35688f;
 export const SHELF_DEEP = OCEAN_DEEP;
 export const SHELF_MAX_DEPTH = 900;
+/** Dove la rampa arriva, e il colore a cui arriva: lo stesso guscio che sta sotto il mare,
+ *  cosi' una fessura fra le caselle non scopre un blu diverso. */
+export const ABYSS = 0x24486b;
+export const ABYSS_DEPTH = 5200;
 
 export const RIVER_MINOR = 0x4e9ed0;
 export const RIVER_MAJOR = 0x8ad6f5;

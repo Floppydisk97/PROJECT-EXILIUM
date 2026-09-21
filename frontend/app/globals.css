@@ -25,12 +25,20 @@ html, body {
   left: 50%;
   transform: translateX(-50%);
   margin: 0;
-  font-size: clamp(15px, 2.4vw, 22px);
+  font-size: clamp(14px, 2vw, 19px);
   font-weight: 600;
   letter-spacing: 0.02em;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+  /* Su una pastiglia come il resto della cornice, invece che appoggiato nudo sul pianeta con
+     un'ombra pesante sotto: un titolo con l'ombra stampata addosso si legge come una scritta
+     incollata sopra la foto, e tutto il resto di questa interfaccia parla per pastiglie. */
+  background: rgba(10, 15, 21, 0.72);
+  border: 1px solid rgba(60, 80, 104, 0.5);
+  border-radius: 999px;
+  padding: 7px 18px;
+  backdrop-filter: blur(6px);
   pointer-events: none;
   text-align: center;
+  white-space: nowrap;
 }
 
 .globe-panel {
@@ -68,8 +76,10 @@ html, body {
 
 .globe-hint {
   position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
-  margin: 0; color: var(--muted); font-size: 13px; text-align: center;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); pointer-events: none;
+  margin: 0; color: var(--muted); font-size: 12px; text-align: center;
+  background: rgba(10, 15, 21, 0.66); border: 1px solid rgba(60, 80, 104, 0.4);
+  border-radius: 999px; padding: 5px 14px; backdrop-filter: blur(6px);
+  pointer-events: none;
 }
 
 .status-pill {

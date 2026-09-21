@@ -20,6 +20,10 @@ export const GROUNDS = [
   "deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice",
 ] as const;
 
+/** Quanto la costa si scosta dalla sua retta, in unita' di mezza mappa: una ventina di
+ *  celle, cioe' una baia e non un frattale. */
+export const COAST_WANDER = 0.055;
+
 export const RIPARIAN_REACH = 260.0;
 export const RIPARIAN_GAIN = 55;
 export const POOLING_CLIMATE = 0.40;
@@ -137,6 +141,9 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
   // Il calore sta piu' in profondita' dei filoni, quindi il suo campo e' piu' largo: un
   // giacimento e' una vena, un'anomalia termica e' una regione.
   const deep = new PlaneNoise(new Prng(`${seed}:deep`), 3, 7.0);
+  // La costa serpeggia. Senza, e' una diagonale tirata col righello: a sei chilometri
+  // non si legge come una costa, si legge come la sponda di un canale.
+  const coast = new PlaneNoise(new Prng(`${seed}:coast`), 3, 5.5);
 
   const altitudeRoughness = 0.6 + Math.min(2.0, Math.max(0, site.elevation) / 2200.0);
   const amplitude = 320.0 * rule.roughness * altitudeRoughness;
@@ -197,7 +204,8 @@ export function generate(seed: string, site: Site, size: number = SIZE): Generat
       let bank = -1e9;
       let depthBelow = 0;
       if (site.coastal) {
-        const shoreTerm = (u * shoreDx + v * shoreDy - 0.35) * 900.0;
+        const towardSea = u * shoreDx + v * shoreDy + COAST_WANDER * coast.at(u, v);
+        const shoreTerm = (towardSea - 0.35) * 900.0;
         if (shoreTerm > depthBelow) depthBelow = shoreTerm;
         if (shoreTerm > bank) bank = shoreTerm;
       }

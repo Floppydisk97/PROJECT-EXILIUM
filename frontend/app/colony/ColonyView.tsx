@@ -33,6 +33,7 @@ export default function ColonyView(
     const seed = seedNumber(ground.seed);
     const terrain = paintTerrain(ground, seed);
     const grain = context.createPattern(makeGrain(seed), "repeat")!;
+    const coarse = context.createPattern(makeGrain(seed ^ 0x9e3779b9, 96), "repeat")!;
 
     // The camera: pixels per cell, and which cell sits at the top-left. Kept in a ref-like
     // closure rather than in state, because a pan must not go through React.
@@ -104,11 +105,26 @@ export default function ColonyView(
       context.translate(-originX * scale, -originY * scale);
       context.drawImage(terrain, 0, 0, ground.size * scale, ground.size * scale);
       // The fine texture, at screen resolution and therefore the same crispness at every zoom.
-      context.save();
-      context.globalAlpha = 0.16;
-      context.fillStyle = grain;
-      context.fillRect(originX * scale, originY * scale, width, height);
-      context.restore();
+      // La grana fine e' una cosa da VICINO. A tutta mappa sono seicentomila celle sotto un
+      // velo di puntini: si legge come carta vetrata, non come terra. Il terreno larga scala
+      // ce l'ha gia' dentro il buffer, quindi qui la si fa entrare solo quando ci si avvicina.
+      const closeness = Math.max(0, Math.min(1, (scale - 3) / 11));
+      if (closeness > 0) {
+        context.save();
+        context.globalAlpha = 0.04 + 0.12 * closeness;
+        context.fillStyle = grain;
+        context.fillRect(originX * scale, originY * scale, width, height);
+        // E una seconda passata ANCORATA AL TERRENO, che cresce insieme a lui. Il buffer ha
+        // due pixel per cella: ingrandito a venti e' una poltiglia sfocata, e fra un cespuglio
+        // e l'altro restava una tinta unita. Questa e' la terra da vicino.
+        if (scale > 6) {
+          coarse.setTransform(new DOMMatrix().scale(scale / 7));
+          context.globalAlpha = 0.05 + 0.07 * closeness;
+          context.fillStyle = coarse;
+          context.fillRect(originX * scale, originY * scale, width, height);
+        }
+        context.restore();
+      }
       paintProps(context, ground, seed, {
         x0: originX, y0: originY,
         x1: originX + width / scale, y1: originY + height / scale, scale,

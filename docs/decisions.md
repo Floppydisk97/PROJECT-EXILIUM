@@ -395,3 +395,52 @@ uscire dal bottone per finire sotto la ricetta.
 **Da rivedere se.** Arriva il gioco su telefono come bersaglio serio (l'impaginazione a mano
 non basta più), oppure il pannello cresce al punto da avere sezioni proprie: a quel punto
 diventa una scheda con delle linguette, non un pannello solo più lungo.
+
+---
+
+## ADR-011 — Il rilievo si calcola dall'altezza che il generatore già scrive
+
+**Decisione.** Il terreno della colonia è illuminato: pendenza, conche, profondità dell'acqua e
+distanza dalla riva, tutto derivato da `cells.height` — la colonna che il generatore scriveva
+già e che nessuno leggeva. Il modello sta in `colony/light.ts`, è funzione pura delle celle, è
+sotto test, e vale **esattamente 1.0** sul terreno piatto.
+
+**Motivazione.** Il difetto non si vedeva come un difetto: un terreno piatto e uniforme si
+legge come uno stile grafico, non come un dato mancante. Ma una collina e una pianura uscivano
+identiche, e in un gioco in cui il sito è tutto — fertilità, pietra, vento, sole — il terreno
+era l'unica cosa che non raccontava niente di sé.
+
+**Alternative scartate.**
+1. *Ombreggiare a tempo di disegno, nello shader.* Scartata: qui non c'è un motore 3D, è una
+   tela 2D, e il rilievo non cambia mai. Calcolarlo sessanta volte al secondo per un dato
+   immutabile è spesa pura.
+2. *Una scala di pendenza assoluta, uguale per tutti i siti.* Scartata misurandola: un deserto
+   piatto diventava carta bianca e una valle alpina carbone. La scala si tara sul sito.
+3. *Alzare i pixel per cella del buffer da 2 a 3 o 4.* Scartata: 4 sono 9,4 megapixel, oltre
+   quel che Safari su telefono alloca. La grana ancorata al terreno costa zero memoria e
+   risolve lo stesso problema.
+4. *Tenere il verde a una fermata sola.* Scartata: era la ragione per cui un bosco sembrava un
+   prato scuro.
+
+**Costo.** Il caricamento passa da **905 ms a ~1.400 ms** (stessa macchina, dalla richiesta al
+terreno in piedi). Il fotogramma non cambia: 16,7 ms prima e dopo, perché il buffer si dipinge
+una volta sola. Mezzo secondo in più una volta, per un terreno che si vede.
+
+**Rischi e criticità.**
+- **Il mezzo secondo è misurato su un portatile.** Su un telefono di fascia media sarà
+  plausibilmente il triplo, e non l'ho provato: non ho un telefono qui. È la misura che manca.
+- **La costa che serpeggia è un cambio al GENERATORE**, non al disegno. Le colonie già
+  fondate hanno i loro numeri del sito scritti in riga al momento dell'atterraggio: il
+  terreno che vedranno adesso è leggermente diverso da quello su cui quei numeri furono
+  calcolati. Lo scarto è piccolo (la costa si sposta di una ventina di celle) ma esiste, e
+  l'unico modo pulito di azzerarlo è rifondare le colonie di prova.
+- **Il disegno resta verificato a occhio.** I test tengono il modello di luce — piano uguale a
+  1, verso del sole, acqua che si fa fonda, niente terrazze — ma che il risultato sia *bello*
+  lo dicono solo le schermate, una per volta, su una finestra sola.
+- **La memoria del rilievo** è ~1,8 MB per colonia, tenuti vivi in una `WeakMap` finché la
+  colonia è viva. Con una colonia sola non si vede; passando fra colonie senza ricaricare, va
+  guardato.
+
+**Da rivedere se.** Il caricamento su telefono risulta inaccettabile: la via è dipingere il
+buffer a pezzi, un riquadro alla volta, invece di tutto in una passata — il che cambia
+l'architettura del disegno, non una costante.

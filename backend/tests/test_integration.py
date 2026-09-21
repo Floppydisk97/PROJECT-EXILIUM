@@ -225,8 +225,16 @@ def test_the_timeline_records_a_move_and_collapses_one_that_took_no_time(databas
     told apart from the one it replaced -- and, left alone, it would collide with the
     uniqueness of `from_at` and fail the request outright.
     """
-    first, second = player("A"), player("B")
+    # Il fermo dell'orologio va PRIMA dei giocatori, come in ogni altra prova qui.
+    #
+    # Messo dopo, questa prova dipendeva dal caso: `database_now` tronca al secondo, e il
+    # primo periodo di politica nasce insieme ai giocatori. Se la loro creazione scavalcava
+    # un secondo intero -- cosa che succede quando la macchina e' carica -- il periodo
+    # iniziale aveva lunghezza positiva, non si accorpava, e l'asserzione trovava due righe
+    # invece di una. Non un difetto del gioco: un difetto della prova, che falliva una volta
+    # ogni tanto e si sarebbe presa la colpa di qualcos'altro.
     now = freeze_clock(monkeypatch)
+    first, second = player("A"), player("B")
     with transaction() as conn:
         cast_vote(conn, first["city_id"], first["player_id"], "industrial")
         cast_vote(conn, second["city_id"], second["player_id"], "industrial")

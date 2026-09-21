@@ -30,6 +30,10 @@ CELL_METRES = 8
 
 # How far a bank stays fertile, and by how much. A river or a shore is the strongest thing a
 # site can have: it is what makes a desert worth landing on at all.
+# How far the coastline wanders off its straight line, in half-map units: about
+# twenty cells, which is a bay and not a fractal.
+COAST_WANDER = 0.055
+
 RIPARIAN_REACH = 260.0      # centimetres of height above the water line
 RIPARIAN_GAIN = 55          # fertility added right at the water's edge
 POOLING_CLIMATE = 0.40      # below this a climate does not fill its hollows, so no banks
@@ -260,6 +264,9 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
     # sarebbe la pietra con un altro nome, e una macchia arida sarebbe ricca due volte.
     veins = PlaneNoise(_rng(seed, "veins"), 3, 13.0)
     deep = PlaneNoise(_rng(seed, "deep"), 3, 7.0)
+    # The coastline wanders. Without this it is a ruled diagonal across the map --
+    # at six kilometres that does not read as a coast, it reads as a canal wall.
+    coast = PlaneNoise(_rng(seed, "coast"), 3, 5.5)
 
     altitude_roughness = 0.6 + min(2.0, max(0.0, site.elevation) / 2200.0)
     amplitude = 320.0 * rule.roughness * altitude_roughness
@@ -314,7 +321,7 @@ def generate(seed: str, site: Site, size: int = SIZE) -> CityMap:
             bank = -1e9          # how close this cell is to water that REALLY exists
             depth_below = 0.0
             if site.coastal:
-                toward_sea = u * shore_dx + v * shore_dy
+                toward_sea = u * shore_dx + v * shore_dy + COAST_WANDER * coast.at(u, v)
                 shore_term = (toward_sea - 0.35) * 900.0
                 depth_below = max(depth_below, shore_term)
                 bank = max(bank, shore_term)
