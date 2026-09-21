@@ -1,0 +1,59 @@
+{
+  "colonies": [
+    {
+      "biome": "tropical_swamp",
+      "file": "colony-delta-d718564cf4e8.bin",
+      "label": "Delta tropicale",
+      "name": "delta",
+      "packed_bytes": 19346,
+      "raw_bytes": 178536,
+      "size": 128
+    },
+    {
+      "biome": "desert",
+      "file": "colony-nilo-03bb2611cba0.bin",
+      "label": "Fiume nel deserto",
+      "name": "nilo",
+      "packed_bytes": 20670,
+      "raw_bytes": 163179,
+      "size": 128
+    },
+    {
+      "biome": "temperate_forest",
+      "file": "colony-foresta-697111175ce1.bin",
+      "label": "Foresta temperata",
+      "name": "foresta",
+      "packed_bytes": 29786,
+      "raw_bytes": 180884,
+      "size": 128
+    },
+    {
+      "biome": "boreal_forest",
+      "file": "colony-costa-ce4a8e80aa35.bin",
+      "label": "Costa boreale",
+      "name": "costa",
+      "packed_bytes": 28046,
+      "raw_bytes": 181277,
+      "size": 128
+    },
+    {
+      "biome": "arid_shrubland",
+      "file": "colony-altopiano-6774e5507c5a.bin",
+      "label": "Altopiano arido",
+      "name": "altopiano",
+      "packed_bytes": 27315,
+      "raw_bytes": 176216,
+      "size": 128
+    },
+    {
+      "biome": "ice_sheet",
+      "file": "colony-ghiaccio-2a0957a01779.bin",
+      "label": "Calotta polare",
+      "name": "ghiaccio",
+      "packed_bytes": 15722,
+      "raw_bytes": 152507,
+      "size": 128
+    }
+  ],
+  "world_seed": "Erebo-01"
+}
