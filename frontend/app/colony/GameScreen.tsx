@@ -189,7 +189,6 @@ export default function GameScreen({ tileId }: { tileId: number | null }) {
 
       {menuOpen && (
         <Menu
-          server={apiBase()}
           onClose={() => setMenuOpen(false)}
           onPlanet={planet}
           onCity={() => { setPanelOpen(true); setMenuOpen(false); }}

@@ -1,7 +1,9 @@
 // Il client verso il server autoritativo. Le decisioni che contano non sono "chiama fetch":
 // sono COSA fa quando la risposta non arriva, e cosa NON fa quando la risposta e' un rifiuto.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiUnavailable, NotAuthorised, apiBase, call, saveToken, savedToken } from "./api";
+import {
+  ApiUnavailable, NotAuthorised, apiBase, call, saveApiBase, saveToken, savedToken,
+} from "./api";
 
 // Un magazzino locale finto: i test girano in node, dove non esiste. Averlo in mano serve
 // anche a poterlo rompere di proposito, che e' un caso vero -- finestra anonima, dati di
@@ -136,3 +138,19 @@ describe("cio' che manda", () => {
     expect(headers["Idempotency-Key"]).toMatch(/^[0-9a-f-]{36}$/);
   });
 });
+
+describe("cambiare server a mano", () => {
+  it("toglie la barra finale, come fa chi legge l'indirizzo", () => {
+    saveApiBase("  https://esempio.test///  ");
+    expect(apiBase()).toBe("https://esempio.test");
+  });
+
+  it("un campo svuotato TOGLIE la scelta invece di salvare il vuoto", () => {
+    // Se salvasse la stringa vuota, l'indirizzo compilato nel sito non tornerebbe mai piu':
+    // si resterebbe senza server e senza modo di tornare indietro.
+    saveApiBase("https://esempio.test");
+    saveApiBase("   ");
+    expect(localStorage.getItem("exilium.api")).toBeNull();
+  });
+});
+

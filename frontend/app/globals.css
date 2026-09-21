@@ -312,6 +312,19 @@ html, body {
 .hud-menu-note { color: #9fb0bf; font-size: 0.8rem; margin: 0; line-height: 1.5; }
 .hud-menu-note code { color: #dbe6ef; }
 
+/* Dove sta il server. Tre schermate lo mostrano, quindi una regola sola. */
+.server-field {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem;
+  align-items: center; max-width: 34rem; margin-top: 0.6rem;
+}
+.server-field label { color: var(--muted); font-size: 0.78rem; }
+.server-field input {
+  background: #0c1219; border: 1px solid #243040; border-radius: 4px; color: var(--text);
+  font: inherit; font-size: 0.84rem; padding: 0.4rem 0.55rem; min-width: 0;
+}
+.server-field input:focus { outline: none; border-color: #3d5c79; }
+.server-field button { padding: 0.4rem 0.7rem; font-size: 0.82rem; white-space: nowrap; }
+
 @media (max-width: 720px) {
   .hud-minimap { width: 108px; height: 108px; }
   .hud-pill { font-size: 0.76rem; padding: 0.18rem 0.45rem; }

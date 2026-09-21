@@ -1,6 +1,7 @@
 "use client";
 
 import type { CityView } from "../lib/api";
+import ServerField from "../city/ServerField";
 import { stallShort, units } from "../city/format";
 
 /** Le risorse, in alto, come in un gioco di civilta'.
@@ -81,9 +82,8 @@ export function ScoutBar(
 }
 
 export function Menu(
-  { onClose, onPlanet, onCity, onForget, server }:
-  { onClose: () => void; onPlanet: () => void; onCity: () => void;
-    onForget: () => void; server: string },
+  { onClose, onPlanet, onCity, onForget }:
+  { onClose: () => void; onPlanet: () => void; onCity: () => void; onForget: () => void },
 ) {
   return (
     <div className="hud-menu-back" onClick={onClose}>
@@ -93,9 +93,7 @@ export function Menu(
         <button onClick={onCity}>🏛 Governo della colonia</button>
         <hr />
         <h3>Impostazioni</h3>
-        <p className="hud-menu-note">
-          Server: <code>{server || "nessuno"}</code>
-        </p>
+        <ServerField />
         <p className="hud-menu-note">
           Il terreno lo disegna questo browser, dal seme che il server conserva: muoversi e
           ingrandire non chiedono niente a nessuno.

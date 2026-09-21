@@ -6,6 +6,7 @@ import {
 } from "../lib/api";
 import { stallNote, units } from "./format";
 import CityPanel from "./CityPanel";
+import ServerField from "./ServerField";
 
 const RESOURCES = ["food", "timber", "stone", "ore", "alloy"] as const;
 const LABEL: Record<string, string> = {
@@ -84,10 +85,13 @@ export default function CityScreen() {
   if (!apiBase()) {
     return (
       <main className="city-page">
+        <header className="city-head"><a className="colony-back" href="/">← Pianeta</a>
+          <h1>La tua colonia</h1></header>
         <p className="city-note">
           Questa pagina parla con il server autoritativo, e nessun server è configurato per
           questa copia del visore. Il globo e il terreno funzionano lo stesso: sono file.
         </p>
+        <ServerField />
       </main>
     );
   }
@@ -109,6 +113,7 @@ export default function CityScreen() {
             Il token te lo dà il comando che crea la colonia. Resta su questo browser e non
             va da nessun'altra parte.
           </p>
+          <ServerField />
           {failure && <p className="city-alarm">{failure}</p>}
         </form>
       </main>

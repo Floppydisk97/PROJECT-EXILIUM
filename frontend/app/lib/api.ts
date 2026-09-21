@@ -32,6 +32,19 @@ export function apiBase(): string {
   return raw.replace(/\/+$/, "");
 }
 
+/** Cambiare server a mano. Senza questo, l'indirizzo lo decideva solo la compilazione, e una
+ *  copia del visore compilata per un server era inutilizzabile contro un altro -- compresa la
+ *  pagina che diceva "nessun server configurato" e non dava alcun modo di configurarlo. */
+export function saveApiBase(base: string): void {
+  const clean = base.trim().replace(/\/+$/, "");
+  try {
+    if (clean) localStorage.setItem("exilium.api", clean);
+    else localStorage.removeItem("exilium.api");
+  } catch {
+    // Finestra anonima o dati di sito bloccati: non c'e' dove scrivere, e va bene cosi'.
+  }
+}
+
 const TOKEN_KEY = "exilium.token";
 
 export function savedToken(): string | null {
