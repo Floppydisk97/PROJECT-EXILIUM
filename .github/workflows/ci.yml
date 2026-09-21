@@ -1,5 +1,26 @@
 name: Foundation checks
-on: [push, pull_request]
+
+# Un evento solo, non due.
+#
+# `[push, pull_request]` faceva girare la stessa identica revisione DUE VOLTE per ogni ramo
+# con una PR aperta: si vede nella storia dei run, coppie con lo stesso SHA a un secondo di
+# distanza (116/117, 125/126). Per una PR che nasce da un ramo di QUESTO repository il push
+# copre gia' tutto, quindi il secondo giro non aggiungeva un controllo -- aggiungeva una
+# fattura. Il prezzo di questa scelta: una PR che arrivasse da un fork non verrebbe
+# controllata, perche' il suo push non passa di qui. Oggi non ce ne sono.
+on:
+  push:
+    # Un cambio ai soli documenti non puo' rompere il codice, e questo progetto scrive molti
+    # documenti. Se un giorno un test leggera' un file di docs, questa riga va tolta.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+
+# E un push che ne supera un altro sullo stesso ramo annulla il primo: il risultato di una
+# revisione gia' sorpassata non lo guarda nessuno, ma i minuti li paga lo stesso.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:
