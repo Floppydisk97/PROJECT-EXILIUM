@@ -63,7 +63,12 @@ def write(path: Path, seed: str, frequency: int) -> dict:
             "generator_version": worldgen.GENERATOR_VERSION,
             "columns": list(TILE_COLUMNS),
         }
-        out.write(json.dumps(header, separators=(",", ":")) + "\n")
+        head = json.dumps(header, separators=(",", ":"))
+        # Il sigillo copre ANCHE l'intestazione. Senza, un seme o una versione del generatore
+        # corrotti entravano in `world_map` in silenzio mentre la somma continuava a tornare:
+        # un pianeta che dichiara di essere un altro pianeta, e nessun modo di accorgersene.
+        digest.update(head.encode("utf-8"))
+        out.write(head + "\n")
         for values in tile_values(world):
             line = json.dumps(values, separators=(",", ":"))
             digest.update(line.encode("utf-8"))
@@ -73,6 +78,10 @@ def write(path: Path, seed: str, frequency: int) -> dict:
                              separators=(",", ":")) + "\n")
     return {"file": str(path), "tiles": written, "bytes": path.stat().st_size,
             "seed": world.seed, "frequency": world.frequency}
+
+
+REQUIRED_HEADER = ("format", "name", "seed", "frequency", "sea_level",
+                   "generator_version", "columns")
 
 
 def load(conn, path: Path) -> dict:
@@ -88,12 +97,35 @@ def load(conn, path: Path) -> dict:
     """
     if conn.execute("SELECT 1 FROM world_map WHERE id = 1").fetchone():
         raise DomainError(409, "World map already generated; a new world needs a new migration")
+    try:
+        return _load(conn, path)
+    except (EOFError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError) as broken:
+        # Un gzip tagliato a meta' non da' una riga in meno: da' `EOFError` mentre lo si
+        # scompatta. Un file che non e' un pianeta da' altro ancora. Sono tutti lo stesso
+        # caso per chi guarda -- "questo file non si puo' caricare" -- e devono dirlo cosi'.
+        raise DomainError(422, f"Planet file is unreadable: {broken}") from broken
+
+
+def _load(conn, path: Path) -> dict:
+    # Senza limite di tempo, e di proposito. `transaction()` mette `statement_timeout` a
+    # sessanta secondi perche' protegge le RICHIESTE: una query che scappa non deve tenere
+    # occupato il server. Questo non e' una richiesta -- e' un comando amministrativo che
+    # qualcuno lancia guardandolo -- e il pianeta e' un `COPY` solo: misurato, 36 s per un
+    # pianeta a quattro volte la dimensione di oggi, su socket locale. Verso un database
+    # gestito in rete, cioe' l'unico caso per cui questo comando esiste, sessanta secondi si
+    # sforano e il caricamento viene annullato e rifatto indietro a tre quarti dell'opera.
+    conn.execute("SET LOCAL statement_timeout = 0")
 
     with gzip.open(path, "rt", encoding="utf-8") as source:
         header = json.loads(source.readline())
-        if header.get("format") != FORMAT:
-            raise DomainError(422, f"Not a planet file: {header.get('format')!r}")
-        if header.get("columns") != list(TILE_COLUMNS):
+        if not isinstance(header, dict) or header.get("format") != FORMAT:
+            raise DomainError(422, f"Not a planet file: {header.get('format') if isinstance(header, dict) else type(header).__name__!r}")
+        missing = [key for key in REQUIRED_HEADER if key not in header]
+        if missing:
+            # Un'intestazione monca arrivava fino all'INSERT e moriva con un KeyError, che
+            # dice al lettore qual e' la chiave e non gli dice che il file e' sbagliato.
+            raise DomainError(422, f"Planet file header is missing: {', '.join(missing)}")
+        if header["columns"] != list(TILE_COLUMNS):
             # Il file e' stato scritto quando una casella aveva altre colonne. Caricarlo
             # riempirebbe le colonne sbagliate con i valori giusti, che e' il modo peggiore
             # di sbagliare: nessun errore, e un pianeta storto.
@@ -107,6 +139,7 @@ def load(conn, path: Path) -> dict:
         )
 
         digest = hashlib.sha256()
+        digest.update(json.dumps(header, separators=(",", ":")).encode("utf-8"))
         read = 0
         statement = "COPY world_tiles ({}) FROM STDIN".format(", ".join(TILE_COLUMNS))
         trailer = None

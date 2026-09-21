@@ -123,7 +123,13 @@ def test_a_corrupt_file_is_refused_even_if_it_is_complete(database, planet_file,
     caselle tornerebbe, e nessuno guarda 1442 righe a mano."""
     import gzip
     lines = gzip.open(planet_file, "rt", encoding="utf-8").read().splitlines()
-    lines[5] = lines[5].replace('"ocean"', '"desert"', 1)
+    # La riga 5 e' una casella qualunque; che sia oceano e' un fatto di QUESTO seme, non una
+    # legge. Senza questa verifica, il giorno in cui quella casella diventa un deserto la
+    # sostituzione non fa niente, il file resta valido, e il test fallisce dicendo la cosa
+    # sbagliata -- oppure, peggio, smette di provare qualcosa senza che nessuno lo noti.
+    changed = lines[5].replace('"ocean"', '"desert"', 1)
+    assert changed != lines[5], "la casella campione non e' piu' oceano: scegline un'altra"
+    lines[5] = changed
     broken = tmp_path / "corrotto.planet.gz"
     with gzip.open(broken, "wt", encoding="utf-8") as out:
         out.write("\n".join(lines) + "\n")
@@ -167,3 +173,86 @@ def test_the_header_says_which_planet_this_is(planet_file):
     assert header["frequency"] == FREQUENCY
     assert header["generator_version"] == worldgen.GENERATOR_VERSION
     assert header["columns"] == list(TILE_COLUMNS)
+
+
+def test_a_file_cut_mid_gzip_is_refused_like_any_other_broken_file(database, planet_file, tmp_path):
+    """Un file tagliato DAVVERO, non ricompattato a regola d'arte.
+
+    E' il caso vero -- una copia interrotta, un disco pieno a meta' scrittura -- e si comporta
+    in modo diverso: il gzip non da' una riga in meno, esplode mentre lo si scompatta. Per chi
+    guarda e' lo stesso caso ("questo file non si carica") e deve dirlo allo stesso modo,
+    invece di far uscire un `EOFError` da un comando amministrativo.
+    """
+    whole = planet_file.read_bytes()
+    cut = tmp_path / "tagliato.planet.gz"
+    cut.write_bytes(whole[: len(whole) // 2])
+
+    with pytest.raises(DomainError) as refused:
+        with transaction() as conn:
+            mapfile.load(conn, cut)
+    assert refused.value.status == 422
+    with transaction() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM world_tiles").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM world_map").fetchone()["n"] == 0
+
+
+def test_a_tampered_header_is_refused(database, planet_file, tmp_path):
+    """Il sigillo copre anche l'intestazione.
+
+    Prima no: copriva solo le caselle. Un seme cambiato, o una versione del generatore
+    cambiata, entravano in `world_map` in silenzio mentre la somma continuava a tornare --
+    un pianeta che dichiara di essere un altro pianeta, e nessun modo di accorgersene.
+    """
+    import gzip
+    import json
+    lines = gzip.open(planet_file, "rt", encoding="utf-8").read().splitlines()
+    header = json.loads(lines[0])
+    header["seed"] = "UnAltroSeme"
+    lines[0] = json.dumps(header, separators=(",", ":"))
+    lying = tmp_path / "bugiardo.planet.gz"
+    with gzip.open(lying, "wt", encoding="utf-8") as out:
+        out.write("\n".join(lines) + "\n")
+
+    with pytest.raises(DomainError) as refused:
+        with transaction() as conn:
+            mapfile.load(conn, lying)
+    assert refused.value.status == 422
+    with transaction() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM world_tiles").fetchone()["n"] == 0
+
+
+def test_a_header_missing_a_field_says_which_one(database, planet_file, tmp_path):
+    """Un'intestazione monca arrivava fino all'INSERT e moriva con un `KeyError`, che dice
+    qual e' la chiave e non dice che il file e' sbagliato."""
+    import gzip
+    import json
+    lines = gzip.open(planet_file, "rt", encoding="utf-8").read().splitlines()
+    header = json.loads(lines[0])
+    del header["sea_level"]
+    lines[0] = json.dumps(header, separators=(",", ":"))
+    incomplete = tmp_path / "monco.planet.gz"
+    with gzip.open(incomplete, "wt", encoding="utf-8") as out:
+        out.write("\n".join(lines) + "\n")
+
+    with pytest.raises(DomainError) as refused:
+        with transaction() as conn:
+            mapfile.load(conn, incomplete)
+    assert refused.value.status == 422
+    assert "sea_level" in str(refused.value)
+
+
+def test_the_load_is_not_cut_short_by_the_request_timeout(database, planet_file):
+    """Il difetto che l'audit ha trovato, e che sarebbe esploso solo in produzione.
+
+    `transaction()` mette `statement_timeout` a sessanta secondi perche' protegge le
+    RICHIESTE. Ma il pianeta entra con un `COPY` solo, e quel `COPY` dura 36 secondi per un
+    pianeta a quattro volte la dimensione di oggi -- su socket locale. Verso un database
+    gestito in rete, cioe' l'unico caso per cui questo comando esiste, sessanta secondi si
+    sforano: il caricamento sarebbe stato annullato e rifatto indietro a tre quarti dell'opera,
+    e sarebbe successo la prima volta che serviva davvero.
+    """
+    with transaction() as conn:
+        assert conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "1min"
+        mapfile.load(conn, planet_file)
+        # Dentro la stessa transazione, dopo il caricamento: il limite e' stato tolto.
+        assert conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "0"

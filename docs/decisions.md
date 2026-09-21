@@ -858,5 +858,21 @@ a mano quando si cambia pianeta.
 - **Il database gratuito di Render scade il 17 ottobre 2026** e accetta solo connessioni
   interne. Questo comando rende indolore il trasloco, ma il trasloco va deciso.
 
+**Trovato da una revisione, e sarebbe esploso solo in produzione.** `transaction()` mette
+`statement_timeout` a sessanta secondi, perché protegge le **richieste**. Ma il pianeta entra
+con un `COPY` solo, e quel `COPY` dura **36 secondi su socket locale** per un pianeta ×4:
+verso un database gestito in rete — cioè l'unico caso per cui questo comando esiste — i
+sessanta secondi si sforano, e il caricamento viene annullato e rifatto indietro a tre quarti
+dell'opera. Il caricamento ora toglie il limite per sé: non è una richiesta, è un comando
+amministrativo che qualcuno lancia guardandolo. C'è un test che legge `statement_timeout`
+prima e dopo.
+
+La stessa revisione ha trovato che il sigillo copriva **solo le caselle**: un seme o una
+versione del generatore corrotti entravano in `world_map` in silenzio mentre la somma
+continuava a tornare — un pianeta che dichiara di essere un altro pianeta. Adesso il sigillo
+copre anche l'intestazione. E un gzip tagliato a metà dava `EOFError` invece di un rifiuto
+comprensibile, e un'intestazione monca un `KeyError`: per chi guarda sono tutti lo stesso
+caso, "questo file non si carica", e adesso lo dicono così.
+
 **Da rivedere se.** `worldgen` diventa parsimonioso: allora l'istanza potrebbe tornare a
 generare da sola, e questo resterebbe utile solo per traslocare.
