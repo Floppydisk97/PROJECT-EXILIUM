@@ -48,6 +48,24 @@ impostato da `compose.yaml` su `http://localhost:8000`, che è l'indirizzo visto
 non dalla rete di compose). Per puntare altrove c'è il campo **Server**, nella pagina della
 colonia e nel menu di gioco.
 
+### Ricominciare da capo
+
+Atterrare e' definitivo -- e' una regola del mondo, tenuta ferma da tre guardie: la chiave
+esterna dal ledger, il trigger che rende il ledger immutabile, e il vincolo che una colonia a
+terra non si sposta. Per ricominciare c'e' invece un'operazione di **amministrazione**, che sta
+fuori dal mondo come lo sta cancellare un salvataggio:
+
+```bash
+docker compose exec api python -m app.resetcli --confirm
+```
+
+Via giocatori, colonie, ordini, impianti, scorte e ledger. **Il pianeta resta**: e' immutabile
+e costa minuti di CPU, e un reset della partita non e' un reset della geografia. Senza
+`--confirm` dice soltanto cosa farebbe.
+
+In locale c'e' anche la strada piu' corta, che azzera pure il pianeta -- ma col seme fisso
+ritrovi lo stesso: `docker compose down -v && docker compose up -d`.
+
 Provisionare un giocatore locale (il token viene mostrato una sola volta):
 
 ```powershell

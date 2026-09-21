@@ -23,8 +23,29 @@ import os
 
 from app.db import transaction
 from app.service import provision
+from app.worldreset import soft_reset
 
 logger = logging.getLogger("exilium.bootstrap")
+
+
+def reset_world_if_asked() -> str:
+    """Azzera la partita se `RESET_WORLD` porta una parola non ancora onorata.
+
+    Idempotente di proposito, e la ragione e' concreta: una variabile si dimentica addosso a
+    un servizio, e un'istanza gratuita si riavvia da sola a ogni risveglio. Senza memoria di
+    cio' che e' gia' stato fatto, il mondo sparirebbe ogni notte. La stessa parola non fa
+    niente due volte; per azzerare di nuovo se ne cambia una.
+    """
+    token = (os.getenv("RESET_WORLD") or "").strip()
+    if not token:
+        return "disabled"
+    with transaction() as conn:
+        done = conn.execute("SELECT last_reset_token FROM world WHERE id = 1").fetchone()
+        if done and done["last_reset_token"] == token:
+            return "already_done"
+        soft_reset(conn)
+        conn.execute("UPDATE world SET last_reset_token = %s WHERE id = 1", (token,))
+    return "reset"
 
 
 def bootstrap_first_colony() -> str:
