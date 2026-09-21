@@ -32,11 +32,18 @@ def test_every_job_guards_against_running_a_revision_twice():
     guards = [line for line in lines() if line.startswith("    if:")]
     assert len(guards) == len(jobs), f"{len(guards)} guardie per {len(jobs)} job: {jobs}"
     assert len(set(guards)) == 1, guards
-    # Il push copre i rami di questo repository; `pull_request` serve SOLO ai fork, il cui
-    # push non arriva mai qui.
+    # La guardia esclude UN caso -- la PR che nasce da un ramo di qui, gia' coperta dal suo
+    # push -- invece di elencare i casi ammessi. Scritta al contrario, un evento nuovo
+    # resterebbe fuori in silenzio: e' successo con l'avvio a mano.
     only = guards[0]
-    assert "github.event_name == 'push'" in only
+    assert "github.event_name != 'pull_request'" in only
     assert "head.repo.full_name != github.repository" in only
+
+
+def test_the_workflow_can_be_started_by_hand():
+    # Quando il giro va storto per una ragione che col codice non c'entra, l'alternativa a
+    # questo bottone e' un commit finto.
+    assert any(line.strip() == "workflow_dispatch:" for line in lines())
 
 
 def test_both_events_ignore_the_same_documents():
