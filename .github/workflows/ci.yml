@@ -25,6 +25,7 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
@@ -48,6 +49,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -66,6 +68,7 @@ jobs:
 
   containers:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
@@ -82,5 +85,9 @@ jobs:
           bash scripts/backup.sh
           RESTORE_CONFIRM=yes bash scripts/restore.sh "$(ls -t backups/*.dump | head -1)"
           curl --retry 30 --retry-delay 2 --retry-all-errors --fail http://localhost:8000/health/ready
+      # `--tail`, e non tutto. I log di quattro servizi seppellivano il motivo del guasto:
+      # quando i test dentro al container sono caduti, in coda al log del job c'erano
+      # millecinquecento righe di avvio di PostgreSQL e zero righe di pytest. Un dump
+      # illimitato al posto dell'errore non e' diagnostica, e' rumore che la nasconde.
       - if: always()
-        run: docker compose logs && docker compose down
+        run: docker compose logs --tail 40 && docker compose down
