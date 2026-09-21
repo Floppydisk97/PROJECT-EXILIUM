@@ -12,9 +12,11 @@ import pytest
 from app import citygen
 from app.db import transaction
 from app.mapservice import generate_and_store
+import math
+
 from app import worldgen
 from app.service import (
-    DomainError, _site_of, city_ground, city_state, land, provision, river_of,
+    DomainError, _site_of, city_ground, city_state, land, provision, river_of, world_seed,
 )
 from app.sim.config import POLICY_RATES, production_rate
 
@@ -136,7 +138,7 @@ def test_the_ground_is_not_stored_and_the_seed_is_what_travels(database):
     assert first == second
     assert "cells" not in first
     # Everything the ground needs to be grown, and nothing that has to be carried.
-    assert set(first) == {"city_id", "tile_id", "seed", "size", "cell_metres",
+    assert set(first) == {"city_id", "tile_id", "seed", "size", "hex_width_m",
                           "site", "ground_names"}
     assert len(first["seed"]) == 32
     with transaction() as conn:
@@ -241,12 +243,15 @@ def test_landing_writes_down_what_the_ground_is_worth(database):
         ).fetchone()
     assert row["site_food"] == landed["site_food"]
     assert row["site_room"] > 0
-    # And the numbers are the map's own, not a guess: regrowing from the stored seed agrees.
+    # E i numeri sono quelli del posto, non una stima: rilevarlo di nuovo dal seme memorizzato
+    # da' la stessa risposta. `survey` e non `generate`: e' il rilevamento a risoluzione fissa
+    # che il server ha scritto, e generare la mappa intera qui sarebbe sedici secondi per
+    # confrontare un numero che nessuno ha calcolato cosi'.
     with transaction() as conn:
         seed = conn.execute("SELECT map_seed FROM cities WHERE id = %s",
                             (p["city_id"],)).fetchone()["map_seed"]
         site, _tile = _site_of(conn, a_land_tile())
-    assert citygen.generate(seed, site).economy.food == row["site_food"]
+    assert citygen.survey(seed, site).food == row["site_food"]
 
 
 def test_a_colony_in_orbit_earns_exactly_what_it_earned_before_the_ground_mattered(database):
@@ -345,3 +350,57 @@ def test_only_a_real_river_reaches_the_ground(database):
     assert site.river_flow == 0
     # E su quel terreno non c'e' acqua corrente: niente fiume, niente portata idroelettrica.
     assert citygen.generate("x", site, SMALL).economy.water == 0
+
+
+def test_the_survey_is_the_number_the_viewer_showed(database):
+    """Il numero mostrato prima di atterrare e quello scritto dopo sono lo stesso.
+
+    Da quando la colonia si disegna a 2,36 milioni di esagoni da un metro quadro, la mappa
+    che si GUARDA e il rilevamento che si MEMORIZZA non hanno piu' la stessa risoluzione --
+    generare la mappa intera nella richiesta di atterraggio sarebbe sedici secondi, misurati.
+    Sono due cose diverse di proposito, e questa e' la cosa che deve restare vera perche' la
+    differenza sia innocua: scegliere un sito e' una decisione presa sui numeri del visore, e
+    se il server ne scrivesse altri sarebbe una promessa non mantenuta.
+
+    Il client chiama il gemello TypeScript di `survey`, e `citygen.test.ts` lo tiene cella per
+    cella su questo stesso rilevamento: la catena e' chiusa.
+    """
+    site = citygen.Site("temperate_forest", 220, 12.0, 1100, 0, False)
+    assert citygen.survey("x", site) == citygen.generate("x", site, citygen.SURVEY_SIZE).economy
+
+    world()
+    p = player()
+    with transaction() as conn:
+        tile = a_land_tile()
+        landed = land(conn, p["city_id"], p["player_id"], tile)
+        seed = citygen.seed_for(world_seed(conn), tile)
+        here, _tile = _site_of(conn, tile)
+    shown = citygen.survey(seed, here)
+    assert landed["site_food"] == shown.food
+    assert landed["site_timber"] == shown.timber
+    assert landed["site_stone"] == shown.stone
+    assert landed["site_room"] == shown.room
+
+
+def test_a_colony_is_a_field_of_hexagons_a_metre_across(database):
+    """Un esagono e' un metro quadro, e la colonia e' larga quanto dice di essere.
+
+    La scala non e' decorazione: e' quella su cui si costruira'. Un edificio da dieci metri
+    per dieci occupa cento esagoni, e se l'esagono valesse otto metri come la vecchia cella
+    quadrata ne occuperebbe uno e mezzo -- cioe' non ci sarebbe niente da disporre.
+
+    La mappa NON e' quadrata, ed e' la conseguenza che si dimentica: le righe distano radice
+    di tre mezzi, quindi 1536 righe sono piu' corte di 1536 colonne. Chi la inquadra deve
+    chiedere l'altezza invece di assumerla.
+    """
+    assert citygen.HEX_AREA_M2 == 1.0
+    # Da piatto a piatto: un esagono di un metro quadro e' largo poco piu' di un metro.
+    assert 1.07 < citygen.HEX_WIDTH_M < 1.08
+    assert citygen.ROW_RATIO == math.sqrt(3.0) / 2.0
+
+    wide = citygen.SIZE * citygen.HEX_WIDTH_M
+    tall = citygen.SIZE * citygen.ROW_RATIO * citygen.HEX_WIDTH_M
+    assert 1600 < wide < 1700          # circa 1,65 km
+    assert tall < wide
+    # E il rilevamento e' piu' grossolano del disegno, se no non avrebbe senso averne due.
+    assert citygen.SURVEY_SIZE < citygen.SIZE

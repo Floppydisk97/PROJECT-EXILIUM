@@ -83,6 +83,43 @@ jobs:
       - run: npm run build
         working-directory: frontend
 
+  client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    env:
+      # Fissata, non "latest": il motore decide come vengono arrotondati i numeri in virgola
+      # mobile, e questo job esiste per dire che tre lingue danno le STESSE celle. Un
+      # aggiornamento silenzioso trasformerebbe una verifica in una scommessa.
+      GODOT: "4.7.2-stable"
+    steps:
+      - uses: actions/checkout@v4
+      # Il binario pesa 78 MB. Scaricarlo a ogni giro sarebbe un minuto buttato, e i minuti
+      # di questo repository sono contati: la cache lo tiene fra un giro e l'altro.
+      - uses: actions/cache@v4
+        id: godot-cache
+        with:
+          path: ~/.godot-bin
+          key: godot-${{ env.GODOT }}
+      - if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.godot-bin
+          curl -sSL -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot/releases/download/$GODOT/Godot_v${GODOT}_linux.x86_64.zip"
+          unzip -q -o /tmp/godot.zip -d ~/.godot-bin
+          chmod +x ~/.godot-bin/Godot_v${GODOT}_linux.x86_64
+      # Senza finestra e senza editor. Il test confronta il gemello GDScript del generatore
+      # con `frontend/app/colony/reference.json` -- lo STESSO riferimento che tiene il
+      # gemello TypeScript -- cella per cella. Una cella di scarto e il giro e' rosso.
+      - run: ~/.godot-bin/Godot_v${GODOT}_linux.x86_64 --headless --path client --script res://tests/run.gd
+      # E quanto COSTA generare un terreno. Non e' un test -- non ha un verdetto e non fa
+      # cadere il giro -- ma il numero deve venire da una macchina vera: quella su cui il
+      # client e' stato scritto e' limitata sulla CPU, e li' perfino quattro processi
+      # separati scalavano 1,5 volte. Qui ci sono quattro core non strozzati, e il numero
+      # decide se il generatore resta in GDScript o passa a C#. Costa una ventina di secondi.
+      - name: Quanto costa generare (informativo)
+        run: ~/.godot-bin/Godot_v${GODOT}_linux.x86_64 --headless --path client --script res://tests/bench.gd
+
   containers:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -1,14 +1,19 @@
 """Write the reference the TypeScript twin is held to.
 
-`frontend/app/colony/citygen.ts` is a port of `citygen.py`, and two definitions that must
-agree are how a silent bug gets written. So the agreement is not assumed: this writes five
-sites cell by cell, and `citygen.test.ts` regenerates them in the browser's language and
-compares. A drift of one cell fails the build.
+`frontend/app/colony/citygen.ts` e `client/exilium/citygen.gd` sono porti di `citygen.py`, e
+definizioni che devono coincidere sono il modo in cui si scrive un difetto silenzioso. Quindi
+l'accordo non si assume: questo scrive cinque siti cella per cella, e le altre due copie li
+rigenerano nella loro lingua e confrontano -- `citygen.test.ts` nel browser, `tests/run.gd`
+dentro Godot senza finestra. Una cella di scarto fa cadere la build.
+
+Il file di riferimento e' UNO. Le tre copie lo leggono tutte da qui; farne una seconda per
+comodita' di un progetto sarebbe esattamente il difetto che questo file esiste per impedire.
 
     python -m app.colonyref
 
-Run it whenever a rule in `citygen.py` changes -- and expect the TypeScript side to fail
-first if only one of the two was changed. That failure is the whole point of the file.
+Va rilanciato ogni volta che una regola di `citygen.py` cambia -- e se ne e' cambiata una
+sola delle tre, ci si aspetta che le altre cadano per prime. Quella caduta e' il mestiere di
+questo file.
 
 Sixty-four cells a side, not the real 768: the reference exists to catch a rule that differs,
 and a rule that differs differs in the first thousand cells. At full size the fixture would be

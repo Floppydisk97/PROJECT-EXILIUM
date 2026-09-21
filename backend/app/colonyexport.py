@@ -1,5 +1,11 @@
 """Demo colony grounds as static files, so the viewer can draw one without a server.
 
+ATTENZIONE: questo bake non e' collegato a niente. `ColonyPicker`, che e' l'unica cosa che
+legge questi file, non sta su nessuna pagina; il gioco vero genera il terreno nel browser dal
+seme che il server gli da'. Ed era anche ROTTO -- una firma cambiata mesi fa, mai eseguita da
+allora. Sistemato e tenuto piccolo, ma e' codice morto in attesa di una decisione: o torna ad
+avere una pagina, o va tolto.
+
 The same trick the planet uses. The renderer takes a payload and draws it; whether that
 payload came from a file baked at build time or from `GET /cities/{id}/ground` on a live API
 is none of its business. Today there is no API in front of the viewer, so the ground is baked;
@@ -19,6 +25,12 @@ from app import citygen, worldgen
 
 COMPRESSION = 9
 
+# Le colonie di esempio si cuociono PICCOLE. Una vera e' 1536 esagoni di lato, cioe' 2,36
+# milioni di celle: in JSON sono quaranta megabyte a colonia, e un visore di esempio che ne
+# scarica quaranta per mostrare com'e' fatta la ghiaia non e' un esempio, e' un dispetto. Qui
+# serve che si veda la differenza fra un delta e un deserto, e quella si vede a 384.
+DEMO_SIZE = 384
+
 # Sites chosen to span the argument: what you land on changes what you get.
 DEMOS = [
     ("delta",   "Delta tropicale",   citygen.Site("tropical_swamp", 40, 26.0, 2400, 2600, True)),
@@ -31,10 +43,10 @@ DEMOS = [
 
 
 def payload(name: str, label: str, site: citygen.Site, seed: str) -> dict:
-    ground = citygen.generate(seed, site)
+    ground = citygen.generate(seed, site, DEMO_SIZE)
     return {
         "name": name, "label": label, "seed": ground.seed, "size": ground.size,
-        "cell_metres": ground.cell_metres, "buildable": ground.buildable,
+        "hex_width_m": ground.hex_width_m, "buildable": ground.buildable,
         "site": {
             "biome": site.biome, "elevation": site.elevation, "temperature": site.temperature,
             "rainfall": site.rainfall, "river_flow": site.river_flow, "coastal": site.coastal,
@@ -54,7 +66,11 @@ def export(directory: Path, world_seed: str) -> dict:
 
     entries = []
     for index, (name, label, site) in enumerate(DEMOS):
-        seed = citygen.seed_for(world_seed, index, f"demo-{name}")
+        # `seed_for` ha perso il terzo argomento quando il seme e' diventato una proprieta'
+        # della CASELLA e non piu' di chi ci atterra sopra (ADR sul visore della colonia), e
+        # questa riga e' rimasta indietro: da allora il bake non gira. Non se n'era accorto
+        # nessuno perche' non lo chiama nessuno -- vedi il commento in testa al file.
+        seed = citygen.seed_for(world_seed, index)
         body = json.dumps(payload(name, label, site, seed), separators=(",", ":")).encode()
         packed = gzip.compress(body, COMPRESSION)
         digest = hashlib.sha256(body).hexdigest()[:12]
@@ -62,7 +78,7 @@ def export(directory: Path, world_seed: str) -> dict:
         (directory / filename).write_bytes(packed)
         entries.append({
             "name": name, "label": label, "file": filename, "biome": site.biome,
-            "size": citygen.SIZE, "packed_bytes": len(packed), "raw_bytes": len(body),
+            "size": DEMO_SIZE, "packed_bytes": len(packed), "raw_bytes": len(body),
         })
 
     manifest = {"world_seed": world_seed, "colonies": entries}

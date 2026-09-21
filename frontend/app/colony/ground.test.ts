@@ -3,12 +3,13 @@
 // what is drawn, and that water is never planted on.
 import { describe, expect, it } from "vitest";
 import { ColonyGround, describe as inspect, groundColor, hash, propAt, seedNumber } from "./ground";
+import { centreX, centreY } from "./hexgrid";
 
 const NAMES = ["deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice"];
 
 function colony(cells: { ground: number; fertility: number; vegetation: number }[], size = 4): ColonyGround {
   return {
-    seed: "seed", size, cell_metres: 8, buildable: 0,
+    seed: "seed", size, hex_width_m: 1.0745699318235418, buildable: 0,
     economy: { food: 0, timber: 0, stone: 0, ore: 0, wind: 0, sun: 0, water: 0, heat: 0, effort: 0, room: 0 },
     site: { biome: "temperate_forest", elevation: 100, temperature: 10, rainfall: 900, river_flow: 0, coastal: false },
     ground_names: NAMES,
@@ -75,20 +76,29 @@ describe("what stands where", () => {
     expect([...kinds]).toEqual(["rock"]);
   });
 
-  it("keeps every plant inside the cell it belongs to", () => {
-    // A sprite that wandered out of its cell would be drawn in the wrong draw order, and the
-    // depth of this whole view is nothing but draw order.
+  it("keeps every plant inside the hexagon it belongs to", () => {
+    // Una sagoma uscita dal suo esagono verrebbe disegnata nell'ordine sbagliato, e la
+    // profondita' di questa vista non e' altro che l'ordine di disegno. Ma adesso c'e' una
+    // seconda ragione, piu' forte: con le linee accese si VEDE se un albero sconfina, e un
+    // albero che sta a cavallo di due caselle su cui si costruisce e' una bugia.
+    //
+    // Il confronto e' con la distanza dal CENTRO, non con un rettangolo: su una griglia
+    // sfalsata l'esagono della riga dispari sta mezza unita' a destra, e un test scritto sui
+    // rettangoli passerebbe misurando il posto sbagliato. Mezza unita' e' il raggio interno,
+    // cioe' la meta' di quanto l'esagono e' largo da piatto a piatto.
     const big = 12;
     const ground = colony(Array.from({ length: big * big }, () => ({ ground: SOIL, fertility: 90, vegetation: 95 })), big);
     const seed = seedNumber("xyz");
+    let seen = 0;
     for (let y = 0; y < big; y++) for (let x = 0; x < big; x++) {
       const prop = propAt(ground, seed, x, y);
       if (!prop) continue;
-      expect(prop.x).toBeGreaterThanOrEqual(x);
-      expect(prop.x).toBeLessThan(x + 1);
-      expect(prop.y).toBeGreaterThanOrEqual(y);
-      expect(prop.y).toBeLessThan(y + 1);
+      seen++;
+      const dx = prop.x - centreX(x, y);
+      const dy = prop.y - centreY(y);
+      expect(Math.hypot(dx, dy)).toBeLessThan(0.5);
     }
+    expect(seen).toBeGreaterThan(20);
   });
 });
 

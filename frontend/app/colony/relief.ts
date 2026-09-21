@@ -14,6 +14,7 @@
 // ogni macchina, per sempre. Niente di casuale entra da qui.
 
 import { WATER, type ColonyGround } from "./ground";
+import { neighbours } from "./hexgrid";
 
 export type Relief = {
   /** Quanto e' fonda l'acqua, 0 sulla terra e 255 dove non si vede il fondo. */
@@ -66,35 +67,51 @@ export function computeRelief(ground: ColonyGround): Relief {
 }
 
 /** Quanto dista il confine acqua/terra, in celle, fino a REACH. Due passate di chamfer: una
- *  in avanti e una all'indietro, che e' tutto cio' che serve quando la distanza e' corta. */
+ *  in avanti e una all'indietro, che e' tutto cio' che serve quando la distanza e' corta.
+ *
+ *  I vicini sono quelli dell'ESAGONO, non del quadrato. Con i quattro vicini di una
+ *  scacchiera la distanza sarebbe storta di mezza cella su una riga sì e una no, e la
+ *  schiuma lungo una riva obliqua uscirebbe a denti di sega. Su una griglia sfalsata i sei
+ *  vicini non sono gli stessi per le righe pari e per le dispari: e' esattamente lo scarto
+ *  che `hexgrid.neighbours` tiene in un posto solo. */
 const REACH = 8;
 
 function shoreDistance(wet: Uint8Array, size: number): Uint8Array {
   const far = REACH + 1;
   const distance = new Float32Array(size * size).fill(far);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = y * size + x;
+  const at = (col: number, row: number) =>
+    (col < 0 || row < 0 || col >= size || row >= size) ? -1 : row * size + col;
+
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      const i = row * size + col;
       const here = wet[i];
-      const edge =
-        (x > 0 && wet[i - 1] !== here) || (x < size - 1 && wet[i + 1] !== here) ||
-        (y > 0 && wet[i - size] !== here) || (y < size - 1 && wet[i + size] !== here);
-      if (edge) distance[i] = 0;
+      for (const [nc, nr] of neighbours(col, row)) {
+        const j = at(nc, nr);
+        if (j >= 0 && wet[j] !== here) { distance[i] = 0; break; }
+      }
     }
   }
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = y * size + x;
-      if (x > 0) distance[i] = Math.min(distance[i], distance[i - 1] + 1);
-      if (y > 0) distance[i] = Math.min(distance[i], distance[i - size] + 1);
+  // In avanti: i tre vicini gia' visitati in ordine di scansione.
+  for (let row = 0; row < size; row++) {
+    const lean = (row & 1) ? 0 : -1;
+    for (let col = 0; col < size; col++) {
+      const i = row * size + col;
+      for (const [nc, nr] of [[col - 1, row], [col + lean, row - 1], [col + lean + 1, row - 1]]) {
+        const j = at(nc, nr);
+        if (j >= 0 && distance[j] + 1 < distance[i]) distance[i] = distance[j] + 1;
+      }
     }
   }
   const shore = new Uint8Array(size * size);
-  for (let y = size - 1; y >= 0; y--) {
-    for (let x = size - 1; x >= 0; x--) {
-      const i = y * size + x;
-      if (x < size - 1) distance[i] = Math.min(distance[i], distance[i + 1] + 1);
-      if (y < size - 1) distance[i] = Math.min(distance[i], distance[i + size] + 1);
+  for (let row = size - 1; row >= 0; row--) {
+    const lean = (row & 1) ? 0 : -1;
+    for (let col = size - 1; col >= 0; col--) {
+      const i = row * size + col;
+      for (const [nc, nr] of [[col + 1, row], [col + lean, row + 1], [col + lean + 1, row + 1]]) {
+        const j = at(nc, nr);
+        if (j >= 0 && distance[j] + 1 < distance[i]) distance[i] = distance[j] + 1;
+      }
       shore[i] = Math.min(255, Math.round(distance[i] * 32));
     }
   }
