@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app import gameclock, mapbuild, mapservice
+from app import bootstrap, gameclock, mapbuild, mapservice
 from app.sim.config import WORK_KINDS
 from app.db import transaction
 from app.service import (
@@ -38,6 +38,9 @@ async def lifespan(_app: FastAPI):
     start command is untouched.
     """
     print(json.dumps({"mapbuild": mapbuild.start_background_build()}), flush=True)
+    # E, se il proprietario del servizio l'ha chiesto, la prima colonia. Una sola volta:
+    # vedi `app/bootstrap.py` per le due guardie che lo rendono innocuo.
+    print(json.dumps({"bootstrap": bootstrap.bootstrap_first_colony()}), flush=True)
     yield
 
 

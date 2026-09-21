@@ -444,3 +444,41 @@ una volta sola. Mezzo secondo in più una volta, per un terreno che si vede.
 **Da rivedere se.** Il caricamento su telefono risulta inaccettabile: la via è dipingere il
 buffer a pezzi, un riquadro alla volta, invece di tutto in una passata — il che cambia
 l'architettura del disegno, non una costante.
+
+---
+
+## ADR-012 — La prima colonia di un mondo online nasce da una variabile, non da una rotta
+
+**Decisione.** All'avvio, e **solo** se `BOOTSTRAP_COLONY` è impostata, il servizio conia una
+colonia e scrive il token nei propri log. Due guardie: senza la variabile non fa niente, e se
+esiste già un giocatore si rifiuta.
+
+**Motivazione.** Un giocatore nasce da `app.cli`, che è amministrazione locale e non ha mai
+avuto una rotta HTTP — è la ragione per cui rendere pubblico il repository non ha aperto nulla
+a nessuno. Ma su un'istanza del piano gratuito **non esiste una shell**, quindi quel comando
+non si può lanciare lì dentro, e un mondo online senza un solo giocatore non si può provare.
+
+**Alternative scartate.**
+1. *Una rotta di amministrazione protetta da un segreto.* Scartata: è esattamente la
+   superficie che il progetto ha evitato dal primo giorno, e un segreto in un header è una
+   cosa che si dimentica addosso a un servizio pubblico.
+2. *Aprire il database alla rete e coniare da casa.* Scartata: espone il database a internet
+   per sempre, per un'operazione che serve una volta.
+3. *Un cron job che esegue la CLI.* Scartata: un servizio in più che resta lì, e un cron che
+   conia proprietari a ogni firing è peggio di questo.
+4. *SSH sull'istanza.* Non disponibile sul piano gratuito.
+
+**Costo.** Il token passa dai log del servizio. Sono privati del workspace, ma restano
+scritti: la variabile va tolta subito dopo, e questo è un passo che dipende da una persona.
+
+**Rischi e criticità.**
+- **Un percorso di creazione che vive nel codice di produzione.** Innocuo finché le due
+  guardie tengono, e c'è un test per ciascuna — verificato che cadono se le si toglie. Ma è
+  una superficie che prima non esisteva.
+- **Il token nei log** resta finché il servizio non ruota i log. Chi legge i log del workspace
+  legge il token del primo giocatore.
+- **Solo il PRIMO.** Per il secondo giocatore serve comunque la riga di comando: questa non è
+  una via per amministrare un mondo, è una via per accenderlo.
+
+**Da rivedere se.** L'istanza passa a un piano con shell: allora `app.cli` si lancia lì e
+questo modulo esce, perché smette di avere una ragione.
