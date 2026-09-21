@@ -482,3 +482,48 @@ scritti: la variabile va tolta subito dopo, e questo è un passo che dipende da 
 
 **Da rivedere se.** L'istanza passa a un piano con shell: allora `app.cli` si lancia lì e
 questo modulo esce, perché smette di avere una ragione.
+
+---
+
+## ADR-013 — Ricominciare è amministrazione, non una mossa del gioco
+
+**Decisione.** Un soft reset (`app.resetcli --confirm`, o la variabile `RESET_WORLD` su un
+servizio senza shell) cancella giocatori, colonie, ordini, impianti, scorte e ledger, e
+**lascia in piedi il pianeta**. Le tre guardie che rendono definitivo l'atterraggio restano
+dove sono: il reset le disattiva di proposito per la durata di una transazione.
+
+**Motivazione.** Provare il gioco significa inevitabilmente volerlo ricominciare, e oggi non
+si poteva: la chiave esterna dal ledger, il trigger di immutabilità e il vincolo
+sull'atterraggio formano un anello chiuso — verificato sul campo, non a memoria. Quelle
+guardie però sono giuste: sono regole del mondo. Ciò che mancava era il gradino sopra, dove si
+cancella un salvataggio.
+
+**Alternative scartate.**
+1. *Rendere reversibile l'atterraggio.* Scartata: una casella buona è scarsa, e poterci
+   ripensare gratis toglierebbe il peso all'unica scelta che il pianeta chiede.
+2. *Abbandonare la colonia come mossa di gioco.* Non scartata — rimandata. È design vero
+   (penali? attesa? si può riatterrare?) e non si improvvisa dentro un comando di servizio.
+3. *Cancellare a cascata con `ON DELETE CASCADE`.* Scartata: le chiavi sono `NO ACTION` di
+   proposito, perché niente sparisca di nascosto. L'ordine di cancellazione è esplicito.
+4. *Rigenerare anche il pianeta.* Scartata: costa minuti di CPU e, col seme fisso, darebbe lo
+   stesso pianeta. Serve solo cambiando seme o generatore, ed è un'altra operazione.
+
+**Costo.** Un percorso distruttivo che vive nel codice di produzione, e un trigger di
+immutabilità che per qualche istante è spento.
+
+**Rischi e criticità.**
+- **Una variabile d'ambiente che azzera un mondo** è la cosa più pericolosa di questa sessione.
+  Per questo è idempotente: l'ultima parola onorata si conserva sulla riga del mondo, quindi
+  una variabile dimenticata è innocua e per azzerare di nuovo se ne cambia una. C'è un test, e
+  cade se si toglie la memoria.
+- **Il trigger va riacceso.** Se restasse spento sarebbe un difetto invisibile: tutto
+  continuerebbe a funzionare finché qualcuno non riscrive il passato. C'è un test che prova a
+  cancellare dal ledger *dopo* il reset e pretende un rifiuto.
+- **La linea del tempo della politica** va riaperta, o la prima colonia nuova verrebbe
+  liquidata su un intervallo che nessun periodo copre — caso rifiutato, non pagato come zero.
+  Anche questo ha il suo test.
+- **Niente backup automatico prima del reset.** `scripts/backup.sh` esiste e va lanciato a
+  mano: il comando non lo fa per conto suo, e su un mondo condiviso vero dovrebbe.
+
+**Da rivedere se.** Arriva l'abbandono come mossa di gioco: allora il reset resta per
+l'amministrazione e smette di essere l'unico modo di liberare una casella.

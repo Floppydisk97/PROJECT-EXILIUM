@@ -38,6 +38,9 @@ async def lifespan(_app: FastAPI):
     start command is untouched.
     """
     print(json.dumps({"mapbuild": mapbuild.start_background_build()}), flush=True)
+    # L'azzeramento PRIMA della prima colonia: chiedere tutti e due insieme deve dare un
+    # mondo pulito con dentro una colonia, non una colonia cancellata un attimo dopo.
+    print(json.dumps({"reset": bootstrap.reset_world_if_asked()}), flush=True)
     # E, se il proprietario del servizio l'ha chiesto, la prima colonia. Una sola volta:
     # vedi `app/bootstrap.py` per le due guardie che lo rendono innocuo.
     print(json.dumps({"bootstrap": bootstrap.bootstrap_first_colony()}), flush=True)
