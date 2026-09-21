@@ -5,7 +5,7 @@
 import {
   ColonyGround, Prop, ROUGHNESS, WATER, hash, litInto, patches, propAt,
 } from "./ground";
-import { lightOf, reliefOf } from "./light";
+import { reliefOf } from "./relief";
 
 /** Pixels per cell in the terrain buffer. More than one, because a flat square per cell reads
  *  as a spreadsheet: the blended edges between two grounds need somewhere to live. Two rather
@@ -22,12 +22,10 @@ export const PROP_ZOOM = 7;
 /** Paint the ground into an offscreen buffer, once. It never changes, so panning and zooming
  *  are one `drawImage` rather than half a million fills.
  *
- *  Tre cose succedono qui, e sono tre difetti che si vedevano tutti nella stessa schermata:
- *  la LUCE (il rilievo, che prima non esisteva: una collina e una piana erano lo stesso
- *  colore), il CONFINE fra due terreni (prima un mezzatinta a caso, adesso un campionamento
- *  bilineare con il bordo spostato a caso, che e' frastagliato senza essere sporco) e la
- *  GRANA (prima puntinio bianco a tutte le scale, adesso macchie larghe quanto il terreno
- *  che stanno nel buffer e quindi si ingrandiscono insieme a lui).
+ *  Due cose succedono qui: il CONFINE fra due terreni (prima un mezzatinta a caso, adesso un
+ *  campionamento bilineare con il bordo spostato a caso, che e' frastagliato senza essere
+ *  sporco) e la GRANA (prima puntinio bianco a tutte le scale, adesso macchie larghe quanto il
+ *  terreno, che stanno nel buffer e quindi si ingrandiscono insieme a lui).
  */
 export function paintTerrain(ground: ColonyGround, seed: number): HTMLCanvasElement {
   const size = ground.size;
@@ -154,7 +152,6 @@ export function paintProps(
 ): number {
   const size = ground.size;
   if (view.scale < PROP_ZOOM) return 0;
-  const relief = reliefOf(ground);
   const x0 = Math.max(0, Math.floor(view.x0) - 1);
   const x1 = Math.min(size - 1, Math.ceil(view.x1) + 1);
   const y0 = Math.max(0, Math.floor(view.y0) - 1);
@@ -165,9 +162,7 @@ export function paintProps(
     for (let x = x0; x <= x1; x++) {
       const prop = propAt(ground, seed, x, y);
       if (prop === null) continue;
-      // La pianta prende la luce della cella su cui sta. Senza, un bosco su un fianco in
-      // ombra restava verde acceso e sembrava incollato sopra il terreno invece che dentro.
-      drawProp(context, prop, view.scale, lightOf(relief, y * size + x));
+      drawProp(context, prop, view.scale);
       drawn++;
     }
   }
@@ -182,10 +177,12 @@ const DRY_DARK: [number, number, number] = [86, 78, 38];
 const DRY_LIT: [number, number, number] = [132, 120, 60];
 
 function tone(
-  a: [number, number, number], b: [number, number, number], t: number, light: number,
+  a: [number, number, number], b: [number, number, number], t: number, shade: number,
 ): string {
   const k = t < 0 ? 0 : t > 1 ? 1 : t;
-  const l = Math.max(0.55, Math.min(1.35, light));
+  // `shade` non e' piu' la luce del terreno: e' la variazione che la pianta si porta addosso,
+  // perche' un bosco di cloni tutti della stessa identica tinta si legge come un timbro.
+  const l = Math.max(0.7, Math.min(1.25, shade));
   const r = Math.round(Math.min(255, (a[0] + (b[0] - a[0]) * k) * l));
   const g = Math.round(Math.min(255, (a[1] + (b[1] - a[1]) * k) * l));
   const bl = Math.round(Math.min(255, (a[2] + (b[2] - a[2]) * k) * l));
@@ -193,7 +190,7 @@ function tone(
 }
 
 function drawProp(
-  context: CanvasRenderingContext2D, prop: Prop, scale: number, light: number,
+  context: CanvasRenderingContext2D, prop: Prop, scale: number,
 ): void {
   const px = prop.x * scale;
   const py = prop.y * scale;
@@ -201,25 +198,25 @@ function drawProp(
 
   // The shadow first, and always down and a little right, so the whole colony agrees about
   // where the light is. Consistency is what makes flat sprites read as standing up -- it is
-  // the only third dimension there is here. In ombra l'ombra si smorza: dove non batte il
-  // sole non c'e' niente che possa proiettarla.
-  context.fillStyle = `rgba(14, 18, 26, ${0.10 + 0.20 * Math.min(1, Math.max(0, light - 0.55))})`;
+  // the only third dimension there is here. Questa resta anche dopo che l'ombreggiatura del
+  // TERRENO e' sparita: un'ombra corta sotto una pianta dice che la pianta sta in piedi, una
+  // fascia lunga mezza mappa non dice niente.
+  context.fillStyle = "rgba(14, 18, 26, 0.22)";
   context.beginPath();
   context.ellipse(px + s * 0.16, py + s * 0.10, s * 0.40, s * 0.17, 0, 0, Math.PI * 2);
   context.fill();
 
-  if (prop.kind === "rock") return drawRock(context, prop, px, py, s, light);
-  if (prop.kind === "tuft") return drawTuft(context, prop, px, py, s, light);
-  drawPlant(context, prop, px, py, s, light);
+  if (prop.kind === "rock") return drawRock(context, prop, px, py, s);
+  if (prop.kind === "tuft") return drawTuft(context, prop, px, py, s);
+  drawPlant(context, prop, px, py, s);
 }
 
 function drawRock(
   context: CanvasRenderingContext2D, prop: Prop, px: number, py: number, s: number,
-  light: number,
 ): void {
   // An irregular polygon, not an ellipse: boulders have corners, and a field of identical
   // grey eggs is what the first attempt looked like.
-  const grey = (80 + prop.hue * 46) * Math.max(0.6, Math.min(1.3, light));
+  const grey = 80 + prop.hue * 46;
   const points = 6 + Math.floor(prop.hue * 3);
   context.beginPath();
   for (let i = 0; i < points; i++) {
@@ -236,7 +233,7 @@ function drawRock(
   context.lineWidth = Math.max(0.7, s * 0.05);
   context.stroke();
   // A lit facet, up and to the left, matching the shadow's direction.
-  context.fillStyle = `rgba(255, 252, 238, ${0.10 + 0.09 * Math.max(0, light - 1)})`;
+  context.fillStyle = "rgba(255, 252, 238, 0.12)";
   context.beginPath();
   context.ellipse(px - s * 0.10, py - s * 0.20, s * 0.17, s * 0.11, -0.6, 0, Math.PI * 2);
   context.fill();
@@ -244,9 +241,8 @@ function drawRock(
 
 function drawTuft(
   context: CanvasRenderingContext2D, prop: Prop, px: number, py: number, s: number,
-  light: number,
 ): void {
-  context.strokeStyle = tone(LEAF_LIT, DRY_LIT, prop.dry, light * (0.8 + prop.hue * 0.4));
+  context.strokeStyle = tone(LEAF_LIT, DRY_LIT, prop.dry, 0.8 + prop.hue * 0.4);
   context.lineWidth = Math.max(0.5, s * 0.16);
   context.lineCap = "round";
   context.beginPath();
@@ -263,7 +259,6 @@ function drawTuft(
 
 function drawPlant(
   context: CanvasRenderingContext2D, prop: Prop, px: number, py: number, s: number,
-  light: number,
 ): void {
   const tree = prop.kind === "tree";
   const base = tree ? 0.62 : 0.26;         // how high the canopy sits above the ground
@@ -271,7 +266,7 @@ function drawPlant(
 
   if (tree) {
     // A tapered trunk, drawn before the canopy so the canopy sits on top of it.
-    const bark = Math.max(0.6, Math.min(1.25, light));
+    const bark = 0.85 + prop.hue * 0.3;
     context.fillStyle = `rgb(${(54 + prop.hue * 22) * bark}, ${(38 + prop.hue * 14) * bark}, ${26 * bark})`;
     context.beginPath();
     context.moveTo(px - s * 0.09, py);
@@ -285,8 +280,8 @@ function drawPlant(
   // The canopy: overlapping lobes in two tones, dark underneath and lighter toward the light.
   // One circle is a ball; five off-centre circles are a crown. Il numero dei lobi e la loro
   // schiacciatura cambiano da pianta a pianta: cinque cerchi sempre uguali sono un timbro.
-  const dark = tone(LEAF_DARK, DRY_DARK, prop.dry, light * (0.9 + prop.hue * 0.2));
-  const lit = tone(LEAF_LIT, DRY_LIT, prop.dry, light * (0.9 + prop.hue * 0.2));
+  const dark = tone(LEAF_DARK, DRY_DARK, prop.dry, 0.9 + prop.hue * 0.2);
+  const lit = tone(LEAF_LIT, DRY_LIT, prop.dry, 0.9 + prop.hue * 0.2);
   const lobes = (tree ? 4 : 3) + Math.floor(prop.hue * 3);
   const squash = 0.34 + prop.dry * 0.12 + prop.hue * 0.12;
   const cx = px + prop.lean * s * 0.22;

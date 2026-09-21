@@ -12,7 +12,10 @@ import pytest
 from app import citygen
 from app.db import transaction
 from app.mapservice import generate_and_store
-from app.service import DomainError, _site_of, city_ground, city_state, land, provision
+from app import worldgen
+from app.service import (
+    DomainError, _site_of, city_ground, city_state, land, provision, river_of,
+)
 from app.sim.config import POLICY_RATES, production_rate
 
 FREQUENCY = 12       # 1442 tiles: enough for coasts, rivers and several biomes
@@ -38,7 +41,9 @@ def a_land_tile(biome=None, with_river=False):
     if biome:
         clause += f" AND biome = '{biome}'"
     if with_river:
-        clause += " AND river_flow > 0"
+        # La soglia, non "piu' di zero": ogni casella di terra porta la propria pioggia, e
+        # chiedere un fiume con quel confronto restituiva la prima casella asciutta trovata.
+        clause += f" AND river_flow >= {worldgen.river_min_flow(10 * FREQUENCY**2 + 2)}"
     with transaction() as conn:
         row = conn.execute(
             f"SELECT id FROM world_tiles WHERE map_id = 1 AND {clause} ORDER BY id LIMIT 1"
@@ -193,7 +198,7 @@ def test_the_biome_really_shapes_the_ground(database):
     ice = citygen.generate("x", citygen.Site("ice_sheet", 900, -30.0, 120, 0, False), SMALL)
 
     assert desert.buildable > swamp.buildable * 3
-    assert _mean(swamp.fertility) > _mean(desert.fertility) * 10
+    assert _mean(swamp.fertility) > _mean(desert.fertility) * 3
     assert _mean(ice.fertility) == 0
     assert _mean(swamp.vegetation) > _mean(desert.vegetation)
 
@@ -203,8 +208,14 @@ def test_a_river_makes_its_banks_worth_landing_on(database):
     planet and was worthless on the ground."""
     dry = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 0, False), SMALL)
     watered = citygen.generate("x", citygen.Site("desert", 300, 31.0, 80, 3100, False), SMALL)
-    assert max(watered.fertility) > 8 * max(dry.fertility)
-    assert max(watered.vegetation) > 10 * max(dry.vegetation)
+    # Il confronto e' fra i due posti MIGLIORI, e il margine e' molto piu' stretto di quanto
+    # fosse: da quando nessun sito e' del tutto sterile, un deserto ha comunque le sue macchie
+    # verdi, quindi la sponda non parte piu' da zero. Vale ancora la pena di andarci -- la
+    # sponda batte la migliore oasi, e con l'acqua arriva l'unica fonte d'energia che il
+    # deserto non ha -- ma non e' piu' la differenza fra vivere e morire.
+    assert max(watered.fertility) > 1.5 * max(dry.fertility)
+    assert max(watered.vegetation) > 1.5 * max(dry.vegetation)
+    assert watered.economy.water > 50 and dry.economy.water == 0
     # The bank is silt, not the sand the river crossed -- which is what stops the bonus being
     # halved by the biome's own ground right where it matters most.
     soil = citygen.GROUNDS.index("soil")
@@ -271,3 +282,66 @@ def test_a_site_with_nothing_to_build_on_is_refused(database):
     with pytest.raises(DomainError) as error, transaction() as conn:
         land(conn, p["city_id"], p["player_id"], frozen["id"])
     assert error.value.detail == "no_ground"
+
+
+def test_no_site_is_completely_barren():
+    """Ogni posto dove si puo' atterrare da' da mangiare e da' legna.
+
+    Prima non era vero: il deserto e la roccia nuda uscivano con zero e zero, e una casella
+    senza niente da raccogliere non e' un sito difficile -- e' un sito che non si puo'
+    giocare. Adesso il fondo esiste, a macchie: un'oasi, una radura in quota, la conca erbosa
+    in mezzo alla ghiaia. La montagna resta la montagna -- ha piu' pietra di tutti -- ma ha
+    anche dove piantare qualcosa.
+
+    Il ghiaccio e' l'eccezione dichiarata, e resta fuori di proposito: su una calotta polare
+    non cresce niente, e fingere il contrario sarebbe togliere una geografia invece che
+    aggiungerne una. Se un giorno si vorra' che anche una calotta si possa colonizzare, la
+    risposta e' un modo di vivere diverso, non un albero sul ghiaccio.
+    """
+    frozen = {"ice_sheet", "snow_cap"}
+    for biome, rule in citygen.BIOME_RULES.items():
+        if biome in frozen:
+            continue
+        # Il sito piu' ostile che quel bioma consente: alto, asciutto e senza fiume.
+        site = citygen.Site(biome, 1800, 4.0, 60, 0, False)
+        made = citygen.generate(f"barren:{biome}", site, SMALL)
+        economy = made.economy
+        if economy.room == 0:
+            # Niente su cui costruire: atterrare qui e' GIA' rifiutato -- vedi
+            # `test_a_site_with_nothing_to_build_on_is_refused`. Un posto in cui non si entra
+            # non ha bisogno di risorse; un posto in cui si entra e non c'e' niente era il
+            # difetto, ed e' quello che le righe sotto tengono chiuso.
+            continue
+        assert economy.food > 0, biome
+        assert economy.timber > 0, biome
+        if rule.ground in ("rock", "gravel"):
+            assert economy.stone > 0, biome
+
+
+def test_only_a_real_river_reaches_the_ground(database):
+    """Il fiume sul terreno e il fiume sul globo sono lo stesso fiume.
+
+    `world_tiles.river_flow` e' deflusso accumulato e ogni casella di terra ne ha almeno la
+    propria pioggia: preso per buono, disegnava un fiume in mezzo a OGNI colonia del pianeta.
+    Il globo ha sempre disegnato i suoi fiumi sopra `worldgen.river_min_flow`; questo e' lo
+    stesso confronto, quindi le due viste non possono piu' dire cose diverse.
+    """
+    world()
+    threshold = worldgen.river_min_flow(10 * FREQUENCY**2 + 2)
+    assert river_of(threshold - 1, FREQUENCY) == 0
+    assert river_of(threshold, FREQUENCY) == threshold
+
+    with transaction() as conn:
+        # Una casella di terra bagnata ma senza fiume: il caso che era rotto.
+        row = conn.execute(
+            """SELECT id, river_flow FROM world_tiles
+               WHERE map_id = 1 AND elevation >= 0 AND river_flow > 0 AND river_flow < %s
+               ORDER BY id LIMIT 1""",
+            (threshold,),
+        ).fetchone()
+        assert row is not None, "un pianeta senza una sola casella di solo ruscellamento"
+        site, _tile = _site_of(conn, row["id"])
+    assert row["river_flow"] > 0
+    assert site.river_flow == 0
+    # E su quel terreno non c'e' acqua corrente: niente fiume, niente portata idroelettrica.
+    assert citygen.generate("x", site, SMALL).economy.water == 0

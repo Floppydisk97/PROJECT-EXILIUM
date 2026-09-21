@@ -11,6 +11,7 @@ constraints the database is asked to enforce on its own.
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from datetime import timedelta
+import time
 from uuid import uuid4
 
 import psycopg
@@ -47,24 +48,41 @@ def player(name="Exilium"):
         return provision(conn, name)
 
 
-def rewind(seconds):
+def rewind(seconds, monkeypatch=None):
     """Move every city's cursor into the past, so that production has accrued.
 
     The clock replacement for `age_world`. There is no boundary to age a world past any more:
     what makes something happen is elapsed time, so the way to make a test's world old is to
     say its cities were settled a while ago. The policy timeline is dragged back with them,
     because settling across a stretch no period covers is refused rather than paid as nothing.
+
+    L'eta' si scrive come un ISTANTE, non come una sottrazione dal momento in cui la colonia
+    e' nata. Sembra lo stesso ed e' la differenza fra un test che tiene e uno che cade quando
+    la macchina e' carica: sottraendo, il tempo trascorso e' `seconds` PIU' quello che ci ha
+    messo la preparazione a girare, e appena la preparazione scavalca un confine di secondo il
+    conto e' di un secondo piu' lungo. E' proprio cosi' che questo file e' caduto in CI --
+    244 di pietra dove il test ne pretendeva 240 -- e riprodurlo e' bastato mettere un secondo
+    di attesa fra `player()` e qui.
+
+    Con `monkeypatch`, l'orologio viene anche fermato, e sulla STESSA lettura: invecchiare e
+    fermare erano due letture distinte dell'orologio, quindi anche chiamandole in fila il
+    secondo poteva girare in mezzo. Una lettura sola, e il tempo trascorso e' esattamente
+    `seconds` per costruzione, su qualunque macchina.
     """
     with transaction() as conn:
+        now = database_now(conn)
         conn.execute(
-            """UPDATE cities SET created_at = created_at - make_interval(secs => %s),
-                                 settled_at = settled_at - make_interval(secs => %s)""",
-            (seconds, seconds),
+            """UPDATE cities SET created_at = %s - make_interval(secs => %s),
+                                 settled_at = %s - make_interval(secs => %s)""",
+            (now, seconds, now, seconds),
         )
         conn.execute(
             "UPDATE policy_periods SET from_at = LEAST(from_at,"
             " (SELECT min(settled_at) FROM cities))"
         )
+    if monkeypatch is not None:
+        monkeypatch.setattr(db, "database_now", lambda conn: now)
+    return now
 
 
 def freeze_clock(monkeypatch):
@@ -77,6 +95,26 @@ def freeze_clock(monkeypatch):
     # sweep silently keep using the real time while everything else was frozen.
     monkeypatch.setattr(db, "database_now", lambda conn: now)
     return now
+
+
+def test_ageing_a_world_does_not_depend_on_how_slow_the_machine_is(database, monkeypatch):
+    """Il difetto che ha fatto cadere la CI, tenuto chiuso.
+
+    `rewind` sottraeva dal momento in cui la colonia era nata, e l'orologio veniva fermato con
+    una seconda lettura: fra le due, su una macchina carica, il secondo gira. Il tempo
+    trascorso diventava 61 invece di 60 e la colonia si trovava 244 di pietra invece di 240 --
+    un test che cade una volta su venti e che si e' tentati di chiamare "flaky".
+
+    Qui il secondo viene fatto girare APPOSTA, che e' l'unico modo di provare che non conta
+    piu'. Senza la correzione questo cade sempre, non una volta su venti.
+    """
+    p = player("Lenta")
+    time.sleep(1.2)          # cio' che su un runner carico succede da solo
+    rewind(60, monkeypatch)
+    with transaction() as conn:
+        read_city(conn, p["city_id"], p["player_id"])
+        held = stock(conn, p["city_id"])
+    assert held["stone"] == STARTING_STOCK["stone"] + 60 * harvest_rate("stone", 0, 0)
 
 
 def test_migration_rerun_and_world_singleton(database):
@@ -338,8 +376,7 @@ def test_api_authorization_validation_idempotency_and_ledger(database):
 
 def test_simultaneous_reads_never_duplicate_production(database, monkeypatch):
     p = player()
-    rewind(37)
-    freeze_clock(monkeypatch)
+    rewind(37, monkeypatch)
 
     def read(_):
         with transaction() as conn:
@@ -366,8 +403,7 @@ def test_distinct_cities_settle_concurrently_without_any_global_lock(database, m
     """This used to be true *between* ticks and false during one. With the barrier gone it is
     simply true: nothing in the economic path takes a lock on anything shared."""
     first, second = player("A"), player("B")
-    rewind(60)
-    freeze_clock(monkeypatch)
+    rewind(60, monkeypatch)
 
     def read(p):
         with transaction() as conn:
@@ -390,8 +426,7 @@ def test_distinct_cities_settle_concurrently_without_any_global_lock(database, m
 
 def test_materialized_balance_equals_ledger_sum(database, monkeypatch):
     first, second = player("A"), player("B")
-    rewind(120)
-    now = freeze_clock(monkeypatch)
+    now = rewind(120, monkeypatch)
     with transaction() as conn:
         start_upgrade(conn, first["city_id"], first["player_id"], uuid4())
     monkeypatch.setattr(db, "database_now", lambda conn: now + upgrade_duration(0))
@@ -542,8 +577,7 @@ def test_two_colonies_on_different_ground_do_not_earn_the_same(database, monkeyp
         land(conn, rich["city_id"], rich["player_id"], rich_tile)
         land(conn, poor["city_id"], poor["player_id"], poor_tile)
 
-    rewind(3600)
-    now = freeze_clock(monkeypatch)
+    now = rewind(3600, monkeypatch)
     earned = {}
     for who in (rich, poor):
         with transaction() as conn:
@@ -749,8 +783,7 @@ def test_pausing_settles_first_so_the_last_hour_is_not_rewritten(database, monke
             "INSERT INTO city_works (city_id, kind, count) VALUES (%s, 'solar', 1)",
             (p["city_id"],),
         )
-    rewind(600)
-    freeze_clock(monkeypatch)
+    rewind(600, monkeypatch)
 
     with transaction() as conn:
         before = stock(conn, p["city_id"])["stone"]
