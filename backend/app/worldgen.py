@@ -295,7 +295,9 @@ def _subdivide(frequency: int):
     Returns unit-sphere vertices and the small-triangle faces indexing them."""
     base_verts, base_faces = _icosahedron()
     verts: list[tuple[float, float, float]] = []
-    index: dict[tuple[int, int, int], int] = {}
+    # Le chiavi sono float arrotondati a nove cifre, non interi: e' l'arrotondamento a
+    # renderle confrontabili, non una conversione.
+    index: dict[tuple[float, float, float], int] = {}
 
     def add(v: tuple[float, float, float]) -> int:
         v = _normalize(v)
@@ -422,8 +424,11 @@ def _island_centers(rng: random.Random):
         tangent = _normalize(_cross(start, _normalize(
             (rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1)))))
         length = rng.uniform(0.20, 0.36)
-        end = _normalize(tuple(math.cos(length) * start[i] + math.sin(length) * tangent[i]
-                               for i in range(3)))
+        # Scritta per esteso invece che con un generatore: `_normalize` vuole TRE numeri, e
+        # una tupla costruita in un ciclo ha una lunghezza che nessuno puo' piu' verificare.
+        end = _normalize((math.cos(length) * start[0] + math.sin(length) * tangent[0],
+                          math.cos(length) * start[1] + math.sin(length) * tangent[1],
+                          math.cos(length) * start[2] + math.sin(length) * tangent[2]))
         count = rng.randint(ISLANDS_PER_ARC_MIN, ISLANDS_PER_ARC)
         for index in range(count):
             gap = 1.0 / max(1, count - 1)

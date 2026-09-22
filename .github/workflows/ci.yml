@@ -60,6 +60,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r backend/requirements-dev.lock.txt
+      # Il controllo statico PRIMA dei test, perche' e' cinque secondi contro quattro
+      # minuti e perche' trova una classe di difetti che i test non trovano: due pezzi di
+      # codice che hanno smesso di essere d'accordo su una firma. `colonyexport` chiamava
+      # `seed_for` con un argomento di troppo ed e' rimasto rotto per mesi -- nessun test lo
+      # eseguiva, e fino a oggi non c'era niente che guardasse. Il frontend aveva
+      # `tsc --noEmit` dal primo giorno.
+      - run: python -m mypy
+        working-directory: backend
       - run: python -m pytest -q
         working-directory: backend
 

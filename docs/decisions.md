@@ -958,3 +958,44 @@ genera il server. È successo con le quattro attitudini energetiche.
   decisione — il riferimento cambia solo quando qualcuno ha deciso di cambiare una regola.
 - **Non copre le cose che il riferimento non porta.** Il disegno, la luce, la resa: lì la
   divergenza fra le copie resta possibile e nessun test la vedrebbe.
+
+---
+
+## ADR-020 — Il backend guadagna un controllo statico
+
+**Decisione.** `mypy` gira in CI, nel job `backend`, **prima** dei test. Non in modalità severa:
+lo scopo non è annotare tutto il progetto, è accorgersi quando due pezzi di codice smettono di
+essere d'accordo su una firma.
+
+**Motivazione, con un nome.** `colonyexport.py` chiamava `seed_for` con tre argomenti quando la
+firma ne prendeva due. È rimasto così **per mesi**, perché nessuno lanciava quel comando e
+nessuno strumento guardava. Il frontend aveva `tsc --noEmit` in CI dal primo giorno; il backend
+non aveva niente. Provato: su quella riga mypy dice `Too many arguments for "seed_for"`.
+
+**Cosa ha trovato subito**, su codice che tutti i test dichiaravano sano:
+
+| | |
+|---|---|
+| `sitefill.measure` | dichiarava di restituire `SiteEconomy`, restituiva una **coppia**. Chi chiama la spacchetta, quindi non si è mai rotto niente — ed è il punto: una firma che mente non rompe niente finché qualcuno non la legge per sapere cosa aspettarsi. |
+| `sim/rules.py` | `built[commitment.choice]` con `choice: str \| None`. Il database lo vieta (vincolo in `0020`), ma se mai fosse scavalcato `built[None]` **non darebbe errore**: darebbe una colonia con un'opera senza nome, che produce e consuma per sempre. Adesso si ferma. |
+| `worldgen` | un indice dichiarato `tuple[int, int, int]` le cui chiavi sono float arrotondati, e una tupla costruita in un ciclo passata dove ne servono tre. |
+| `sim/config.py` | `WORKS[kind]["hours"]` era un `object`, quindi ogni conto sull'economia era un conto su un `object`. Ora c'è un `TypedDict` che dice che cos'è un'opera. |
+
+**Alternative scartate.**
+1. *Sei test attorno ai sei moduli senza test.* Sproporzionato, e non avrebbe trovato niente di
+   tutto questo: il difetto di `colonyexport` era in una funzione che un test avrebbe dovuto
+   **eseguire** per vederlo.
+2. *Modalità severa.* Alzare l'asticella oltre quel che si riesce a tenere pulito significa
+   disattivare il controllo fra un mese.
+3. *Un linter invece di un controllo dei tipi.* Un linter non sa quanti argomenti prende una
+   funzione definita in un altro file, che è esattamente il difetto da cui veniamo.
+
+**Costo.** Cinque secondi in CI, e cinque pacchetti in più nel lock.
+
+**Rischi e criticità.**
+- **Non controlla i corpi delle funzioni non annotate**, che in questo progetto sono molte. Un
+  difetto lì resta invisibile come prima.
+- **Tre `type: ignore`** in `worldreport.py`, dove `ctypes` espone dei nomi solo su Windows.
+  Sono mirati e commentati: l'alternativa era zittire il controllo dappertutto.
+- **C'è un test che verifica che la riga in CI esista** (`test_workflow.py`): toglierla non
+  farebbe cadere nient'altro.

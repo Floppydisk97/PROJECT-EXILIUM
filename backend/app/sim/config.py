@@ -6,6 +6,7 @@ produced it, so a future change to these numbers is a new ruleset and not a sile
 of history. It used to be stamped on the tick; with no tick, each movement carries it.
 """
 from datetime import timedelta
+from typing import TypedDict
 
 RULESET = 2
 
@@ -149,7 +150,33 @@ def harvest_rate(resource: str, level: int, site: int, policy: str = "balanced")
 # E lega la geografia in una direzione nuova. Il deserto era il sito povero di tutto -- niente
 # roccia, niente alberi, niente cibo -- e qui diventa il posto migliore del pianeta per il
 # sole. Un luogo senza risorse ma pieno di energia e' una scelta, non uno scarto.
-WORKS = {
+# Che cos'e' un'opera. Scritto, invece che lasciato indovinare.
+#
+# Senza, il tipo di `WORKS[kind]["hours"]` e' `object` -- perche' i valori sono di tipi
+# diversi -- e ogni conto fatto su di essi e' un conto su un `object`. Funziona, e nessun
+# controllo puo' dire se funzionera' ancora domani: e' esattamente il genere di cosa che
+# marcisce in silenzio, come e' gia' successo a `colonyexport`.
+#
+# Nella forma con le virgolette e non con `class`, perche' una delle voci si chiama `from` e
+# `from` e' una parola riservata: si puo' scrivere come chiave, non come attributo.
+#
+# `total=False` perche' le opere non hanno tutte le stesse voci: solo la fonderia trasforma
+# (`inputs`/`outputs`) e consuma corrente (`draw`), e le centrali la producono (`power`,
+# `from` -- da quale attitudine del sito dipende la resa). Le tre che ci sono sempre sono
+# etichetta, costo e durata.
+Work = TypedDict("Work", {
+    "label": str,
+    "cost": dict[str, int],
+    "hours": int,
+    "inputs": dict[str, int],
+    "outputs": dict[str, int],
+    "draw": int,
+    "power": int,
+    "from": str,
+}, total=False)
+
+
+WORKS: dict[str, Work] = {
     "smelter": {
         "label": "Fonderia",
         "inputs": {"ore": 10, "timber": 8},

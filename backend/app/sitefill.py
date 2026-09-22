@@ -31,8 +31,13 @@ def pending(conn) -> list:
     ).fetchall()
 
 
-def measure(conn, row) -> citygen.SiteEconomy:
-    """Grow the colony's real map and reduce it. Reads only -- deciding is `main`'s job."""
+def measure(conn, row) -> tuple[str, citygen.SiteEconomy]:
+    """Grow the colony's real map and reduce it. Reads only -- deciding is `main`'s job.
+
+    Restituisce anche il BIOMA, che serve solo a stamparlo. L'annotazione diceva di
+    restituire la sola economia ed era falsa da sempre: chi chiama spacchetta una coppia. Non
+    si era mai rotto niente -- e' proprio questo il punto, una firma che mente non rompe
+    niente finche' qualcuno non la legge per sapere cosa aspettarsi."""
     site, _tile = _site_of(conn, row["tile_id"])
     return site.biome, citygen.generate(row["map_seed"], site).economy
 
