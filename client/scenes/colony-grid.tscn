@@ -1,0 +1,10 @@
+[gd_scene load_steps=2 format=3]
+
+; La stessa colonia con le linee accese. Esiste perche' `tests/shot.gd` fotografa una scena e
+; non sa premere G: senza, l'unico modo di vedere la griglia sarebbe fidarsi.
+
+[ext_resource type="Script" path="res://exilium/colony.gd" id="1_colony"]
+
+[node name="Colonia" type="Node2D"]
+script = ExtResource("1_colony")
+grid = true

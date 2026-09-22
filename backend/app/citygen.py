@@ -85,6 +85,24 @@ OASIS_BREAKS_ROCK = 0.55      # how far from water the ground itself becomes sil
 
 # The ground a cell is made of. Order is the wire format, so append rather than insert.
 GROUNDS = ("deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice")
+
+# Di che colore e' ogni terreno, nell'ordine di `GROUNDS`.
+#
+# QUI e non nel visore, per la stessa ragione per cui le tinte dei biomi sono finite in
+# `worldgen`: i visori sono gia' due -- il browser e Godot -- e una tavolozza trascritta in
+# ognuno e' una copia-che-deve-coincidere. Di quelle questo progetto ne ha pagate sette.
+#
+# Sono presentazione, non geografia: il generatore non le guarda mai. Stanno accanto a
+# `GROUNDS` perche' un colore senza il suo terreno e' un numero e basta, e viaggiano nel
+# riferimento, che e' l'unica cosa che tutte e tre le lingue leggono davvero.
+GROUND_COLORS = {
+    "deep_water": 0x162C42, "water": 0x2E5670, "marsh": 0x464E3A, "sand": 0xB2A07C,
+    "soil": 0x604F3A, "gravel": 0x686358, "rock": 0x565451, "ice": 0xCEDBE5,
+}
+
+# E i due verdi. Il verde non e' uno solo: un prato e un bosco erano lo stesso identico
+# colore piu' o meno carico, ed e' per questo che una foresta sembrava un prato scuro.
+PALETTE = {"meadow": 0x606E3E, "forest": 0x30442A}
 DRY = frozenset(GROUNDS.index(name) for name in ("sand", "soil", "gravel", "rock"))
 STONE = frozenset(GROUNDS.index(name) for name in ("rock", "gravel"))
 

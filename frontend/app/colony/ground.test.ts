@@ -4,6 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { ColonyGround, describe as inspect, groundColor, hash, propAt, seedNumber } from "./ground";
 import { centreX, centreY } from "./hexgrid";
+import reference from "./reference.json";
+import { FOREST, GROUND_STYLE, MEADOW } from "./ground";
 
 const NAMES = ["deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice"];
 
@@ -151,5 +153,35 @@ describe("the hash", () => {
       buckets[Math.min(9, Math.floor(hash(1234, x, y, 5) * 10))]++;
     }
     for (const bucket of buckets) expect(bucket).toBeGreaterThan(14400 / 10 * 0.75);
+  });
+});
+
+describe("la tavolozza del terreno", () => {
+  it("da' le stesse tinte che da' Python", () => {
+    // Le tinte vivevano SOLO qui. Quando e' arrivato il client Godot sono state sul punto di
+    // essere trascritte una seconda volta -- l'ottava copia-che-deve-coincidere di questo
+    // progetto. Adesso la sorgente e' `citygen.GROUND_COLORS` e viaggiano nel riferimento,
+    // che e' l'unica cosa che tutte e tre le lingue leggono davvero.
+    //
+    // Questa tabella resta perche' serve anche per le ETICHETTE, che nel riferimento non ci
+    // sono. Ma non e' piu' una copia non controllata: se diverge, cade qui.
+    const names = (reference as { ground_names?: string[] }).ground_names
+      ?? ["deep_water", "water", "marsh", "sand", "soil", "gravel", "rock", "ice"];
+    const colors = (reference as unknown as { ground_colors: number[] }).ground_colors;
+    expect(colors.length).toBe(names.length);
+    for (let i = 0; i < names.length; i++) {
+      const here = GROUND_STYLE[names[i]];
+      expect(here, `terreno senza tinta in ground.ts: ${names[i]}`).toBeDefined();
+      const packed = (here.color[0] << 16) | (here.color[1] << 8) | here.color[2];
+      expect(packed, `tinta diversa per ${names[i]}`).toBe(colors[i]);
+    }
+  });
+
+  it("concorda anche sui due verdi", () => {
+    // Un prato e un bosco NON sono lo stesso verde: con uno solo, una foresta si leggeva come
+    // un prato scuro. Se le due copie divergessero, si leggerebbe cosi' in una sola delle due.
+    const palette = (reference as unknown as { palette: Record<string, number> }).palette;
+    expect((MEADOW[0] << 16) | (MEADOW[1] << 8) | MEADOW[2]).toBe(palette.meadow);
+    expect((FOREST[0] << 16) | (FOREST[1] << 8) | FOREST[2]).toBe(palette.forest);
   });
 });

@@ -60,6 +60,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r backend/requirements-dev.lock.txt
+      # Il controllo statico PRIMA dei test, perche' e' cinque secondi contro quattro
+      # minuti e perche' trova una classe di difetti che i test non trovano: due pezzi di
+      # codice che hanno smesso di essere d'accordo su una firma. `colonyexport` chiamava
+      # `seed_for` con un argomento di troppo ed e' rimasto rotto per mesi -- nessun test lo
+      # eseguiva, e fino a oggi non c'era niente che guardasse. Il frontend aveva
+      # `tsc --noEmit` dal primo giorno.
+      - run: python -m mypy
+        working-directory: backend
       - run: python -m pytest -q
         working-directory: backend
 
@@ -111,7 +119,21 @@ jobs:
       # Senza finestra e senza editor. Il test confronta il gemello GDScript del generatore
       # con `frontend/app/colony/reference.json` -- lo STESSO riferimento che tiene il
       # gemello TypeScript -- cella per cella. Una cella di scarto e il giro e' rosso.
+      # Un server che si comporta male apposta, acceso prima delle prove: senza, la parte del
+      # client che parla con la rete -- le coroutine, le intestazioni, l'attesa di una
+      # partenza a freddo -- resterebbe l'unica non provata, ed e' quella che si rompe in
+      # silenzio. Senza `EXILIUM_TEST_API` quelle prove si saltano da sole, quindi il file si
+      # puo' lanciare anche a mano senza accendere niente.
+      - name: Un server finto che dorme, per le prove di rete
+        run: |
+          python3 client/tests/fakeserver.py 8099 &
+          for _ in $(seq 40); do
+            curl -sf -o /dev/null http://127.0.0.1:8099/pronto && break
+            sleep 0.25
+          done
       - run: ~/.godot-bin/Godot_v${GODOT}_linux.x86_64 --headless --path client --script res://tests/run.gd
+        env:
+          EXILIUM_TEST_API: http://127.0.0.1:8099
       # E quanto COSTA generare un terreno. Non e' un test -- non ha un verdetto e non fa
       # cadere il giro -- ma il numero deve venire da una macchina vera: quella su cui il
       # client e' stato scritto e' limitata sulla CPU, e li' perfino quattro processi

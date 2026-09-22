@@ -3,6 +3,35 @@
 // come un numero plausibile.
 import { describe, expect, it } from "vitest";
 import { howLong, missingFor, stallNote, stallShort, units } from "./format";
+import cases from "./format.cases.json";
+
+// I casi condivisi con il client Godot. Vivono in un file solo perche' `format.ts` e
+// `client/exilium/format.gd` sono la stessa regola scritta due volte, e due elenchi che si
+// giurano uguali in questo progetto hanno gia' mentito cinque volte. Aggiungere un caso li'
+// lo aggiunge a tutti e due; toglierne uno lo toglie a tutti e due, il che e' il punto.
+describe("gli stessi casi che prova il client Godot", () => {
+  it("dice i numeri come li dice l'altro", () => {
+    for (const [milli, want] of cases.units) expect(units(milli as string)).toBe(want);
+  });
+
+  it("dice le durate come le dice l'altro", () => {
+    for (const [seconds, want] of cases.how_long) expect(howLong(seconds as number)).toBe(want);
+  });
+
+  it("dice lo stallo come lo dice l'altro, in tutte e due le forme", () => {
+    for (const [seconds, want] of cases.stall_note)
+      expect(stallNote(seconds as number | null)).toBe(want);
+    for (const [seconds, want] of cases.stall_short)
+      expect(stallShort(seconds as number | null)).toBe(want);
+  });
+
+  it("conta cio' che manca come lo conta l'altro", () => {
+    for (const [cost, held, want] of cases.missing_for) {
+      const got = missingFor(cost as Record<string, string>, held as Record<string, string>);
+      expect(got ?? {}).toEqual(want);
+    }
+  });
+});
 
 describe("i numeri in parole", () => {
   it("conta in unita', non in milli", () => {

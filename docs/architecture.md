@@ -111,6 +111,14 @@ rifiuta con 409 se la mappa esiste già — ed è possibile solo tramite una mig
 che disabilita i trigger, azzera le tabelle e le riabilita. È il percorso usato da tutte le migrazioni
 che hanno cambiato la geografia, da `0004` a `0009`.
 
+**Dove viene generato il pianeta è una cosa a parte da dove viene servito.** Costruirlo costa
+memoria — 358 MB di picco alla dimensione di oggi, 1,4 GB a quattro volte tanto — e l'istanza
+gratuita che serve l'API ne ha 512: al soffitto. `python -m app.mapfile dump` lo genera dove
+la memoria c'è e scrive un file portatile; `python -m app.mapfile load` lo rimette in un
+PostgreSQL qualunque via `COPY`, **a 36 MB di picco qualunque sia la sua dimensione**. Un test
+carica, fotografa, cancella, genera e confronta casella per casella: il database riempito dal
+file e quello riempito dal generatore sono lo stesso database, o il test cade. Vedi ADR-017.
+
 La sfera è un icosaedro suddiviso: ogni vertice originale è una casella del duale di
 Goldberg, quindi esagoni con esattamente dodici pentagoni ai vertici dell'icosaedro
 (`10*f² + 2` caselle). La generazione è deterministica dal seed e gira una volta sola: la

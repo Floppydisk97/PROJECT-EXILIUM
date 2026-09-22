@@ -300,6 +300,12 @@ def advance_city(
             # Da questo istante la colonia consuma e produce di piu': la fetta successiva va
             # calcolata con l'opera IN PIEDI, non con quella di prima. E' la stessa ragione
             # per cui un avanzamento spezza l'intervallo.
+            # QUALE opera lo garantisce un vincolo del database (migrazione 0020), non
+            # questa riga. Ma se mai quel vincolo venisse scavalcato, `built[None]` non
+            # darebbe nessun errore: darebbe una colonia con un'opera senza nome, che
+            # produce e consuma per sempre e che nessuno puo' abbattere. Meglio fermarsi.
+            if commitment.choice is None:
+                raise ValueError(f"impegno {commitment.id}: un'opera senza dire quale")
             built = dict(city.works)
             built[commitment.choice] = built.get(commitment.choice, 0) + 1
             city = replace(city, works=built)

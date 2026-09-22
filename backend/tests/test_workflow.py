@@ -66,3 +66,17 @@ def test_no_job_can_burn_six_hours():
     caps = [int(line.split(":")[1]) for line in lines() if line.startswith("    timeout-minutes:")]
     assert len(caps) == len(job_names()), caps
     assert all(0 < cap <= 30 for cap in caps), caps
+
+
+def test_the_backend_job_still_checks_types():
+    """Il controllo statico non deve poter sparire in silenzio.
+
+    E' entrato per una ragione con un nome: `colonyexport.py` chiamava `seed_for` con tre
+    argomenti quando la firma ne prendeva due, ed e' rimasto rotto per mesi perche' nessuno
+    lanciava quel comando e nessuno strumento guardava. Togliere quella riga dal workflow
+    non farebbe cadere nessun test -- tranne questo.
+    """
+    workflow = WORKFLOW.read_text()
+    assert "python -m mypy" in workflow, "il job backend non controlla piu' i tipi"
+    # E prima dei test, che e' dove serve: cinque secondi contro quattro minuti.
+    assert workflow.index("python -m mypy") < workflow.index("python -m pytest")

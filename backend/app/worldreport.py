@@ -33,15 +33,18 @@ class _PeakRss:
                         ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
         counters = Counters()
         counters.cb = ctypes.sizeof(counters)
-        psapi = ctypes.WinDLL("psapi", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # `WinDLL`, `WinError` e `get_last_error` esistono in `ctypes` solo su Windows, e
+        # questo ramo gira solo li'. Su Linux il controllo statico non li trova e ha ragione:
+        # l'alternativa a zittirlo qui sarebbe zittirlo dappertutto.
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
         kernel32.GetCurrentProcess.restype = ctypes.c_void_p
         psapi.GetProcessMemoryInfo.argtypes = (ctypes.c_void_p, ctypes.POINTER(Counters),
                                                ctypes.c_ulong)
         psapi.GetProcessMemoryInfo.restype = ctypes.c_int
         if not psapi.GetProcessMemoryInfo(
                 kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
         return int(counters.WorkingSetSize)
 
     def sample(self):

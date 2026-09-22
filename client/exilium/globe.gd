@@ -5,10 +5,10 @@
 # da attraversare a ogni fotogramma, e il motore passerebbe la vita a decidere se disegnarli
 # invece di disegnarli.
 #
-# I colori sono gli stessi del visore web (`frontend/app/globe/biomes.ts`). Per adesso sono
-# trascritti: e' la sesta copia-che-deve-coincidere di questo progetto, e va chiusa -- il
-# posto giusto e' il file del pianeta, che gia' porta i NOMI dei biomi e potrebbe portare
-# anche le tinte. Segnato come debito, non nascosto.
+# I colori NON stanno qui: arrivano dentro al file del pianeta, accanto ai nomi dei biomi.
+# Per un po' sono stati trascritti da `biomes.ts` ed erano una copia-che-deve-coincidere;
+# adesso chi disegna li legge. Non rimetterli qui: un elenco di tinte in ogni visore e'
+# esattamente il difetto che questo progetto ha gia' pagato sette volte.
 extends Node3D
 
 # `preload` e non il nome globale della classe: girando con `--script`, il motore non ha

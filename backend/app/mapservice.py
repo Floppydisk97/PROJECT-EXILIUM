@@ -34,13 +34,40 @@ def _round(v, digits=4):
     return [round(c, digits) + 0.0 for c in v]
 
 
-def _tile_rows(world):
+# Che cos'e' una riga di `world_tiles`, in un posto solo. L'ordine e' quello, e chiunque
+# scriva o legga una casella -- la generazione, il file portatile, il caricamento -- lo prende
+# da qui invece di riscriverlo. Un elenco di colonne ricopiato e' il modo classico di
+# scambiare `nx` con `ny` e non accorgersene per mesi.
+TILE_COLUMNS = (
+    "id", "lat", "lon", "cx", "cy", "cz", "elevation", "temperature", "rainfall",
+    "biome", "neighbors", "polygon", "nx", "ny", "nz",
+    "river_flow", "downstream", "landmass_size",
+)
+POLYGON_AT = TILE_COLUMNS.index("polygon")
+
+
+def tile_values(world):
+    """Le caselle come valori Python puri: numeri, stringhe, liste. Niente che sappia di
+    database, cosi' le stesse righe possono finire in una tabella o dentro un file."""
     for t in world.tiles:
         yield (
             t.id, t.lat, t.lon, *_round(t.center), t.elevation, t.temperature, t.rainfall,
-            t.biome, list(t.neighbors), Jsonb([_round(p) for p in t.polygon]),
+            t.biome, list(t.neighbors), [_round(p) for p in t.polygon],
             *_round(t.normal, 4), t.river_flow, t.downstream, t.landmass_size,
         )
+
+
+def as_database_row(values):
+    """La stessa riga, vestita per PostgreSQL: il poligono e' `jsonb` e vuole il suo involucro.
+
+    Una funzione e non una riga scritta due volte, perche' i posti che inseriscono caselle
+    sono due -- la generazione e il caricamento da file -- e devono vestirle identiche."""
+    return (*values[:POLYGON_AT], Jsonb(values[POLYGON_AT]), *values[POLYGON_AT + 1:])
+
+
+def _tile_rows(world):
+    for values in tile_values(world):
+        yield as_database_row(values)
 
 
 def generate_and_store(conn, seed: str, frequency: int = worldgen.PRODUCTION_FREQUENCY) -> dict:
@@ -57,10 +84,8 @@ def generate_and_store(conn, seed: str, frequency: int = worldgen.PRODUCTION_FRE
         (worldgen.WORLD_NAME, world.seed, world.frequency, world.sea_level,
          worldgen.GENERATOR_VERSION),
     )
-    statement = """INSERT INTO world_tiles
-        (id, lat, lon, cx, cy, cz, elevation, temperature, rainfall, biome, neighbors,
-         polygon, nx, ny, nz, river_flow, downstream, landmass_size)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+    statement = "INSERT INTO world_tiles ({}) VALUES ({})".format(
+        ", ".join(TILE_COLUMNS), ", ".join(["%s"] * len(TILE_COLUMNS)))
     chunk = []
     with conn.cursor() as cur:
         for row in _tile_rows(world):

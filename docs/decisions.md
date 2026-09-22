@@ -685,8 +685,7 @@ rifiutato una volta, ma non di molto.
 - **La colonia già fondata ha numeri scritti con la griglia vecchia.** Il disegno cambia, i
   numeri memorizzati no: per vederli coerenti serve un soft reset e un nuovo atterraggio.
 - **Il bake delle colonie di esempio era rotto da mesi** e non se n'era accorto nessuno,
-  perché `ColonyPicker` non sta su nessuna pagina. Sistemato e rimpicciolito, ma è codice
-  morto in attesa di una decisione.
+  perché `ColonyPicker` non sta su nessuna pagina. *(Chiuso in ADR-018: tolto.)*
 
 **Da rivedere se.** Si comincia a costruire davvero: allora servirà sapere quali esagoni sono
 occupati, e quello è uno strato nuovo — non una proprietà del terreno.
@@ -787,3 +786,295 @@ poligoni, oggi three.js), della HUD e del client dell'API.
 **Da rivedere se.** Già rivisto: i thread non bastano (vedi sopra). La prossima decisione è
 fra generare a pezzi e cambiare linguaggio, e va presa prima di costruirci sopra il resto del
 client — non dopo.
+
+---
+
+## ADR-017 — Il pianeta si genera dove c'è memoria, non dove viene servito
+
+**Decisione.** Il pianeta diventa un **file portatile**. `python -m app.mapfile dump` lo genera
+dove c'è memoria — un portatile, un runner di CI, qualunque cosa — e `python -m app.mapfile
+load` lo rimette dentro un PostgreSQL qualunque **a memoria costante**, via `COPY`. Il server
+che serve l'API non genera più niente.
+
+**Motivazione.** Finora il pianeta lo costruiva l'istanza dell'API, all'avvio. Misurato:
+**358 MB di picco** alla dimensione di oggi, su un'istanza gratuita che ne ha **512**. Siamo
+al soffitto, e il pianeta non può crescere — non perché manchi lo spazio su disco, ma perché
+la macchina che lo **serve** non ha la RAM per **farlo**. Sono due cose diverse tenute insieme
+da un dettaglio di implementazione, e questo le separa.
+
+**Misurato, su un pianeta ×4 (924.162 caselle):**
+
+| | |
+|---|---|
+| generarlo e scriverlo | 153 s, **picco 1.407 MB** |
+| il file | 71 MB compressi |
+| **caricarlo** | 36 s, **picco 36 MB** |
+| in tabella | 475 MB |
+
+I 36 MB non crescono col pianeta: si legge una riga per volta e si scrive in un canale.
+
+**La cosa che il file deve garantire**, e che non è "il caricamento funziona": un database
+riempito dal file e uno riempito dal generatore devono essere **lo stesso database**. C'è un
+test che lo misura — carica, fotografa, cancella, genera, fotografa di nuovo e confronta
+casella per casella, colonna per colonna. Se le due strade divergessero avremmo due pianeti
+con lo stesso nome, e di copie-che-devono-coincidere questo progetto ne ha già pagate sette.
+Per questo `mapservice.TILE_COLUMNS` e `as_database_row` sono **una definizione sola**: la
+generazione e il caricamento vestono le caselle con la stessa funzione.
+
+**Alternative scartate.**
+1. *Aprire il database alle connessioni esterne e caricarlo da fuori.* È la via rapida, e
+   resta possibile — ma espone il database con la sola password per la durata dell'operazione,
+   e non toglie il problema: al prossimo pianeta si riparte da capo.
+2. *Alzare l'istanza a pagamento per il tempo della costruzione.* Funziona, costa pochi
+   centesimi, e non lascia niente dietro di sé. Questo invece vale per sempre e per qualunque
+   provider.
+3. *Rendere `worldgen` parsimonioso* (colonne invece di oggetti). È il lavoro giusto un giorno
+   — 1,5 KB per casella sono quasi tutti ingombro di Python — ma è un refactor del file più
+   delicato del progetto per risolvere un problema che si può togliere di mezzo senza toccarlo.
+4. *Un formato binario.* Scartato: una riga JSON per casella si guarda con `zcat` quando
+   qualcosa non torna, e non ha bisogno di una libreria. A 71 MB compressi il risparmio non
+   vale l'opacità.
+5. *Scrivere e leggere in due file separati.* Scartato: le due metà di un formato separate
+   sono il modo in cui un formato comincia a non essere d'accordo con se stesso.
+
+**Il sigillo sta in fondo**, non in testa, perché chi scrive non può conoscere la somma prima
+di aver finito. Chi legge lo verifica **dentro la transazione**: un file troncato o corrotto
+non lascia mezzo pianeta nel database, non lascia niente. Ci sono i test per tutti e tre i
+casi — troncato, corrotto, e scritto quando una casella aveva altre colonne (il peggiore:
+riempirebbe le colonne sbagliate con valori giusti, senza nessun errore).
+
+**Costo.** Un formato in più da mantenere, e un file da qualche decina di megabyte da spostare
+a mano quando si cambia pianeta.
+
+**Rischi e criticità.**
+- **Non è ancora collegato al deploy.** Il comando di avvio genera ancora il pianeta se manca.
+  Collegarlo dipende da dove si finisce per ospitare, e indovinare sarebbe peggio che aspettare.
+- **Il file non è versionato nel repository** e non deve esserlo: decine di megabyte di dati
+  rigenerabili dal seme. Ma questo vuol dire che **qualcuno deve conservarlo**, o rigenerarlo.
+- **Un pianeta più grande di frequenza 160 non entra comunque**: c'è un vincolo nello schema
+  (`world_map_frequency_check`) e una guardia in `worldgen`. Alzarli è una migrazione, come
+  già fatto in 0004 e 0006 — questo ADR non lo fa.
+- **Il database gratuito di Render scade il 17 ottobre 2026** e accetta solo connessioni
+  interne. Questo comando rende indolore il trasloco, ma il trasloco va deciso.
+
+**Trovato da una revisione, e sarebbe esploso solo in produzione.** `transaction()` mette
+`statement_timeout` a sessanta secondi, perché protegge le **richieste**. Ma il pianeta entra
+con un `COPY` solo, e quel `COPY` dura **36 secondi su socket locale** per un pianeta ×4:
+verso un database gestito in rete — cioè l'unico caso per cui questo comando esiste — i
+sessanta secondi si sforano, e il caricamento viene annullato e rifatto indietro a tre quarti
+dell'opera. Il caricamento ora toglie il limite per sé: non è una richiesta, è un comando
+amministrativo che qualcuno lancia guardandolo. C'è un test che legge `statement_timeout`
+prima e dopo.
+
+La stessa revisione ha trovato che il sigillo copriva **solo le caselle**: un seme o una
+versione del generatore corrotti entravano in `world_map` in silenzio mentre la somma
+continuava a tornare — un pianeta che dichiara di essere un altro pianeta. Adesso il sigillo
+copre anche l'intestazione. E un gzip tagliato a metà dava `EOFError` invece di un rifiuto
+comprensibile, e un'intestazione monca un `KeyError`: per chi guarda sono tutti lo stesso
+caso, "questo file non si carica", e adesso lo dicono così.
+
+**Da rivedere se.** `worldgen` diventa parsimonioso: allora l'istanza potrebbe tornare a
+generare da sola, e questo resterebbe utile solo per traslocare.
+
+---
+
+## ADR-018 — Il visore di esempio delle colonie viene tolto
+
+**Decisione.** Spariscono `backend/app/colonyexport.py`, `frontend/app/colony/ColonyPicker.tsx`,
+`frontend/app/lib/colony.ts` e i file cotti in `frontend/public/colony/`.
+
+**Motivazione.** Servivano a mostrare una colonia senza un server, quando il terreno era un
+file cotto a tempo di build. Non è più così: il gioco genera il terreno nel browser dal seme
+che il server gli dà, e il client Godot fa lo stesso. Il visore di esempio non sta su nessuna
+pagina, nessuno script lo lancia, nessun workflow lo nomina — verificato, non supposto.
+
+Ed era **rotto**. `seed_for` ha perso un argomento quando il seme è diventato una proprietà
+della casella, e quella riga è rimasta indietro: il bake non girava più da mesi. Se n'è
+accorto qualcuno solo perché ho provato a lanciarlo per un'altra ragione.
+
+**È il pezzo di prova che conta più della decisione.** Il codice morto non resta fermo: marcisce,
+e marcisce in silenzio. Tenerlo "per ogni evenienza" significa che il giorno in cui servisse
+non funzionerebbe comunque — e nel frattempo ogni modifica alla forma di una cella deve
+attraversarlo. Questo ha già pagato quel prezzo una volta, quando gli esagoni hanno cambiato
+la metratura e ho dovuto sistemare anche lui.
+
+**Alternative scartate.**
+1. *Tenerlo e ridargli una pagina.* Sarebbe una pagina che mostra una colonia finta accanto a
+   una che mostra quella vera. Due strade per la stessa cosa, e una sola provata.
+2. *Tenerlo senza pagina, "per riferimento".* È quel che si è fatto finora, ed è come si è
+   rotto senza che nessuno se ne accorgesse.
+
+**Costo.** Se un giorno servisse mostrare una colonia senza server, si riscrive — e si
+riscrive più in fretta di quanto si aggiusterebbe questo, perché il terreno adesso si genera
+in tre lingue e tutte e tre sanno farlo da un seme.
+
+**Rischi e criticità.**
+- **Restano altri moduli senza test** e senza chiamanti automatici: `cityshots`, `worldshots`,
+  `worldreport`, `sitefill`, `cli`, `resetcli`, `colonyref`. Sono strumenti da riga di comando
+  che qualcuno lancia a mano, il che è legittimo — ma è la stessa condizione in cui
+  `colonyexport` è marcito. **`colonyref` è il più pericoloso**: scrive il riferimento su cui
+  poggiano i tre gemelli, ed è per questo che ADR-019 gli mette un test attorno.
+
+---
+
+## ADR-019 — Il cerchio della fiducia fra i tre gemelli si chiude
+
+**Decisione.** `backend/tests/test_colonyref.py` confronta **quel che Python genera adesso**
+con il `reference.json` che sta nel commit. Marcato `repo`, perché legge `frontend/`.
+
+**Motivazione.** Il confronto fra le tre copie del generatore era a **stella, non a cerchio**.
+TypeScript e GDScript guardano il file; **nessuno guardava se il file dice ancora quel che
+Python fa**. Bastava cambiare una regola in `citygen.py` e dimenticare di rilanciare
+`python -m app.colonyref`: i due gemelli continuavano a combaciare col file vecchio, tutto
+restava verde, e intanto avevano smesso di combaciare con Python — cioè con l'unica copia che
+decide davvero, perché è quella che gira sul server quando qualcuno atterra.
+
+**Dimostrato, non supposto.** Cambiando `OASIS_FERTILITY_FLOOR` da 12 a 13 senza rigenerare:
+
+```
+test_colonyref  FAILED  'nilo' / fertility: la cella 0 vale 33 adesso e 32 nel file.
+                        Rilancia `python -m app.colonyref` [...]
+citygen.test.ts  9 passed
+```
+
+Il gemello TypeScript resta verde su un pianeta che Python non fa più. Ora il cerchio è
+chiuso: **Python → file** (qui), **file → TypeScript** (`citygen.test.ts`), **file → GDScript**
+(`client/tests/run.gd`).
+
+**Gli altri due test** chiudono una trappola già scattata una volta: un campo nuovo in
+`SiteEconomy` o in `Site` che il riferimento non scrive lascerebbe i gemelli a generare da un
+sito incompleto — e a generarlo **uguale fra loro**, quindi verdi, e diverso da quel che
+genera il server. È successo con le quattro attitudini energetiche.
+
+**Alternative scartate.**
+1. *Far rigenerare il riferimento alla CI e confrontare il risultato.* Sposterebbe il problema:
+   un riferimento rigenerato automaticamente non è più un riferimento, è un'eco.
+2. *Un gancio di commit.* Funziona finché qualcuno non lo salta, e non gira in CI.
+
+**Costo.** `build()` rigenera cinque siti a ogni giro: 0,7 secondi.
+
+**Rischi e criticità.**
+- **Il test dice "rigenera", non rigenera.** È voluto: rimettere il file nel commit è una
+  decisione — il riferimento cambia solo quando qualcuno ha deciso di cambiare una regola.
+- **Non copre le cose che il riferimento non porta.** Il disegno, la luce, la resa: lì la
+  divergenza fra le copie resta possibile e nessun test la vedrebbe.
+
+---
+
+## ADR-020 — Il backend guadagna un controllo statico
+
+**Decisione.** `mypy` gira in CI, nel job `backend`, **prima** dei test. Non in modalità severa:
+lo scopo non è annotare tutto il progetto, è accorgersi quando due pezzi di codice smettono di
+essere d'accordo su una firma.
+
+**Motivazione, con un nome.** `colonyexport.py` chiamava `seed_for` con tre argomenti quando la
+firma ne prendeva due. È rimasto così **per mesi**, perché nessuno lanciava quel comando e
+nessuno strumento guardava. Il frontend aveva `tsc --noEmit` in CI dal primo giorno; il backend
+non aveva niente. Provato: su quella riga mypy dice `Too many arguments for "seed_for"`.
+
+**Cosa ha trovato subito**, su codice che tutti i test dichiaravano sano:
+
+| | |
+|---|---|
+| `sitefill.measure` | dichiarava di restituire `SiteEconomy`, restituiva una **coppia**. Chi chiama la spacchetta, quindi non si è mai rotto niente — ed è il punto: una firma che mente non rompe niente finché qualcuno non la legge per sapere cosa aspettarsi. |
+| `sim/rules.py` | `built[commitment.choice]` con `choice: str \| None`. Il database lo vieta (vincolo in `0020`), ma se mai fosse scavalcato `built[None]` **non darebbe errore**: darebbe una colonia con un'opera senza nome, che produce e consuma per sempre. Adesso si ferma. |
+| `worldgen` | un indice dichiarato `tuple[int, int, int]` le cui chiavi sono float arrotondati, e una tupla costruita in un ciclo passata dove ne servono tre. |
+| `sim/config.py` | `WORKS[kind]["hours"]` era un `object`, quindi ogni conto sull'economia era un conto su un `object`. Ora c'è un `TypedDict` che dice che cos'è un'opera. |
+
+**Alternative scartate.**
+1. *Sei test attorno ai sei moduli senza test.* Sproporzionato, e non avrebbe trovato niente di
+   tutto questo: il difetto di `colonyexport` era in una funzione che un test avrebbe dovuto
+   **eseguire** per vederlo.
+2. *Modalità severa.* Alzare l'asticella oltre quel che si riesce a tenere pulito significa
+   disattivare il controllo fra un mese.
+3. *Un linter invece di un controllo dei tipi.* Un linter non sa quanti argomenti prende una
+   funzione definita in un altro file, che è esattamente il difetto da cui veniamo.
+
+**Costo.** Cinque secondi in CI, e cinque pacchetti in più nel lock.
+
+**Rischi e criticità.**
+- **Non controlla i corpi delle funzioni non annotate**, che in questo progetto sono molte. Un
+  difetto lì resta invisibile come prima.
+- **Tre `type: ignore`** in `worldreport.py`, dove `ctypes` espone dei nomi solo su Windows.
+  Sono mirati e commentati: l'alternativa era zittire il controllo dappertutto.
+- **C'è un test che verifica che la riga in CI esista** (`test_workflow.py`): toglierla non
+  farebbe cadere nient'altro.
+
+---
+
+## ADR-018 — Il client Godot parla col server, e l'istantanea che mostra è vera
+
+**Decisione.** Il client Godot acquista il pezzo che gli mancava per essere un gioco e non un
+quadro: `exilium/api.gd` (le chiamate autenticate), `exilium/patience.gd` (l'attesa di una
+partenza a freddo), `exilium/format.gd` (i numeri in parole) e `exilium/city.gd` con
+`scenes/city.tscn` (lo schermo della città).
+
+**Perché la pazienza è un file a sé, e gemello.** `patience.ts` porta dentro una lezione già
+pagata: contando i *tentativi*, quattro rifiuti immediati spendevano diciotto secondi di una
+pazienza che ne prometteva novanta, contro un risveglio che ne chiede cinquanta. L'instradatore
+di Render risponde subito con un 5xx a un servizio che dorme, quindi un tentativo fallito non è
+lento. Il budget è l'orologio e nient'altro. Riscrivere quella logica dentro `api.gd` avrebbe
+voluto dire riscrivere anche l'errore: `patience.gd` la ripete riga per riga, con `now` e
+`sleep` sostituibili, ed è per questo che si prova in zero secondi veri invece che in novanta.
+
+**Perché l'istantanea della città è una risposta vera.** `client/tests/city.sample.json` non è
+scritta a mano: è uscita da `app.service.read_city` contro un Postgres con lo schema del
+progetto, su un pianeta a frequenza 12, con due eolici e una fonderia costruiti facendo
+correre l'orologio del mondo — `gameclock`, non una scorciatoia nello stato, perché
+retrodatare la scadenza di un ordine viola un vincolo e giustamente. Serve a due cose: allo
+schermo, per mostrarsi senza un server acceso, e alla prova, per dire che il client legge i
+campi che il server manda **davvero** invece di quelli che spera.
+
+E il cerchio si chiude come per il riferimento del terreno: `client/tests/run.gd` confronta lo
+schermo con l'istantanea, `backend/tests/test_citysample.py` confronta l'istantanea con
+`read_city` di adesso. Senza il secondo, bastava aggiungere un campo al server e il client
+restava verde contro una fotografia del passato.
+
+**Perché `format.gd` e `format.ts` leggono gli stessi casi.** `frontend/app/city/
+format.cases.json` è letto da tutte e due le suite. "Fermo" e "pieno" sono due stati che
+chiedono a chi gioca due cose opposte — uno dice di spendere, l'altro che quella risorsa lì
+non arriva — e su due schermi diversi devono dire la stessa cosa. Aggiungere un caso lì lo
+aggiunge a tutti e due; toglierne uno lo toglie a tutti e due, il che è il punto.
+
+**Un server finto in CI.** `client/tests/fakeserver.py` si comporta male apposta: dorme due
+volte prima di rispondere, rifiuta un token, motiva un rifiuto, e rimanda indietro le
+intestazioni che ha ricevuto. Senza, la parte del client che tocca la rete — le coroutine, le
+intestazioni, l'attesa — sarebbe l'unica non provata, ed è quella che si rompe in silenzio.
+Senza `EXILIUM_TEST_API` quelle prove si saltano da sole.
+
+**Difetti trovati scrivendo le prove, non guardando.**
+- `facts_of` dichiarava le altezze `PackedByteArray`. Sono **metri**, e un byte finisce a 255.
+- `select_at_screen` chiedeva la trasformazione alla tela, che racconta dov'era l'inquadratura
+  il fotogramma prima: spostare lo sguardo e scegliere subito dava la cella di **dov'era**, e
+  una cella la restituiva comunque, quindi sembrava funzionare.
+- Un `HTTPRequest` fuori dall'albero non manda niente, e quel caso finiva fra i "riprova": un
+  errore di programmazione travestito da server addormentato, novanta secondi di attesa e poi
+  una frase sbagliata. Ora è rumoroso.
+- Lo schermo mostrava `Prima Luce` **prima** di sapere quale città fosse, e diceva «nessun
+  server» a chi il server ce l'aveva e il token no — mandando a cercare il problema dalla
+  parte sbagliata.
+
+**Alternative scartate.**
+1. *Un `Literal` dei tipi di opera dentro il client.* Scartata: i nomi degli impianti vengono
+   dal `catalogue` che manda il server. Una tabella di etichette nel client sarebbe un altro
+   elenco da tenere allineato, e mostrerebbe `windfarm` al posto di `Eolico` il giorno in cui
+   si disallinea.
+2. *Un'istantanea scritta a mano.* Scartata: sarebbe una descrizione di come **speriamo** che
+   risponda il server, e la prova che la legge direbbe solo che il client è coerente con le
+   nostre speranze.
+3. *Mostrare l'istantanea senza dirlo.* Scartata. Uno schermo di prova che si spaccia per
+   collegato è peggio di uno schermo vuoto: fa credere che il gioco funzioni quando dall'altra
+   parte non c'è nessuno.
+4. *Eccezioni al posto di un verdetto esplicito.* GDScript non ne ha; e un verdetto è anche
+   ciò che rende provabile la decisione «cosa significa questo stato HTTP» senza fare la
+   chiamata.
+
+**Rischi e criticità.**
+- **L'istantanea invecchia.** La prova dal lato server la protegge solo quando gira con un
+  database: senza `TEST_DATABASE_URL` si salta, come tutte le altre prove d'integrazione.
+- **Lo schermo della città legge e basta.** Non costruisce, non vota, non avvia un livello:
+  `api.gd` ha i metodi, l'interfaccia no. È il pezzo successivo.
+- **Novanta secondi di attesa restano novanta secondi.** Lo schermo ora dice quanto può
+  durare, che non la accorcia: la accorcia solo un'istanza che non dorme.
+- **Il token sta in chiaro** in `user://exilium.cfg` e nelle variabili d'ambiente. Per un
+  gioco su una macchina personale va bene; non è un deposito di segreti.
