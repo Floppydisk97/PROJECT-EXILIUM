@@ -999,3 +999,82 @@ non aveva niente. Provato: su quella riga mypy dice `Too many arguments for "see
   Sono mirati e commentati: l'alternativa era zittire il controllo dappertutto.
 - **C'è un test che verifica che la riga in CI esista** (`test_workflow.py`): toglierla non
   farebbe cadere nient'altro.
+
+---
+
+## ADR-018 — Il client Godot parla col server, e l'istantanea che mostra è vera
+
+**Decisione.** Il client Godot acquista il pezzo che gli mancava per essere un gioco e non un
+quadro: `exilium/api.gd` (le chiamate autenticate), `exilium/patience.gd` (l'attesa di una
+partenza a freddo), `exilium/format.gd` (i numeri in parole) e `exilium/city.gd` con
+`scenes/city.tscn` (lo schermo della città).
+
+**Perché la pazienza è un file a sé, e gemello.** `patience.ts` porta dentro una lezione già
+pagata: contando i *tentativi*, quattro rifiuti immediati spendevano diciotto secondi di una
+pazienza che ne prometteva novanta, contro un risveglio che ne chiede cinquanta. L'instradatore
+di Render risponde subito con un 5xx a un servizio che dorme, quindi un tentativo fallito non è
+lento. Il budget è l'orologio e nient'altro. Riscrivere quella logica dentro `api.gd` avrebbe
+voluto dire riscrivere anche l'errore: `patience.gd` la ripete riga per riga, con `now` e
+`sleep` sostituibili, ed è per questo che si prova in zero secondi veri invece che in novanta.
+
+**Perché l'istantanea della città è una risposta vera.** `client/tests/city.sample.json` non è
+scritta a mano: è uscita da `app.service.read_city` contro un Postgres con lo schema del
+progetto, su un pianeta a frequenza 12, con due eolici e una fonderia costruiti facendo
+correre l'orologio del mondo — `gameclock`, non una scorciatoia nello stato, perché
+retrodatare la scadenza di un ordine viola un vincolo e giustamente. Serve a due cose: allo
+schermo, per mostrarsi senza un server acceso, e alla prova, per dire che il client legge i
+campi che il server manda **davvero** invece di quelli che spera.
+
+E il cerchio si chiude come per il riferimento del terreno: `client/tests/run.gd` confronta lo
+schermo con l'istantanea, `backend/tests/test_citysample.py` confronta l'istantanea con
+`read_city` di adesso. Senza il secondo, bastava aggiungere un campo al server e il client
+restava verde contro una fotografia del passato.
+
+**Perché `format.gd` e `format.ts` leggono gli stessi casi.** `frontend/app/city/
+format.cases.json` è letto da tutte e due le suite. "Fermo" e "pieno" sono due stati che
+chiedono a chi gioca due cose opposte — uno dice di spendere, l'altro che quella risorsa lì
+non arriva — e su due schermi diversi devono dire la stessa cosa. Aggiungere un caso lì lo
+aggiunge a tutti e due; toglierne uno lo toglie a tutti e due, il che è il punto.
+
+**Un server finto in CI.** `client/tests/fakeserver.py` si comporta male apposta: dorme due
+volte prima di rispondere, rifiuta un token, motiva un rifiuto, e rimanda indietro le
+intestazioni che ha ricevuto. Senza, la parte del client che tocca la rete — le coroutine, le
+intestazioni, l'attesa — sarebbe l'unica non provata, ed è quella che si rompe in silenzio.
+Senza `EXILIUM_TEST_API` quelle prove si saltano da sole.
+
+**Difetti trovati scrivendo le prove, non guardando.**
+- `facts_of` dichiarava le altezze `PackedByteArray`. Sono **metri**, e un byte finisce a 255.
+- `select_at_screen` chiedeva la trasformazione alla tela, che racconta dov'era l'inquadratura
+  il fotogramma prima: spostare lo sguardo e scegliere subito dava la cella di **dov'era**, e
+  una cella la restituiva comunque, quindi sembrava funzionare.
+- Un `HTTPRequest` fuori dall'albero non manda niente, e quel caso finiva fra i "riprova": un
+  errore di programmazione travestito da server addormentato, novanta secondi di attesa e poi
+  una frase sbagliata. Ora è rumoroso.
+- Lo schermo mostrava `Prima Luce` **prima** di sapere quale città fosse, e diceva «nessun
+  server» a chi il server ce l'aveva e il token no — mandando a cercare il problema dalla
+  parte sbagliata.
+
+**Alternative scartate.**
+1. *Un `Literal` dei tipi di opera dentro il client.* Scartata: i nomi degli impianti vengono
+   dal `catalogue` che manda il server. Una tabella di etichette nel client sarebbe un altro
+   elenco da tenere allineato, e mostrerebbe `windfarm` al posto di `Eolico` il giorno in cui
+   si disallinea.
+2. *Un'istantanea scritta a mano.* Scartata: sarebbe una descrizione di come **speriamo** che
+   risponda il server, e la prova che la legge direbbe solo che il client è coerente con le
+   nostre speranze.
+3. *Mostrare l'istantanea senza dirlo.* Scartata. Uno schermo di prova che si spaccia per
+   collegato è peggio di uno schermo vuoto: fa credere che il gioco funzioni quando dall'altra
+   parte non c'è nessuno.
+4. *Eccezioni al posto di un verdetto esplicito.* GDScript non ne ha; e un verdetto è anche
+   ciò che rende provabile la decisione «cosa significa questo stato HTTP» senza fare la
+   chiamata.
+
+**Rischi e criticità.**
+- **L'istantanea invecchia.** La prova dal lato server la protegge solo quando gira con un
+  database: senza `TEST_DATABASE_URL` si salta, come tutte le altre prove d'integrazione.
+- **Lo schermo della città legge e basta.** Non costruisce, non vota, non avvia un livello:
+  `api.gd` ha i metodi, l'interfaccia no. È il pezzo successivo.
+- **Novanta secondi di attesa restano novanta secondi.** Lo schermo ora dice quanto può
+  durare, che non la accorcia: la accorcia solo un'istanza che non dorme.
+- **Il token sta in chiaro** in `user://exilium.cfg` e nelle variabili d'ambiente. Per un
+  gioco su una macchina personale va bene; non è un deposito di segreti.

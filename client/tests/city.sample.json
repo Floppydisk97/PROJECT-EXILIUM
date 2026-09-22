@@ -1,0 +1,120 @@
+{
+  "_": "Una CityView VERA, non inventata: presa da `app.service.read_city` contro un Postgres con lo schema del progetto, su un pianeta a frequenza 12, con due eolici e una fonderia costruiti facendo correre l'orologio del mondo. Serve a `scenes/city.tscn` per mostrarsi senza un server acceso, e a `tests/run.gd` per provare che lo schermo legge i campi che il server manda davvero -- non quelli che il client spera. E' un'ISTANTANEA: se la forma della risposta cambia, questo file resta indietro, ed e' per questo che la prova confronta i nomi dei campi e non solo i valori.",
+  "city": {
+    "id": "17018e22-accf-4e70-8437-b464ddd94902",
+    "name": "Prima Luce",
+    "level": 0,
+    "stock_milli": {
+      "food": "2000000",
+      "timber": "66184",
+      "stone": "258440",
+      "ore": "1553050",
+      "alloy": "84192"
+    },
+    "alloy_milli": "84192",
+    "settled_at": "2026-09-23 10:06:49+00:00",
+    "policy": "balanced",
+    "policy_vote": null,
+    "next_upgrade_cost_milli": {
+      "stone": "60000",
+      "timber": "60000"
+    },
+    "next_upgrade_seconds": 3744,
+    "supported_level": 7,
+    "stalls_in_seconds": {
+      "food": 0,
+      "timber": null,
+      "stone": 435390,
+      "ore": 63850,
+      "alloy": 319301
+    },
+    "works": {
+      "windfarm": 2,
+      "smelter": 1
+    },
+    "works_idle": {},
+    "work_permille": 1000,
+    "power_made": 60,
+    "power_used": 14,
+    "site_power": {
+      "wind": 100,
+      "sun": 0,
+      "water": 0,
+      "heat": 43
+    },
+    "catalogue": {
+      "smelter": {
+        "label": "Fonderia",
+        "inputs": {
+          "ore": 10,
+          "timber": 8
+        },
+        "outputs": {
+          "alloy": 6
+        },
+        "draw": 14,
+        "power": 0,
+        "from": null,
+        "cost_milli": {
+          "stone": "120000",
+          "timber": "120000"
+        },
+        "seconds": 10800
+      },
+      "windfarm": {
+        "label": "Eolico",
+        "inputs": {},
+        "outputs": {},
+        "draw": 0,
+        "power": 30,
+        "from": "wind",
+        "cost_milli": {
+          "stone": "60000",
+          "timber": "100000"
+        },
+        "seconds": 7200
+      },
+      "solar": {
+        "label": "Solare",
+        "inputs": {},
+        "outputs": {},
+        "draw": 0,
+        "power": 0,
+        "from": "sun",
+        "cost_milli": {
+          "stone": "40000",
+          "alloy": "30000"
+        },
+        "seconds": 7200
+      },
+      "hydro": {
+        "label": "Idroelettrico",
+        "inputs": {},
+        "outputs": {},
+        "draw": 0,
+        "power": 0,
+        "from": "water",
+        "cost_milli": {
+          "stone": "200000",
+          "timber": "80000"
+        },
+        "seconds": 21600
+      },
+      "geothermal": {
+        "label": "Geotermico",
+        "inputs": {},
+        "outputs": {},
+        "draw": 0,
+        "power": 20,
+        "from": "heat",
+        "cost_milli": {
+          "stone": "160000",
+          "alloy": "60000"
+        },
+        "seconds": 28800
+      }
+    },
+    "busy_until": null,
+    "busy_with": null
+  }
+}
