@@ -25,7 +25,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from app.citygen import Site, generate, seed_for
+from app.citygen import GROUND_COLORS, GROUNDS, PALETTE, Site, generate, seed_for
 
 SIZE = 64
 OUT = Path("frontend/app/colony/reference.json")
@@ -79,7 +79,13 @@ def build() -> dict:
         })
     seeds = [{"world": world, "tile": tile, "seed": seed_for(world, tile)}
              for world, tile in SEEDS]
-    return {"size": SIZE, "cases": cases, "seeds": seeds}
+    return {
+        "size": SIZE, "cases": cases, "seeds": seeds,
+        # Le tinte del terreno viaggiano col riferimento: e' l'unica cosa che tutte e tre le
+        # lingue leggono, quindi e' il posto giusto per tenere d'accordo le loro tavolozze.
+        "ground_colors": [GROUND_COLORS[name] for name in GROUNDS],
+        "palette": dict(PALETTE),
+    }
 
 
 def main() -> None:

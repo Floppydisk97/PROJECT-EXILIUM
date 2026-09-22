@@ -16,6 +16,8 @@ const Citygen := preload("res://exilium/citygen.gd")
 const Prng := preload("res://exilium/prng.gd")
 const PlanetData := preload("res://exilium/planet.gd")
 const Globe := preload("res://exilium/globe.gd")
+const Colony := preload("res://exilium/colony.gd")
+const Hex := preload("res://exilium/hexgrid.gd")
 
 var failures := 0
 var checks := 0
@@ -35,6 +37,7 @@ func check(condition: bool, what: String) -> void:
 func _initialize() -> void:
 	print("Project Exilium -- test del client (Godot ", Engine.get_version_info()["string"], ")")
 	test_prng()
+	test_hexgrid()
 	test_reference()
 	test_planet()
 	print("")
@@ -59,6 +62,90 @@ func test_prng() -> void:
 	for i in range(3):
 		check(abs(direction[i] - expect[i]) < 1e-11,
 			  "direction()[%d]: atteso %f, ottenuto %f" % [i, expect[i], direction[i]])
+
+
+func test_hexgrid() -> void:
+	# La maglia non viaggia nel riferimento: non ha celle da confrontare. Quel che la tiene
+	# onesta sono due affermazioni, le stesse che prova `hexgrid.test.ts` -- e sono quelle
+	# che si rompono per prime quando lo sfalsamento delle righe dispari viene scritto storto.
+	print("\nLa maglia esagonale")
+	var side := 32
+
+	# Uno: ogni centro ritrova il PROPRIO esagono. Se questa cade, il terreno e' disegnato
+	# mezza cella fuori dalle sue linee a righe alterne, ed e' invisibile finche' non ci si
+	# costruisce sopra.
+	var strays := 0
+	for row in range(side):
+		for col in range(side):
+			var back := Hex.hex_at(Hex.centre_x(col, row), Hex.centre_y(row), side)
+			if back != Vector2i(col, row):
+				if strays == 0:
+					fail("centro di (%d,%d) ritrovato come (%d,%d)" % [col, row, back.x, back.y])
+				strays += 1
+	checks += 1
+	if strays == 0:
+		print("  ", side * side, " centri ritrovano il proprio esagono")
+
+	# E anche da un punto qualunque DENTRO l'esagono, non solo dal centro esatto: e' li' che
+	# un arrotondamento a scacchiera sbaglierebbe, lungo i bordi diagonali.
+	var inside := 0
+	var rng := Prng.new(Prng.seed_int("maglia"))
+	for i in range(400):
+		var col := int(rng.random() * side)
+		var row := int(rng.random() * side)
+		var angle := rng.random() * TAU
+		var far := rng.random() * 0.40          # dentro il raggio, 1/sqrt(3) = 0,577
+		var back := Hex.hex_at(Hex.centre_x(col, row) + cos(angle) * far,
+							   Hex.centre_y(row) + sin(angle) * far, side)
+		if back == Vector2i(col, row):
+			inside += 1
+	check(inside == 400, "punti dentro l'esagono ritrovati: %d su 400" % inside)
+
+	# Due: il vicinato e' RECIPROCO. Se a e' vicino di b, b e' vicino di a -- altrimenti la
+	# distanza dalla riva, che si propaga di vicino in vicino, cola da una parte sola.
+	var broken := 0
+	for row in range(side):
+		for col in range(side):
+			for other in Hex.neighbours(col, row):
+				if other.x < 0 or other.y < 0 or other.x >= side or other.y >= side:
+					continue
+				if not Hex.neighbours(other.x, other.y).has(Vector2i(col, row)):
+					if broken == 0:
+						fail("(%d,%d) vicino di (%d,%d) ma non viceversa"
+							 % [col, row, other.x, other.y])
+					broken += 1
+	checks += 1
+	if broken == 0:
+		print("  vicinato reciproco su tutte e ", side * side, " le celle")
+
+	# E i sei vicini stanno davvero a un esagono di distanza: un vicino a due passi sarebbe
+	# un vicinato che sembra giusto e propaga il doppio.
+	var far_off := 0
+	for row in range(1, side - 1):
+		for col in range(1, side - 1):
+			# A mano e non con `Vector2`: quello tiene numeri a 32 bit, e a 32 bit una
+			# distanza che vale esattamente uno arriva con sette cifre giuste invece di
+			# quindici -- la prova passerebbe solo allargando la tolleranza fino a non
+			# provare piu' granche'.
+			var hx := Hex.centre_x(col, row)
+			var hy := Hex.centre_y(row)
+			for other in Hex.neighbours(col, row):
+				var dx := Hex.centre_x(other.x, other.y) - hx
+				var dy := Hex.centre_y(other.y) - hy
+				if absf(sqrt(dx * dx + dy * dy) - 1.0) > 1e-12:
+					far_off += 1
+	check(far_off == 0, "vicini a distanza diversa da un esagono: %d" % far_off)
+
+	# Il contorno: sei vertici, il primo dritto in su. E' la punta in alto dell'immagine di
+	# riferimento, ed e' cio' che distingue questa maglia da quella ruotata di 30 gradi.
+	var corners := Hex.corners()
+	check(corners.size() == 6, "il contorno ha %d vertici invece di 6" % corners.size())
+	check(absf(corners[0].x) < 1e-12 and corners[0].y < 0.0,
+		  "il primo vertice non e' la punta in alto: %s" % corners[0])
+
+	# E la mappa e' un rettangolo largo, non un quadrato: le righe distano sqrt(3)/2.
+	check(absf(Hex.map_height(side) - side * Citygen.row_ratio()) < 1e-12,
+		  "l'altezza della mappa non segue il rapporto fra le righe")
 
 
 func test_reference() -> void:
@@ -94,6 +181,28 @@ func test_reference() -> void:
 			if economy.get(key) != want[key]:
 				fail("%s: economia %s -- atteso %s, ottenuto %s"
 					 % [name, key, want[key], economy.get(key)])
+
+	# Le tinte. `colony.gd` le tiene scritte in casa -- il riferimento e' un attrezzo di prova
+	# e non va spedito col gioco -- quindi l'unica cosa che impedisce alla copia di staccarsi
+	# dalla sorgente Python e' questo confronto. E' la nona volta che due elenchi devono
+	# coincidere: qui non si spera, si verifica.
+	print("\nLe tinte del terreno, contro il riferimento")
+	var want_grounds: Array = reference["ground_colors"]
+	checks += 1
+	if want_grounds.size() != Citygen.GROUNDS.size():
+		fail("ground_colors ha %d tinte invece di %d"
+			 % [want_grounds.size(), Citygen.GROUNDS.size()])
+	else:
+		for i in range(Citygen.GROUNDS.size()):
+			var name: String = Citygen.GROUNDS[i]
+			check(Colony.GROUND_COLORS.get(name) == int(want_grounds[i]),
+				  "tinta %s: attesa %d, ottenuta %s" % [name, int(want_grounds[i]),
+														Colony.GROUND_COLORS.get(name)])
+	var want_palette: Dictionary = reference["palette"]
+	check(Colony.MEADOW == int(want_palette["meadow"]),
+		  "prato: atteso %d, ottenuto %d" % [int(want_palette["meadow"]), Colony.MEADOW])
+	check(Colony.FOREST == int(want_palette["forest"]),
+		  "bosco: atteso %d, ottenuto %d" % [int(want_palette["forest"]), Colony.FOREST])
 
 	print("\nIl seme, che attraversa il filo fra le copie")
 	for entry in reference["seeds"]:

@@ -42,8 +42,8 @@ export const ROUGHNESS: Record<string, number> = {
 
 /** Il verde non e' uno solo. Un prato e un bosco erano lo stesso identico colore, piu' o meno
  *  carico: e' per questo che una foresta sembrava un prato scuro invece che una foresta. */
-const MEADOW: [number, number, number] = [96, 110, 62];
-const FOREST: [number, number, number] = [48, 68, 42];
+export const MEADOW: [number, number, number] = [96, 110, 62];
+export const FOREST: [number, number, number] = [48, 68, 42];
 
 /** L'acqua fra la riva e il fondo, e la schiuma dove tocca terra. */
 const SHALLOW: [number, number, number] = [72, 126, 136];
