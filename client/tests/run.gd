@@ -38,6 +38,7 @@ func _initialize() -> void:
 	print("Project Exilium -- test del client (Godot ", Engine.get_version_info()["string"], ")")
 	test_prng()
 	test_hexgrid()
+	test_selection()
 	test_reference()
 	test_planet()
 	print("")
@@ -146,6 +147,87 @@ func test_hexgrid() -> void:
 	# E la mappa e' un rettangolo largo, non un quadrato: le righe distano sqrt(3)/2.
 	check(absf(Hex.map_height(side) - side * Citygen.row_ratio()) < 1e-12,
 		  "l'altezza della mappa non segue il rapporto fra le righe")
+
+
+func test_selection() -> void:
+	# Scegliere un esagono e' la prima cosa che il giocatore fa, ed e' la piu' facile da
+	# sbagliare in silenzio: se la cella scelta non e' quella disegnata, il terreno e' giusto,
+	# le linee sono giuste, e il gioco risponde su un'altra casella. Qui si legano insieme le
+	# due cose che devono coincidere -- dove il PENNELLO mette il colore e dove la SCELTA
+	# cerca l'esagono -- senza aprire nessuna finestra.
+	print("\nLa scelta di un esagono")
+	var side := 48
+
+	# Uno: il pennello e la maglia parlano dello stesso posto. Ogni cella occupa due pixel in
+	# larghezza, a `col * 2 + dispari`, e una riga in altezza. Il centro di quella coppia di
+	# pixel deve cadere esattamente sul centro dell'esagono, e quel punto deve ritrovare
+	# l'esagono da cui si e' partiti.
+	var off := 0
+	for row in range(side):
+		var odd := row & 1
+		for col in range(side):
+			# Il centro della coppia di pixel, in unita': due pixel per esagono, quindi un
+			# pixel vale mezza unita'.
+			var middle := (col * 2 + odd + 1) * 0.5
+			if absf(middle - Hex.centre_x(col, row)) > 1e-12:
+				off += 1
+			elif Hex.hex_at(middle, Hex.centre_y(row), side) != Vector2i(col, row):
+				off += 1
+	check(off == 0, "celle in cui il pennello e la scelta non concordano: %d" % off)
+
+	# Due: "edificabile" e' una sola idea. `Colony.BUILDABLE` risponde a chi clicca,
+	# `economy_of` promette un numero prima di atterrare, e sono due elenchi degli stessi
+	# quattro terreni. Se si allontanano, il rilevamento promette caselle libere che poi non
+	# lo sono -- e il giocatore se ne accorge solo dopo aver scelto dove vivere.
+	var made := Citygen.generate("scelta-di-prova", {
+		"biome": "temperate_forest", "elevation": 220, "temperature": 12.0,
+		"rainfall": 1100, "river_flow": 0, "coastal": false,
+	}, side)
+	var buildable := 0
+	for row in range(side):
+		for col in range(side):
+			if Colony.facts_of(made, col, row)["buildable"]:
+				buildable += 1
+	var economy := Citygen.economy_of(made)
+	check(buildable == economy["room"],
+		  "edificabili: la scelta ne conta %d, il rilevamento %d" % [buildable, economy["room"]])
+
+	# E i fatti sono quelli delle colonne, non inventati: una cella a caso, confrontata con
+	# gli array da cui e' disegnata.
+	var cells: PackedByteArray = made["ground"]
+	var names: Array = made["ground_names"]
+	var heights: PackedInt32Array = made["height"]
+	var facts := Colony.facts_of(made, 17, 23)
+	var at := 23 * side + 17
+	check(facts["ground"] == names[cells[at]] and facts["height"] == heights[at]
+		  and facts["index"] == at,
+		  "i fatti della cella (17, 23) non sono quelli delle sue colonne")
+
+	# Tre: il pixel di mezzo dello schermo e' il punto che la telecamera sta guardando, e un
+	# pixel scelto a caso torna al suo posto. E' il conto che traduce un clic in un esagono, e
+	# ha gia' sbagliato una volta: `select_at_screen` chiedeva la trasformazione alla tela,
+	# che racconta dov'era l'inquadratura il fotogramma prima. Spostare lo sguardo e scegliere
+	# subito dava la cella di dov'era prima -- e una cella la restituiva comunque, quindi
+	# sembrava funzionare. Qui il conto e' uno, esplicito, e si prova.
+	var window := Vector2(1152, 648)
+	var where := Vector2(232.5, 164.6)
+	var zoom := 26.0
+	check(Colony.hex_space(window * 0.5, where, zoom, window) == where,
+		  "il pixel di mezzo non e' il punto guardato")
+	var somewhere := Vector2(311.0, 92.0)
+	var back := (Colony.hex_space(somewhere, where, zoom, window) - where) * zoom + window * 0.5
+	# Un millesimo di pixel, non zero: `Vector2` tiene numeri a 32 bit, e il giro di andata e
+	# ritorno ne consuma qualche cifra. La tolleranza e' scelta su cio' che conta -- un
+	# esagono qui vale ventisei pixel, quindi un millesimo di pixel non ha mai scelto una
+	# cella diversa -- e non su cio' che fa passare la prova.
+	check(back.distance_to(somewhere) < 1e-3,
+		  "un pixel qualunque non torna al suo posto: %s invece di %s" % [back, somewhere])
+
+	# Fuori mappa non si sceglie niente. Un dizionario vuoto e non una cella al bordo: chi
+	# clicca sul cielo non deve ritrovarsi a costruire sull'ultima riga.
+	check(Colony.facts_of(made, side, 0).is_empty(), "una colonna fuori mappa ha risposto")
+	check(Colony.facts_of(made, 0, -1).is_empty(), "una riga negativa ha risposto")
+	check(Hex.hex_at(-0.1, 1.0, side) == Vector2i(-1, -1), "un punto a sinistra della mappa ha risposto")
 
 
 func test_reference() -> void:

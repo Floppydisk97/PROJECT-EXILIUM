@@ -50,10 +50,28 @@ const FOREST := 0x30442A
 @export var seed_text := ""
 @export var grid := false
 
+## I terreni su cui si puo' posare qualcosa. Sono gli stessi quattro che `citygen.economy_of`
+## conta come `room`, e il perche' di questa costante e' che erano due elenchi: il numero
+## promesso dal rilevamento e la risposta data a chi clicca devono essere la stessa idea di
+## "edificabile", altrimenti si atterra su un posto che dice 86.000 caselle libere e poi
+## nessuna di quelle su cui si prova e' libera davvero.
+const BUILDABLE := ["sand", "soil", "gravel", "rock"]
+
 var made: Dictionary
 var terrain: ImageTexture
 var camera: Camera2D
 var readout: Label
+var panel: Label
+
+## L'esagono scelto, o (-1, -1) se nessuno. Non e' un indice: una coppia si legge, e a
+## 2,36 milioni di celle un indice sbagliato di uno e' invisibile.
+var selected := Vector2i(-1, -1)
+
+## Da dove e' cominciata la pressione del tasto, per distinguere un CLIC da un TRASCINAMENTO.
+## Senza, ogni spostamento della mappa finirebbe per scegliere la cella dove si e' lasciato il
+## tasto, e la scelta cambierebbe da sola ogni volta che ci si guarda intorno.
+var pressed_at := Vector2.ZERO
+var dragged := false
 
 
 func _ready() -> void:
@@ -103,6 +121,18 @@ func _ready() -> void:
 		economy["food"], economy["timber"], economy["stone"], economy["room"]]
 	readout.text += "\nG griglia · F tutta · rotella ingrandisce · trascina sposta"
 	layer.add_child(readout)
+
+	# Il pannello di cio' che si e' scelto, in basso a sinistra. Vuoto finche' non si clicca:
+	# una riga che dice "nessuna casella" occupa lo stesso spazio e non dice niente.
+	panel = Label.new()
+	panel.add_theme_color_override("font_color", Color8(0xea, 0xf2, 0xf8))
+	panel.add_theme_color_override("font_outline_color", Color8(0x06, 0x0a, 0x10))
+	panel.add_theme_constant_override("outline_size", 6)
+	panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	panel.position = Vector2(18, -96)
+	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	layer.add_child(panel)
+	describe()
 	queue_redraw()
 
 
@@ -218,6 +248,87 @@ func fit() -> void:
 	camera.zoom = Vector2(scale, scale)
 
 
+## Che cosa c'e' nell'esagono (col, row). Un dizionario e non del testo, perche' e' la stessa
+## risposta che servira' a chi decidera' se un edificio ci sta: la frase e' `describe`, questi
+## sono i FATTI.
+func cell_facts(col: int, row: int) -> Dictionary:
+	return facts_of(made, col, row)
+
+
+## Gli stessi fatti, senza bisogno della scena: serve a `tests/run.gd`, che non ha una
+## finestra e non puo' cliccare. Statica apposta -- una cosa che si puo' provare solo
+## aprendo un visore, in pratica non si prova.
+static func facts_of(made: Dictionary, col: int, row: int) -> Dictionary:
+	if made.is_empty():
+		return {}
+	var size: int = made["size"]
+	if col < 0 or row < 0 or col >= size or row >= size:
+		return {}
+	var index := row * size + col
+	var names: Array = made["ground_names"]
+	var cells: PackedByteArray = made["ground"]
+	# Interi a 32 bit e non byte: un'altezza e' in METRI, e un byte finisce a 255. Era scritto
+	# `PackedByteArray` e nessuno se n'era accorto finche' non e' esistita una prova.
+	var heights: PackedInt32Array = made["height"]
+	var fertility: PackedByteArray = made["fertility"]
+	var vegetation: PackedByteArray = made["vegetation"]
+	var kind: String = names[cells[index]]
+	return {
+		"col": col, "row": row, "index": index, "ground": kind,
+		"height": heights[index], "fertility": fertility[index],
+		"vegetation": vegetation[index], "buildable": kind in BUILDABLE,
+	}
+
+
+## Quale esagono sta sotto questo punto dello SCHERMO. Stesso nome e stessa firma del globo,
+## cosi' chi sceglie -- l'utente o `tests/shot.gd` -- non deve sapere che cosa ha davanti.
+func select_at_screen(point: Vector2) -> void:
+	var here := to_hex_space(point)
+	select(Hex.hex_at(here.x, here.y, size))
+
+
+## Dal pixel sullo schermo all'unita' di disegno, cioe' all'esagono.
+##
+## Il conto si fa con la posizione e l'ingrandimento della telecamera, NON con
+## `get_canvas_transform()`. Quella trasformazione la aggiorna la telecamera quando le tocca,
+## e finche' non e' passato un fotogramma racconta ancora dov'era prima: spostare
+## l'inquadratura e scegliere subito dava la cella di dov'era prima l'inquadratura -- che
+## somiglia moltissimo a una scelta riuscita, perche' una cella la restituisce comunque. E'
+## stato `tests/shot.gd` a scoprirlo, puntando a (232, 190) e ricevendo (191, 191).
+func to_hex_space(point: Vector2) -> Vector2:
+	return hex_space(point, camera.position, camera.zoom.x,
+					 Vector2(get_viewport_rect().size))
+
+
+## Lo stesso conto senza la scena, perche' sia provabile. Una telecamera 2D senza rotazione
+## ne' scostamento guarda il proprio centro: il pixel di mezzo e' `where`, e ogni altro pixel
+## e' distante da quello quanto dice l'ingrandimento.
+static func hex_space(point: Vector2, where: Vector2, zoom: float, window: Vector2) -> Vector2:
+	return where + (point - window * 0.5) / zoom
+
+
+func select(cell: Vector2i) -> void:
+	selected = cell
+	describe()
+	queue_redraw()
+
+
+## La frase che il pannello mostra. Separata dai fatti perche' un giorno la stessa cella
+## dovra' rispondere a una domanda diversa -- "ci sta una fattoria?" -- e quella domanda non
+## si fa a una stringa.
+func describe() -> void:
+	if panel == null:
+		return
+	var facts := cell_facts(selected.x, selected.y)
+	if facts.is_empty():
+		panel.text = "clicca un esagono"
+		return
+	panel.text = "esagono %d, %d · %s · %d m\nfertilita' %d · vegetazione %d · %s" % [
+		facts["col"], facts["row"], String(facts["ground"]).replace("_", " "),
+		facts["height"], facts["fertility"], facts["vegetation"],
+		"edificabile" if facts["buildable"] else "non edificabile"]
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_G:
@@ -227,6 +338,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			fit()
 			camera.position = Vector2(size * 0.5, Hex.map_height(size) * 0.5)
 			queue_redraw()
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			pressed_at = event.position
+			dragged = false
+		elif not dragged:
+			# Si sceglie al RILASCIO e solo se il mouse non si e' mosso: premere per
+			# trascinare e scegliere sono lo stesso gesto fino all'ultimo istante.
+			select_at_screen(event.position)
 	elif event is InputEventMouseButton and event.pressed:
 		var step := 0.0
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
@@ -236,12 +355,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		if step > 0.0:
 			# Si ingrandisce VERSO IL PUNTATORE: quel che sta sotto il mouse ci resta. Con
 			# l'ingrandimento sul centro, avvicinarsi a un fiume e' una caccia.
-			var before := get_global_mouse_position()
+			var before := to_hex_space(event.position)
 			var zoom := clampf(camera.zoom.x * step, 0.05, 64.0)
 			camera.zoom = Vector2(zoom, zoom)
-			camera.position += before - get_global_mouse_position()
+			camera.position += before - to_hex_space(event.position)
 			queue_redraw()
 	elif event is InputEventMouseMotion and (event.button_mask & MOUSE_BUTTON_MASK_LEFT):
+		# Qualche pixel di tolleranza: una mano che clicca si muove sempre un po', e senza
+		# questa soglia scegliere un esagono riuscirebbe una volta su tre.
+		if event.position.distance_to(pressed_at) > 4.0:
+			dragged = true
 		camera.position -= event.relative / camera.zoom
 		queue_redraw()
 
@@ -254,6 +377,31 @@ func _draw() -> void:
 	draw_texture_rect(terrain, Rect2(0, 0, size, Hex.map_height(size)), false)
 	if grid:
 		draw_grid()
+	draw_selection()
+
+
+## Il contorno dell'esagono scelto. Si disegna SEMPRE, anche con la griglia spenta e anche da
+## lontano dove le linee non si accendono: la griglia e' un aiuto che si puo' togliere, la
+## scelta e' una risposta e non si puo' perdere di vista. Da lontano l'esagono e' meno di un
+## pixel, quindi sotto un certo ingrandimento il contorno si allarga a mirino -- un puntino
+## di un pixel su un terreno mosso non si trova piu'.
+func draw_selection() -> void:
+	if selected.x < 0 or selected.y < 0:
+		return
+	var scale := camera.zoom.x
+	var centre := Vector2(Hex.centre_x(selected.x, selected.y), Hex.centre_y(selected.y))
+	var ink := Color(0.98, 0.93, 0.58)
+	var thickness := 2.0 / scale
+	var outline := PackedVector2Array()
+	outline.resize(7)
+	var corners := Hex.corners()
+	# Sotto i sei pixel per cella il contorno diventa un mirino largo abbastanza da vedersi:
+	# non e' piu' la forma dell'esagono, ma dice dove si e' scelto, che e' cio' che serve.
+	var span := maxf(1.0, 12.0 / scale)
+	for i in range(6):
+		outline[i] = centre + corners[i] * span
+	outline[6] = outline[0]
+	draw_polyline(outline, ink, thickness, true)
 
 
 ## Le linee della griglia, sopra il terreno.
@@ -269,12 +417,17 @@ func draw_grid() -> int:
 	var scale := camera.zoom.x
 	if scale < GRID_ZOOM:
 		return 0
-	var window := Vector2(get_viewport_rect().size) / scale
-	var top_left := camera.position - window * 0.5
+	# Gli angoli dell'inquadratura passano dalla stessa funzione che usa chi clicca. Erano
+	# due volte la stessa aritmetica, e due volte la stessa aritmetica e' una volta di
+	# troppo: il giorno in cui la telecamera prende uno scostamento, una delle due resta
+	# indietro e le linee si disegnano dove nessuno sta guardando.
+	var window := Vector2(get_viewport_rect().size)
+	var top_left := to_hex_space(Vector2.ZERO)
+	var bottom_right := to_hex_space(window)
 	var col0 := maxi(0, int(floor(top_left.x)) - 2)
-	var col1 := mini(size - 1, int(ceil(top_left.x + window.x)) + 1)
+	var col1 := mini(size - 1, int(ceil(bottom_right.x)) + 1)
 	var row0 := maxi(0, int(floor(top_left.y / Hex.row_ratio())) - 1)
-	var row1 := mini(size - 1, int(ceil((top_left.y + window.y) / Hex.row_ratio())) + 1)
+	var row1 := mini(size - 1, int(ceil(bottom_right.y / Hex.row_ratio())) + 1)
 
 	# Piu' si sta vicini, piu' la linea si fa vedere: da lontano una griglia satura copre il
 	# terreno, da vicino serve che si legga su cosa si costruisce.
