@@ -93,3 +93,48 @@ static func neighbours(col: int, row: int) -> Array[Vector2i]:
 		Vector2i(col + lean, row - 1), Vector2i(col + lean + 1, row - 1),
 		Vector2i(col + lean, row + 1), Vector2i(col + lean + 1, row + 1),
 	]
+
+
+## Da (col, row) alle coordinate CUBICHE, dove la geometria esagonale smette di essere un
+## caso particolare: tre assi a somma zero, e la distanza fra due esagoni e' la stessa
+## formula che vale per una scacchiera a sei direzioni.
+## `row` non negativa: la divisione fra interi tronca verso lo zero, e su una riga negativa
+## lo sfalsamento verrebbe sbagliato di uno. Le celle di una mappa cominciano da zero, quindi
+## non e' una limitazione -- e' la ragione per cui `within` scarta prima e converte dopo.
+static func to_cube(col: int, row: int) -> Vector3i:
+	var x := col - (row - (row & 1)) / 2
+	var z := row
+	return Vector3i(x, -x - z, z)
+
+
+## Quanti passi separano due esagoni. Non la distanza in linea d'aria: il numero di celle da
+## attraversare, che e' cio' che serve a sapere se un edificio ci sta.
+static func distance(a: Vector2i, b: Vector2i) -> int:
+	var p := to_cube(a.x, a.y)
+	var q := to_cube(b.x, b.y)
+	return (absi(p.x - q.x) + absi(p.y - q.y) + absi(p.z - q.z)) / 2
+
+
+## Tutti gli esagoni entro `radius` passi dal centro, quelli fuori mappa esclusi. Raggio zero
+## e' il solo esagono centrale; raggio uno e' sette celle, poi 19, 37, 61 -- i numeri
+## esagonali centrati, che sono la vera unita' di misura di un edificio su questa maglia.
+static func within(centre: Vector2i, radius: int, size: int) -> Array[Vector2i]:
+	var found: Array[Vector2i] = []
+	if radius < 0:
+		return found
+	var middle := to_cube(centre.x, centre.y)
+	for dx in range(-radius, radius + 1):
+		# I due limiti tengono la somma a zero: senza, si prenderebbe un rombo invece di un
+		# esagono, e il rombo ha le punte lunghe il doppio.
+		for dz in range(maxi(-radius, -dx - radius), mini(radius, -dx + radius) + 1):
+			var z := middle.z + dz
+			# La riga si scarta PRIMA di convertirla: la divisione fra interi tronca verso
+			# lo zero e la formula dello sfalsamento vuole un arrotondamento verso il basso,
+			# quindi su una riga negativa darebbe una colonna sbagliata invece di un rifiuto.
+			if z < 0 or z >= size:
+				continue
+			var col := (middle.x + dx) + (z - (z & 1)) / 2
+			if col < 0 or col >= size:
+				continue
+			found.append(Vector2i(col, z))
+	return found

@@ -57,6 +57,14 @@ const FOREST := 0x30442A
 ## nessuna di quelle su cui si prova e' libera davvero.
 const BUILDABLE := ["sand", "soil", "gravel", "rock"]
 
+## Le frecce muovono la scelta di UNA cella. Su una maglia esagonale "sopra" non esiste --
+## sopra ci sono due esagoni, non uno -- quindi le due frecce verticali prendono quello di
+## sinistra, che e' il primo dei due nell'elenco dei vicini. Destra e sinistra invece sono
+## esatte: quella direzione sulla maglia c'e' davvero.
+const ARROWS := {
+	KEY_LEFT: 0, KEY_RIGHT: 1, KEY_UP: 2, KEY_DOWN: 4,
+}
+
 var made: Dictionary
 var terrain: ImageTexture
 var camera: Camera2D
@@ -72,6 +80,12 @@ var selected := Vector2i(-1, -1)
 ## tasto, e la scelta cambierebbe da sola ogni volta che ci si guarda intorno.
 var pressed_at := Vector2.ZERO
 var dragged := false
+
+## Quanti passi attorno all'esagono scelto. Zero e' una cella sola; uno ne fa sette, due
+## diciannove, tre trentasette. Sono i numeri esagonali centrati, ed e' con quelli che si
+## misura un edificio su questa maglia -- non con un lato in metri, che su sei direzioni non
+## vuol dire niente.
+@export var radius := 0
 
 
 func _ready() -> void:
@@ -120,6 +134,7 @@ func _ready() -> void:
 		String(site["biome"]).replace("_", " "), int(site["elevation"]), size * size,
 		economy["food"], economy["timber"], economy["stone"], economy["room"]]
 	readout.text += "\nG griglia · F tutta · rotella ingrandisce · trascina sposta"
+	readout.text += "\nclicca sceglie · frecce spostano · [ ] raggio · Esc lascia"
 	layer.add_child(readout)
 
 	# Il pannello di cio' che si e' scelto, in basso a sinistra. Vuoto finche' non si clicca:
@@ -280,6 +295,40 @@ static func facts_of(made: Dictionary, col: int, row: int) -> Dictionary:
 	}
 
 
+## Che cosa c'e' nell'AREA scelta: l'esagono centrale e tutto cio' che gli sta entro
+## `radius` passi. E' la domanda vera di un costruttore -- non "che cosa c'e' qui" ma "ci sta
+## quello che voglio metterci, e su che terreno poggia".
+func area_facts() -> Dictionary:
+	var cells := Hex.within(selected, radius, size)
+	if cells.is_empty():
+		return {}
+	var buildable := 0
+	var fertility := 0
+	var grounds := {}
+	for cell in cells:
+		var facts := cell_facts(cell.x, cell.y)
+		if facts["buildable"]:
+			buildable += 1
+		fertility += int(facts["fertility"])
+		grounds[facts["ground"]] = int(grounds.get(facts["ground"], 0)) + 1
+	# Il terreno PIU' PRESENTE, non quello del centro: un'area a cavallo di una riva e' quasi
+	# tutta acqua anche se il centro e' asciutto, e dire "soil" sarebbe una bugia comoda.
+	var common := ""
+	var most := 0
+	for name in grounds:
+		if int(grounds[name]) > most:
+			most = int(grounds[name])
+			common = name
+	return {
+		"cells": cells.size(), "buildable": buildable, "ground": common,
+		"fertility": fertility / cells.size(),
+		# L'area chiesta e quella OTTENUTA sono cose diverse sul bordo della mappa: un raggio
+		# di tre contro il margine da' meno di trentasette celle, e chi costruisce deve
+		# saperlo prima e non dopo.
+		"whole": cells.size() == 3 * radius * (radius + 1) + 1,
+	}
+
+
 ## Quale esagono sta sotto questo punto dello SCHERMO. Stesso nome e stessa firma del globo,
 ## cosi' chi sceglie -- l'utente o `tests/shot.gd` -- non deve sapere che cosa ha davanti.
 func select_at_screen(point: Vector2) -> void:
@@ -307,6 +356,28 @@ static func hex_space(point: Vector2, where: Vector2, zoom: float, window: Vecto
 	return where + (point - window * 0.5) / zoom
 
 
+## Muove la scelta di un esagono nella direzione data, e porta l'inquadratura dietro se la
+## cella e' uscita dallo schermo: una scelta che si muove fuori dalla finestra e' una scelta
+## che si e' persa, e il giocatore non ha modo di sapere dov'e' andata.
+func step_selection(which: int) -> void:
+	if selected.x < 0:
+		# Nessuna scelta: la prima freccia sceglie il centro di cio' che si sta guardando,
+		# invece di non fare niente. Non fare niente e' indistinguibile da un tasto rotto.
+		var middle := to_hex_space(Vector2(get_viewport_rect().size) * 0.5)
+		select(Hex.hex_at(middle.x, middle.y, size))
+		return
+	var next: Vector2i = Hex.neighbours(selected.x, selected.y)[which]
+	if next.x < 0 or next.y < 0 or next.x >= size or next.y >= size:
+		return
+	select(next)
+	var on_screen := (Vector2(Hex.centre_x(next.x, next.y), Hex.centre_y(next.y))
+					  - camera.position) * camera.zoom.x + Vector2(get_viewport_rect().size) * 0.5
+	var margin := Vector2(48, 48)
+	var window := Vector2(get_viewport_rect().size)
+	if not Rect2(margin, window - margin * 2.0).has_point(on_screen):
+		camera.position = Vector2(Hex.centre_x(next.x, next.y), Hex.centre_y(next.y))
+
+
 func select(cell: Vector2i) -> void:
 	selected = cell
 	describe()
@@ -327,6 +398,12 @@ func describe() -> void:
 		facts["col"], facts["row"], String(facts["ground"]).replace("_", " "),
 		facts["height"], facts["fertility"], facts["vegetation"],
 		"edificabile" if facts["buildable"] else "non edificabile"]
+	if radius > 0:
+		var area := area_facts()
+		panel.text += "\narea raggio %d · %d m%s · %d edificabili · %s · fertilita' %d%s" % [
+			radius, area["cells"], char(0x00B2), area["buildable"],
+			String(area["ground"]).replace("_", " "), area["fertility"],
+			"" if area["whole"] else " · tagliata dal bordo"]
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -338,6 +415,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			fit()
 			camera.position = Vector2(size * 0.5, Hex.map_height(size) * 0.5)
 			queue_redraw()
+		elif event.keycode == KEY_BRACKETLEFT or event.keycode == KEY_BRACKETRIGHT:
+			var step := 1 if event.keycode == KEY_BRACKETRIGHT else -1
+			radius = clampi(radius + step, 0, 24)
+			describe()
+			queue_redraw()
+		elif event.keycode == KEY_ESCAPE:
+			select(Vector2i(-1, -1))
+		elif event.keycode in ARROWS:
+			step_selection(ARROWS[event.keycode])
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			pressed_at = event.position
@@ -398,6 +484,21 @@ func draw_selection() -> void:
 	# Sotto i sei pixel per cella il contorno diventa un mirino largo abbastanza da vedersi:
 	# non e' piu' la forma dell'esagono, ma dice dove si e' scelto, che e' cio' che serve.
 	var span := maxf(1.0, 12.0 / scale)
+
+	# L'area prima del centro, e piu' smorta: e' il contesto della scelta, non la scelta. Si
+	# disegna solo quando l'esagono vale qualche pixel -- a raggio tre e due pixel per cella
+	# sarebbe una macchia, e una macchia non dice quante celle sono.
+	if radius > 0 and scale >= 4.0:
+		var pale := Color(0.98, 0.93, 0.58, 0.34)
+		for cell in Hex.within(selected, radius, size):
+			if cell == selected:
+				continue
+			var middle := Vector2(Hex.centre_x(cell.x, cell.y), Hex.centre_y(cell.y))
+			for i in range(6):
+				outline[i] = middle + corners[i]
+			outline[6] = outline[0]
+			draw_polyline(outline, pale, thickness, true)
+
 	for i in range(6):
 		outline[i] = centre + corners[i] * span
 	outline[6] = outline[0]

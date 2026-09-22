@@ -39,6 +39,7 @@ func _initialize() -> void:
 	test_prng()
 	test_hexgrid()
 	test_selection()
+	test_area()
 	test_reference()
 	test_planet()
 	print("")
@@ -147,6 +148,75 @@ func test_hexgrid() -> void:
 	# E la mappa e' un rettangolo largo, non un quadrato: le righe distano sqrt(3)/2.
 	check(absf(Hex.map_height(side) - side * Citygen.row_ratio()) < 1e-12,
 		  "l'altezza della mappa non segue il rapporto fra le righe")
+
+
+func test_area() -> void:
+	# Un edificio non occupa un esagono: ne occupa un pezzo di maglia. Qui si prova la
+	# misura con cui quel pezzo si conta, perche' e' quella che dira' "ci sta" o "non ci sta"
+	# e un "ci sta" sbagliato si scopre solo dopo aver posato.
+	print("\nL'area attorno a un esagono")
+	var side := 64
+
+	# La distanza e' simmetrica, vale zero solo su se stessi, e fra due vicini e' uno. Sono
+	# le tre cose che rendono una distanza una distanza; senza la terza, un raggio di uno
+	# prenderebbe celle che non si toccano.
+	var wrong := 0
+	for row in range(4, 12):
+		for col in range(4, 12):
+			var here := Vector2i(col, row)
+			if Hex.distance(here, here) != 0:
+				wrong += 1
+			for other in Hex.neighbours(col, row):
+				if Hex.distance(here, other) != 1:
+					wrong += 1
+				if Hex.distance(other, here) != Hex.distance(here, other):
+					wrong += 1
+	check(wrong == 0, "distanze sbagliate: %d" % wrong)
+
+	# Un raggio prende i NUMERI ESAGONALI CENTRATI: 1, 7, 19, 37, 61. Se ne prendesse di
+	# piu' si starebbe contando un rombo, che ha le punte lunghe il doppio, e un edificio
+	# "da 19 caselle" ne occuperebbe 25 delle quali sei in fila da una parte sola.
+	var centre := Vector2i(32, 32)
+	for r in range(6):
+		var cells := Hex.within(centre, r, side)
+		check(cells.size() == 3 * r * (r + 1) + 1,
+			  "raggio %d: %d celle invece di %d" % [r, cells.size(), 3 * r * (r + 1) + 1])
+
+	# E sono davvero tutte e sole quelle entro quel raggio: il conto giusto con le celle
+	# sbagliate e' esattamente l'errore che un conto non vede.
+	var outside := 0
+	var missing := 0
+	var inside := Hex.within(centre, 3, side)
+	for cell in inside:
+		if Hex.distance(centre, cell) > 3:
+			outside += 1
+	for row in range(side):
+		for col in range(side):
+			if Hex.distance(centre, Vector2i(col, row)) <= 3 and not inside.has(Vector2i(col, row)):
+				missing += 1
+	check(outside == 0 and missing == 0,
+		  "area a raggio tre: %d celle di troppo, %d mancanti" % [outside, missing])
+
+	# Contro il bordo l'area si TAGLIA e non sborda ne' gira dall'altra parte. Una mappa che
+	# si richiude sarebbe una colonia in cui il nord confina col sud.
+	for cell in Hex.within(Vector2i(0, 0), 3, side):
+		if cell.x < 0 or cell.y < 0 or cell.x >= side or cell.y >= side:
+			outside += 1
+	check(outside == 0, "l'area al bordo esce dalla mappa: %d celle" % outside)
+	check(Hex.within(Vector2i(0, 0), 3, side).size() < 37,
+		  "l'area contro l'angolo non si e' tagliata")
+
+	# Le frecce si muovono di un esagono esatto, e le due direzioni orizzontali sono davvero
+	# opposte: su una maglia sfalsata e' l'unica coppia di cui ci si possa fidare.
+	var from := Vector2i(20, 21)
+	var left: Vector2i = Hex.neighbours(from.x, from.y)[Colony.ARROWS[KEY_LEFT]]
+	var right: Vector2i = Hex.neighbours(from.x, from.y)[Colony.ARROWS[KEY_RIGHT]]
+	check(left == Vector2i(from.x - 1, from.y) and right == Vector2i(from.x + 1, from.y),
+		  "le frecce orizzontali non si muovono di una colonna")
+	for key in Colony.ARROWS:
+		var step: Vector2i = Hex.neighbours(from.x, from.y)[Colony.ARROWS[key]]
+		check(Hex.distance(from, step) == 1,
+			  "la freccia %d salta %d celle" % [key, Hex.distance(from, step)])
 
 
 func test_selection() -> void:
