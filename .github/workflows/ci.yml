@@ -96,7 +96,7 @@ jobs:
       - uses: actions/checkout@v4
       # Il binario pesa 78 MB. Scaricarlo a ogni giro sarebbe un minuto buttato, e i minuti
       # di questo repository sono contati: la cache lo tiene fra un giro e l'altro.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: godot-cache
         with:
           path: ~/.godot-bin
